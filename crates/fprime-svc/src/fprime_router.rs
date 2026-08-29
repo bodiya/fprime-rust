@@ -11,16 +11,17 @@
 //! when the buffer returns on `fileBufferReturnIn`); everything else goes to
 //! `unknownDataOut` when connected, else straight back.
 //!
-//! ## Context-table divergence (documented)
+//! ## Context-table keying (C++ parity)
 //!
-//! The C++ table keys on the buffer's data POINTER (`getData()`). Rust
-//! buffers are owned values that move through ports, so pointer identity is
-//! not observable. Instead the router stamps a generated token into the
-//! buffer's `context` word before forwarding and keys the table on that
-//! token; on return it restores the original context word and the saved
-//! [`FrameContext`]. Observable behavior (table-full events, context
-//! restoration, `BufferContextNotFound` + default context on a miss) is
-//! identical to C++.
+//! The C++ table keys on the buffer's data POINTER (`getData()`). The Rust
+//! [`Buffer`] owns its storage (`Box<[u8]>`), whose heap address is stable
+//! while the buffer moves through ports (and through the async-port escrow)
+//! and unique among outstanding allocations, so the table keys on
+//! `data().as_ptr()` exactly like C++. The buffer's `context` word is never
+//! touched, a buffer forwarded while the table was full can never match a
+//! different entry on return (its live data address cannot equal another
+//! outstanding allocation's), and a miss produces `BufferContextNotFound`
+//! + default context — all identical to C++.
 
 use fprime_comp::{
     BufferSendPort, CmdResponsePort, ComDataWithContextPort, ComPort, EventGlue, OutputPort,
@@ -43,11 +44,11 @@ pub const EVENTID_BUFFER_CONTEXT_NOT_FOUND: FwEventIdType = 4;
 /// One buffer-to-context association.
 #[derive(Debug, Clone, Copy)]
 struct TableEntry {
-    /// Router-generated token stamped into the forwarded buffer's context
-    /// word (the Rust stand-in for the C++ data-pointer key).
-    token: u32,
-    /// The buffer's context word before stamping, restored on return.
-    original_context_word: u32,
+    /// The forwarded buffer's data address (the C++ `getData()` key). The
+    /// buffer owns its storage, so this address is stable until the buffer
+    /// returns and cannot equal the address of any other outstanding
+    /// allocation — an un-tracked buffer can never match this entry.
+    key: usize,
     /// The frame context to restore on return.
     frame_context: FrameContext,
 }
@@ -55,7 +56,6 @@ struct TableEntry {
 /// Guarded state: the context table (C++ `m_bufferContextTable`).
 struct RouterState {
     table: [Option<TableEntry>; BUFFER_CONTEXT_TABLE_SIZE],
-    next_token: u32,
 }
 
 /// `Svc::FprimeRouter` — passive APID router.
@@ -89,7 +89,6 @@ impl FprimeRouter {
             data_return_out: OutputPort::new(),
             state: Mutex::new(RouterState {
                 table: [None; BUFFER_CONTEXT_TABLE_SIZE],
-                next_token: 1,
             }),
         })
     }
@@ -138,40 +137,44 @@ impl FprimeRouter {
         p.target.invoke(p.port_num, data, context);
     }
 
-    /// C++ `insertContext`: stamp a token and remember (token -> context).
-    /// Returns false when the table is full (the buffer is left unstamped —
+    /// The C++ pointer key (`buffer.getData()`): the address of the
+    /// buffer's data window. `Buffer` owns its storage, so the address is
+    /// stable across port moves (and the async escrow) and unique among
+    /// outstanding buffers — a live allocation's address can never equal
+    /// another live allocation's, exactly as in C++.
+    fn buffer_key(buffer: &Buffer) -> usize {
+        buffer.data().as_ptr() as usize
+    }
+
+    /// C++ `insertContext`: remember (data address -> context). Returns
+    /// false when the table is full (the buffer is forwarded un-tracked —
     /// its return will miss the table, exactly like the C++ pointer miss).
     fn insert_context(
         &self,
         state: &mut RouterState,
-        buffer: &mut Buffer,
+        buffer: &Buffer,
         context: &FrameContext,
     ) -> bool {
         for slot in state.table.iter_mut() {
             if slot.is_none() {
-                let token = state.next_token;
-                state.next_token = state.next_token.wrapping_add(1).max(1);
                 *slot = Some(TableEntry {
-                    token,
-                    original_context_word: buffer.context(),
+                    key: Self::buffer_key(buffer),
                     frame_context: *context,
                 });
-                buffer.set_context(token);
                 return true;
             }
         }
         false
     }
 
-    /// C++ `takeContext`: look the token up and remove the entry.
-    fn take_context(&self, state: &mut RouterState, buffer: &mut Buffer) -> Option<FrameContext> {
-        let token = buffer.context();
+    /// C++ `takeContext`: look the data address up and remove the entry.
+    fn take_context(&self, state: &mut RouterState, buffer: &Buffer) -> Option<FrameContext> {
+        let key = Self::buffer_key(buffer);
         for slot in state.table.iter_mut() {
             if let Some(entry) = slot {
-                if entry.token == token {
+                if entry.key == key {
                     let entry = *entry;
                     *slot = None;
-                    buffer.set_context(entry.original_context_word);
                     return Some(entry.frame_context);
                 }
             }
@@ -183,7 +186,7 @@ impl FprimeRouter {
     fn data_in_handler(
         &self,
         _port_num: FwIndexType,
-        mut packet_buffer: Buffer,
+        packet_buffer: Buffer,
         context: &FrameContext,
     ) {
         let mut state = self.state.lock().unwrap();
@@ -216,7 +219,7 @@ impl FprimeRouter {
             // File packet: hand off on fileOut when connected.
             Apid::FwPacketFile => {
                 if self.file_out.is_connected() {
-                    if !self.insert_context(&mut state, &mut packet_buffer, context) {
+                    if !self.insert_context(&mut state, &packet_buffer, context) {
                         self.log(
                             EVENTID_FILE_OUT_CONTEXT_TABLE_FULL,
                             "Buffer-to-context table full on fileOut; context will be lost for this buffer",
@@ -231,7 +234,7 @@ impl FprimeRouter {
             // Unknown packet type: forward with context when connected.
             _ => {
                 if self.unknown_data_out.is_connected() {
-                    if !self.insert_context(&mut state, &mut packet_buffer, context) {
+                    if !self.insert_context(&mut state, &packet_buffer, context) {
                         self.log(
                             EVENTID_UNKNOWN_DATA_OUT_CONTEXT_TABLE_FULL,
                             "Buffer-to-context table full on unknownDataOut; context will be lost for this buffer",
@@ -248,9 +251,9 @@ impl FprimeRouter {
 
     /// `fileBufferReturnIn` handler (guarded): restore the saved context and
     /// return the buffer upstream.
-    fn file_buffer_return_in_handler(&self, _port_num: FwIndexType, mut buffer: Buffer) {
+    fn file_buffer_return_in_handler(&self, _port_num: FwIndexType, buffer: Buffer) {
         let mut state = self.state.lock().unwrap();
-        let context = match self.take_context(&mut state, &mut buffer) {
+        let context = match self.take_context(&mut state, &buffer) {
             Some(context) => context,
             None => {
                 self.log(
@@ -316,10 +319,11 @@ mod tests {
     struct Recorder {
         /// commandOut records: (bytes, context word).
         commands: StdMutex<Vec<(Vec<u8>, u32)>>,
-        /// fileOut records: (bytes, buffer context word).
-        files: StdMutex<Vec<(Vec<u8>, u32)>>,
-        /// unknownDataOut records.
-        unknown: StdMutex<Vec<(Vec<u8>, FrameContext, u32)>>,
+        /// fileOut records: the actual forwarded buffers (kept so tests can
+        /// return the SAME object, as the real receiver does).
+        files: StdMutex<Vec<Buffer>>,
+        /// unknownDataOut records: the actual forwarded buffers + context.
+        unknown: StdMutex<Vec<(Buffer, FrameContext)>>,
         /// dataReturnOut records: (bytes, frame context, buffer context word).
         returned: StdMutex<Vec<(Vec<u8>, FrameContext, u32)>>,
         events: StdMutex<Vec<FwEventIdType>>,
@@ -336,10 +340,7 @@ mod tests {
 
     impl BufferSendPort for Recorder {
         fn invoke(&self, _port_num: FwIndexType, buffer: Buffer) {
-            self.files
-                .lock()
-                .unwrap()
-                .push((buffer.data().to_vec(), buffer.context()));
+            self.files.lock().unwrap().push(buffer);
         }
     }
 
@@ -352,10 +353,7 @@ mod tests {
                     data.context(),
                 ));
             } else {
-                self.unknown
-                    .lock()
-                    .unwrap()
-                    .push((data.data().to_vec(), *context, data.context()));
+                self.unknown.lock().unwrap().push((data, *context));
             }
         }
     }
@@ -440,8 +438,9 @@ mod tests {
         assert_eq!(rec.returned.lock().unwrap().len(), 1);
     }
 
-    /// File APID with fileOut connected: forwarded (no immediate return);
-    /// the return restores the frame context AND the buffer context word.
+    /// File APID with fileOut connected: forwarded (no immediate return)
+    /// with its context word UNTOUCHED (C++ parity — no stamping); the
+    /// return restores the saved frame context.
     #[test]
     fn file_packet_round_trip_restores_context() {
         let (router, rec) = build(true, true);
@@ -450,20 +449,20 @@ mod tests {
         feed(&router, packet(b"filedata", 0xAABB_CCDD), &context);
         assert!(rec.returned.lock().unwrap().is_empty());
         let forwarded = {
-            let files = rec.files.lock().unwrap();
+            let mut files = rec.files.lock().unwrap();
             assert_eq!(files.len(), 1);
-            assert_eq!(files[0].0, b"filedata");
-            files[0].clone()
+            assert_eq!(files[0].data(), b"filedata");
+            assert_eq!(files[0].context(), 0xAABB_CCDD); // word untouched
+            files.remove(0)
         };
-        // Return the buffer (as the file uplink would).
+        // Return the SAME buffer (as the file uplink would).
         let frin = router.file_buffer_return_in(0);
-        frin.target
-            .invoke(frin.port_num, packet(&forwarded.0, forwarded.1));
+        frin.target.invoke(frin.port_num, forwarded);
         let ret = rec.returned.lock().unwrap();
         assert_eq!(ret.len(), 1);
         assert_eq!(ret[0].1.apid, Apid::FwPacketFile);
         assert_eq!(ret[0].1.sequence_count, 42); // restored context
-        assert_eq!(ret[0].2, 0xAABB_CCDD); // original context word restored
+        assert_eq!(ret[0].2, 0xAABB_CCDD); // context word never changed
         assert!(rec.events.lock().unwrap().is_empty());
     }
 
@@ -477,21 +476,23 @@ mod tests {
     }
 
     /// Unknown APID with unknownDataOut connected: forwarded with context
-    /// and tracked in the table.
+    /// (word untouched) and tracked in the table.
     #[test]
     fn unknown_packet_forwarded_with_context() {
         let (router, rec) = build(true, true);
         let context = ctx(Apid::InvalidUninitialized);
         feed(&router, packet(b"??", 5), &context);
-        let unknown = rec.unknown.lock().unwrap();
-        assert_eq!(unknown.len(), 1);
-        assert_eq!(unknown[0].0, b"??");
-        assert_eq!(unknown[0].1.apid, Apid::InvalidUninitialized);
-        let token = unknown[0].2;
-        drop(unknown);
+        let forwarded = {
+            let mut unknown = rec.unknown.lock().unwrap();
+            assert_eq!(unknown.len(), 1);
+            assert_eq!(unknown[0].0.data(), b"??");
+            assert_eq!(unknown[0].0.context(), 5); // word untouched
+            assert_eq!(unknown[0].1.apid, Apid::InvalidUninitialized);
+            unknown.remove(0).0
+        };
         // Round trip restores.
         let frin = router.file_buffer_return_in(0);
-        frin.target.invoke(frin.port_num, packet(b"??", token));
+        frin.target.invoke(frin.port_num, forwarded);
         let ret = rec.returned.lock().unwrap();
         assert_eq!(ret[0].1.apid, Apid::InvalidUninitialized);
         assert_eq!(ret[0].2, 5);
@@ -522,15 +523,16 @@ mod tests {
             *rec.events.lock().unwrap(),
             vec![EVENTID_FILE_OUT_CONTEXT_TABLE_FULL]
         );
-        let files = rec.files.lock().unwrap();
-        assert_eq!(files.len(), BUFFER_CONTEXT_TABLE_SIZE + 1);
-        // The overflow buffer kept its original context word (unstamped).
-        let (bytes, word) = files[BUFFER_CONTEXT_TABLE_SIZE].clone();
-        drop(files);
-        assert_eq!(word, 0x51);
+        let overflow = {
+            let mut files = rec.files.lock().unwrap();
+            assert_eq!(files.len(), BUFFER_CONTEXT_TABLE_SIZE + 1);
+            files.pop().unwrap()
+        };
+        // The overflow buffer kept its original context word (un-tracked).
+        assert_eq!(overflow.context(), 0x51);
         // Returning it misses the table.
         let frin = router.file_buffer_return_in(0);
-        frin.target.invoke(frin.port_num, packet(&bytes, word));
+        frin.target.invoke(frin.port_num, overflow);
         assert_eq!(
             *rec.events.lock().unwrap(),
             vec![
@@ -540,6 +542,64 @@ mod tests {
         );
         let ret = rec.returned.lock().unwrap();
         assert_eq!(ret[0].1, FrameContext::default());
+        assert_eq!(ret[0].2, 0x51); // context word untouched on a miss
+    }
+
+    /// Regression (C++ parity): a buffer forwarded while the table was full
+    /// keeps whatever context word it arrived with, and that word can
+    /// numerically equal data belonging to a tracked entry. Because the
+    /// table keys on the buffer's live data address — which can never equal
+    /// a different outstanding allocation's — the un-tracked return must
+    /// MISS (default context, word untouched) and every tracked buffer must
+    /// still get its OWN context back afterwards.
+    #[test]
+    fn untracked_return_cannot_steal_a_tracked_entry() {
+        let (router, rec) = build(true, true);
+        // Fill the table; each entry's frame context is distinguished by
+        // sequence_count == its BufferManager-style context word (mgr 0).
+        for i in 0..BUFFER_CONTEXT_TABLE_SIZE {
+            let mut context = ctx(Apid::FwPacketFile);
+            context.sequence_count = i as u16;
+            feed(&router, packet(b"tracked", i as u32), &context);
+        }
+        // Overflow buffer with context word 7 — a small integer that a
+        // token-keyed table would have confused with an active entry.
+        feed(&router, packet(b"overflow", 7), &ctx(Apid::FwPacketFile));
+        assert_eq!(
+            *rec.events.lock().unwrap(),
+            vec![EVENTID_FILE_OUT_CONTEXT_TABLE_FULL]
+        );
+        let overflow = rec.files.lock().unwrap().pop().unwrap();
+        assert_eq!(overflow.context(), 7);
+        let frin = router.file_buffer_return_in(0);
+        frin.target.invoke(frin.port_num, overflow);
+        {
+            let ret = rec.returned.lock().unwrap();
+            assert_eq!(ret.len(), 1);
+            assert_eq!(ret[0].1, FrameContext::default()); // guaranteed miss
+            assert_eq!(ret[0].2, 7); // context word untouched
+        }
+        assert_eq!(
+            *rec.events.lock().unwrap(),
+            vec![
+                EVENTID_FILE_OUT_CONTEXT_TABLE_FULL,
+                EVENTID_BUFFER_CONTEXT_NOT_FOUND
+            ]
+        );
+        // Every tracked buffer still restores its OWN context — no entry
+        // was stolen or context word rewritten by the un-tracked return.
+        let tracked: Vec<Buffer> = rec.files.lock().unwrap().drain(..).collect();
+        for buffer in tracked {
+            let word = buffer.context();
+            frin.target.invoke(frin.port_num, buffer);
+            let ret = rec.returned.lock().unwrap();
+            let last = ret.last().unwrap();
+            assert_eq!(last.1.apid, Apid::FwPacketFile);
+            assert_eq!(u32::from(last.1.sequence_count), word); // its own frame context
+            assert_eq!(last.2, word); // its own context word
+        }
+        // No further BufferContextNotFound events.
+        assert_eq!(rec.events.lock().unwrap().len(), 2);
     }
 
     /// UnknownDataOut table-full uses its own event id.

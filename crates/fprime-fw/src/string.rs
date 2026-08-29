@@ -5,6 +5,15 @@
 //! is a `FwSizeStoreType` (u16) length prefix + bytes with NO NUL
 //! terminator; deserialization rejects lengths above the capacity, leaving
 //! the prior content in place. See `docs/cpp-analysis/fw-types.md`.
+//!
+//! C++ parity quirks reproduced here:
+//! - `ConstStringBase::serializeTo` / `StringBase::deserializeFrom` never
+//!   forward their `Endianness` mode to the buffer calls, so the u16 length
+//!   prefix is ALWAYS big-endian; the `Endianness` parameters below are
+//!   ignored the same way.
+//! - Content is C-string based: `length()` is a bounded NUL scan, so bytes
+//!   at and after the first `0x00` are invisible. Every content-setting
+//!   path here commits only the bytes before the first NUL.
 
 use crate::serial::{
     Deserialize, Endianness, LengthMode, SerBuf, SerBufAny, Serialize, SerializeStatus,
@@ -15,6 +24,12 @@ use fprime_config::{
     FW_PARAM_STRING_MAX_SIZE, FW_TLM_STRING_MAX_SIZE, FwSizeStoreType,
 };
 use std::fmt;
+
+/// Effective C-string length of `bytes`: index of the first NUL, or the full
+/// slice length (the C++ `StringUtils::string_length` bounded scan).
+fn c_str_len(bytes: &[u8]) -> usize {
+    bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())
+}
 
 /// Fixed-capacity truncating string holding at most `N` bytes
 /// (port of `Fw::StringTemplate<N>`, whose max length is also `N`).
@@ -48,9 +63,11 @@ impl<const N: usize> FwString<N> {
         self.set_bytes(s.as_bytes());
     }
 
-    /// Assign from raw bytes, silently truncating to `N` bytes.
+    /// Assign from raw bytes, silently truncating to `N` bytes. C++ parity:
+    /// `operator=` copies via `string_copy`, which stops at the first NUL of
+    /// the source, so bytes at and after a `0x00` are dropped.
     pub fn set_bytes(&mut self, src: &[u8]) {
-        let n = src.len().min(N);
+        let n = c_str_len(src).min(N);
         self.bytes[..n].copy_from_slice(&src[..n]);
         self.len = n;
     }
@@ -60,10 +77,12 @@ impl<const N: usize> FwString<N> {
         self.append_bytes(s.as_bytes());
     }
 
-    /// Append raw bytes, silently truncating at capacity.
+    /// Append raw bytes, silently truncating at capacity. C++ parity:
+    /// `operator+=` appends via `strncat`, which stops at the first NUL of
+    /// the source.
     pub fn append_bytes(&mut self, src: &[u8]) {
         let room = N - self.len;
-        let n = src.len().min(room);
+        let n = c_str_len(src).min(room);
         self.bytes[self.len..self.len + n].copy_from_slice(&src[..n]);
         self.len += n;
     }
@@ -114,14 +133,17 @@ impl<const N: usize> FwString<N> {
     /// Serialize with the length truncated to `max_len` first
     /// (C++ `serializeTo(buffer, maxLength)`, used e.g. to cap event string
     /// arguments at `FW_LOG_STRING_MAX_SIZE`).
+    ///
+    /// C++ parity: the endianness mode is ignored — `ConstStringBase`
+    /// never forwards it, so the u16 prefix is always big-endian.
     pub fn serialize_to_truncated(
         &self,
         buf: &mut dyn SerBufAny,
         max_len: usize,
-        e: Endianness,
+        _e: Endianness,
     ) -> SerializeStatus {
         let n = self.len.min(max_len);
-        buf.serialize_bytes(&self.bytes[..n], LengthMode::IncludeLength, e)
+        buf.serialize_bytes(&self.bytes[..n], LengthMode::IncludeLength, Endianness::Big)
     }
 
     /// Size when serialized truncated to `max_len`.
@@ -174,8 +196,11 @@ impl<const N: usize> fmt::Write for FwString<N> {
 
 impl<const N: usize> Serialize for FwString<N> {
     /// Wire format: `[u16 length][length bytes]`, no NUL terminator.
-    fn serialize_to(&self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
-        buf.serialize_bytes(self.as_bytes(), LengthMode::IncludeLength, e)
+    /// C++ parity: `ConstStringBase::serializeTo` never forwards its
+    /// endianness mode, so the u16 prefix is always big-endian and the
+    /// `Endianness` argument is ignored.
+    fn serialize_to(&self, buf: &mut dyn SerBufAny, _e: Endianness) -> SerializeStatus {
+        buf.serialize_bytes(self.as_bytes(), LengthMode::IncludeLength, Endianness::Big)
     }
     fn serialized_size(&self) -> usize {
         FwString::serialized_size(self)
@@ -187,13 +212,26 @@ impl<const N: usize> Deserialize for FwString<N> {
     /// the remaining bytes is `DeserSizeMismatch` with the prefix consumed
     /// and the prior content kept (C++ approximately: the failure path never
     /// copies, it only re-NUL-terminates its local buffer).
-    fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+    ///
+    /// C++ parity: `StringBase::deserializeFrom` never forwards its
+    /// endianness mode, so the u16 prefix is always read big-endian and the
+    /// `Endianness` argument is ignored. The full stored count is consumed
+    /// from `buf`, but the committed content stops at the first NUL byte —
+    /// the C++ copy is NUL-terminated storage whose `length()` is a bounded
+    /// scan, so bytes after an interior `0x00` are invisible.
+    fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, _e: Endianness) -> SerializeStatus {
         let mut scratch = [0u8; N];
         let mut len = N;
-        let status = buf.deserialize_bytes(&mut scratch, &mut len, LengthMode::IncludeLength, e);
+        let status = buf.deserialize_bytes(
+            &mut scratch,
+            &mut len,
+            LengthMode::IncludeLength,
+            Endianness::Big,
+        );
         if status == SerializeStatus::Ok {
-            self.bytes[..len].copy_from_slice(&scratch[..len]);
-            self.len = len;
+            let n = c_str_len(&scratch[..len]);
+            self.bytes[..n].copy_from_slice(&scratch[..n]);
+            self.len = n;
         }
         status
     }
@@ -320,6 +358,90 @@ mod tests {
         );
         assert_eq!(buf.as_slice(), &[0x00, 0x04, b'a', b'b', b'c', b'd']);
         assert_eq!(s.serialized_truncated_size(4), 6);
+    }
+
+    #[test]
+    fn length_prefix_is_big_endian_regardless_of_mode() {
+        // C++ parity: ConstStringBase::serializeTo / StringBase::deserializeFrom
+        // never forward their endianness mode; the u16 prefix stays big-endian
+        // even when the caller passes Little.
+        let s: FwString<40> = "ABC".into();
+        let mut buf = LinearBuffer::<64>::new();
+        assert_eq!(
+            s.serialize_to(&mut buf, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(buf.as_slice(), &[0x00, 0x03, b'A', b'B', b'C']);
+
+        let mut out = FwString::<40>::new();
+        assert_eq!(
+            out.deserialize_from(&mut buf, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(out, "ABC");
+    }
+
+    #[test]
+    fn truncated_serialize_prefix_is_big_endian_regardless_of_mode() {
+        let s: FwString<200> = "abcdefgh".into();
+        let mut buf = LinearBuffer::<32>::new();
+        assert_eq!(
+            s.serialize_to_truncated(&mut buf, 4, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(buf.as_slice(), &[0x00, 0x04, b'a', b'b', b'c', b'd']);
+    }
+
+    #[test]
+    fn deserialized_content_stops_at_first_nul() {
+        // C++ parity: length() is a bounded NUL scan, so wire content
+        // [00 03]['a' 00 'b'] deserializes to an effective length of 1 and
+        // re-serializes as [00 01]['a'], while the full stored count is
+        // still consumed from the source buffer.
+        let mut buf = LinearBuffer::<16>::new();
+        assert_eq!(
+            buf.serialize_bytes(
+                &[b'a', 0x00, b'b'],
+                LengthMode::IncludeLength,
+                Endianness::Big
+            ),
+            SerializeStatus::Ok
+        );
+        let mut out = FwString::<8>::new();
+        assert_eq!(
+            out.deserialize_from(&mut buf, Endianness::Big),
+            SerializeStatus::Ok
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out.as_bytes(), b"a");
+        assert_eq!(
+            buf.deserialize_size_left(),
+            0,
+            "all 3 stored bytes consumed"
+        );
+
+        let mut re = LinearBuffer::<16>::new();
+        assert_eq!(
+            out.serialize_to(&mut re, Endianness::Big),
+            SerializeStatus::Ok
+        );
+        assert_eq!(re.as_slice(), &[0x00, 0x01, b'a']);
+    }
+
+    #[test]
+    fn set_and_append_stop_at_first_nul() {
+        // C++ parity: operator= (string_copy) and operator+= (strncat) both
+        // stop at the source's first NUL.
+        let mut s = FwString::<16>::new();
+        s.set_bytes(b"a\x00b");
+        assert_eq!(s.len(), 1);
+        assert_eq!(s, "a");
+        s.append_bytes(b"cd\x00e");
+        assert_eq!(s, "acd");
+
+        let mut t = FwString::<16>::new();
+        t.set_bytes(b"\x00xyz");
+        assert!(t.is_empty());
     }
 
     #[test]

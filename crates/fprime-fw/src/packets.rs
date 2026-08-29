@@ -55,9 +55,12 @@ impl CmdPacket {
 
 impl Deserialize for CmdPacket {
     fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
-        // descriptor: raw u16 compare, no enum validation (C++ deserializeBase)
+        // descriptor: raw u16 compare, no enum validation (C++ deserializeBase).
+        // C++ parity: ComPacket::deserializeBase reads the descriptor with the
+        // defaulted BIG mode — the packet's endianness mode is never forwarded
+        // to the descriptor, only to the fields after it.
         let mut descriptor: FwPacketDescriptorType = 0;
-        fw_try!(buf.deserialize_u16(&mut descriptor, e));
+        fw_try!(buf.deserialize_u16_be(&mut descriptor));
         if descriptor != ComPacketType::FwPacketCommand as FwPacketDescriptorType {
             return SerializeStatus::DeserTypeMismatch;
         }
@@ -130,7 +133,10 @@ impl LogPacket {
 
 impl Serialize for LogPacket {
     fn serialize_to(&self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
-        fw_try!(buf.serialize_u16(ComPacketType::FwPacketLog as FwPacketDescriptorType, e));
+        // C++ parity: ComPacket::serializeBase writes the descriptor with the
+        // defaulted BIG mode; the packet's endianness mode only reaches the
+        // fields after it.
+        fw_try!(buf.serialize_u16_be(ComPacketType::FwPacketLog as FwPacketDescriptorType));
         fw_try!(buf.serialize_u32(self.id, e));
         fw_try!(self.time_tag.serialize_to(buf, e));
         // data without a length prefix for the ground software (C++ parity)
@@ -146,8 +152,10 @@ impl Serialize for LogPacket {
 
 impl Deserialize for LogPacket {
     fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+        // C++ parity: deserializeBase reads the descriptor big-endian
+        // regardless of the packet's endianness mode.
         let mut descriptor: FwPacketDescriptorType = 0;
-        fw_try!(buf.deserialize_u16(&mut descriptor, e));
+        fw_try!(buf.deserialize_u16_be(&mut descriptor));
         if descriptor != ComPacketType::FwPacketLog as FwPacketDescriptorType {
             return SerializeStatus::DeserTypeMismatch;
         }
@@ -372,6 +380,25 @@ mod tests {
     }
 
     #[test]
+    fn cmd_packet_descriptor_is_big_endian_regardless_of_mode() {
+        // C++ parity: ComPacket::deserializeBase reads the descriptor with
+        // the defaulted BIG mode even when the packet mode is LITTLE; only
+        // the opcode honors the mode.
+        let mut buf = ComBuffer::new();
+        let bytes = [
+            0x00, 0x00, // descriptor = FW_PACKET_COMMAND, big-endian always
+            0x05, 0x00, 0x00, 0x00, // opcode 5, little-endian
+        ];
+        assert_eq!(buf.set_buff(&bytes), SerializeStatus::Ok);
+        let mut pkt = CmdPacket::new();
+        assert_eq!(
+            pkt.deserialize_from(&mut buf, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(pkt.get_opcode(), 5);
+    }
+
+    #[test]
     fn cmd_packet_rejects_wrong_descriptor() {
         let mut buf = ComBuffer::new();
         assert_eq!(
@@ -456,6 +483,33 @@ mod tests {
             SerializeStatus::Ok
         );
         assert_eq!(out.get_log_buffer().get_size(), 0);
+    }
+
+    #[test]
+    fn log_packet_descriptor_is_big_endian_regardless_of_mode() {
+        // C++ parity: ComPacket::serializeBase/deserializeBase pin the
+        // descriptor to BIG; the id (and later fields) honor the mode.
+        let mut pkt = LogPacket::new();
+        pkt.set_id(0x0000_0042);
+        pkt.set_time_tag(test_time());
+        let mut buf = ComBuffer::new();
+        assert_eq!(
+            pkt.serialize_to(&mut buf, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(
+            &buf.as_slice()[..6],
+            &[0x00, 0x02, 0x42, 0x00, 0x00, 0x00],
+            "descriptor big-endian, id little-endian"
+        );
+
+        let mut out = LogPacket::new();
+        assert_eq!(
+            out.deserialize_from(&mut buf, Endianness::Little),
+            SerializeStatus::Ok
+        );
+        assert_eq!(out.get_id(), 0x0000_0042);
+        assert_eq!(out.get_time_tag(), &test_time());
     }
 
     #[test]

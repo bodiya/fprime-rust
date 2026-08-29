@@ -59,8 +59,13 @@ const MSG_TYPE_CMD: FwEnumStoreType = 1;
 const CMD_PRIORITY: FwQueuePriorityType = 1;
 
 /// Queue message size: envelope 6 + opcode 4 + cmdSeq 4 + nested
-/// CmdArgBuffer (2 + 13 max for `SETTINGS`) = 29; rounded up with margin.
-pub const QUEUE_MSG_SIZE: FwSizeType = 64;
+/// length-prefixed `CmdArgBuffer` (2 + 506) = 522; rounded up to 524.
+/// C++ parity: the autocoder sizes queue messages for a FULL
+/// `CmdArgBuffer` (not just the largest declared command), so an
+/// oversized uplinked arg buffer is enqueued intact and answered with
+/// `FormatError` by the handler's residual-bytes check instead of
+/// asserting in the port adapter.
+pub const QUEUE_MSG_SIZE: FwSizeType = 524;
 
 /// `SETTINGS` opcode (component-relative).
 pub const OPCODE_SETTINGS: FwOpcodeType = 0;
@@ -690,6 +695,34 @@ mod tests {
         );
         // No event, no state change from any failed command.
         assert!(ground.events.lock().unwrap().is_empty());
+        assert!(!comp.state.lock().unwrap().running);
+    }
+
+    /// Regression: an oversized uplinked arg buffer (larger than any
+    /// declared command) must NOT assert in the async command adapter —
+    /// C++ parity sizes the queue message for a full `CmdArgBuffer`, so
+    /// the command is enqueued intact and the handler's residual-bytes
+    /// check answers `FormatError`.
+    #[test]
+    fn oversized_command_args_answer_format_error() {
+        let (comp, ground) = build();
+        // 100 arg bytes for SETTINGS: the four fields deserialize (13
+        // bytes), the 87 residual bytes trigger FormatError.
+        let mut args = settings_args(4, 2.0, 0.0, 0);
+        args.resize(100, 0xAB);
+        send_cmd(&comp, OPCODE_SETTINGS, 1, &args);
+        // A maximum-size arg buffer must also fit the queue message.
+        let full = vec![0u8; CmdArgBuffer::new().capacity()];
+        send_cmd(&comp, OPCODE_TOGGLE, 2, &full);
+        tick(&comp);
+        assert_eq!(
+            *ground.responses.lock().unwrap(),
+            vec![
+                (ID_BASE + OPCODE_SETTINGS, 1, CmdResponse::FormatError),
+                (ID_BASE + OPCODE_TOGGLE, 2, CmdResponse::FormatError),
+            ]
+        );
+        // No state change from the failed commands.
         assert!(!comp.state.lock().unwrap().running);
     }
 

@@ -157,19 +157,20 @@ fn map_io_error(error: &std::io::Error) -> Status {
     use std::io::ErrorKind;
     match error.kind() {
         // ENOSPC | EFBIG => NO_SPACE
-        ErrorKind::StorageFull | ErrorKind::FileTooLarge | ErrorKind::QuotaExceeded => {
-            Status::NoSpace
-        }
+        ErrorKind::StorageFull | ErrorKind::FileTooLarge => Status::NoSpace,
         // ENOENT => DOESNT_EXIST
         ErrorKind::NotFound => Status::DoesntExist,
         // EPERM | EACCES => NO_PERMISSION
-        ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => Status::NoPermission,
+        ErrorKind::PermissionDenied => Status::NoPermission,
         // EEXIST => FILE_EXISTS
         ErrorKind::AlreadyExists => Status::FileExists,
         // ENOSYS | EOPNOTSUPP => NOT_SUPPORTED
         ErrorKind::Unsupported => Status::NotSupported,
         // EINVAL => INVALID_ARGUMENT
         ErrorKind::InvalidInput => Status::InvalidArgument,
+        // Unlike errno_to_filesystem_status, the C++ file table has NO
+        // EROFS or EDQUOT cases: ReadOnlyFilesystem and QuotaExceeded
+        // deliberately fall through to OTHER_ERROR here.
         _ => Status::OtherError,
     }
 }
@@ -591,6 +592,30 @@ mod tests {
 
     fn write_file(path: &std::path::Path, contents: &[u8]) {
         std::fs::write(path, contents).expect("test file write");
+    }
+
+    #[test]
+    fn errno_table_has_no_erofs_or_edquot_cases() {
+        use std::io::{Error, ErrorKind};
+        // The C++ errno_to_file_status table (unlike the filesystem table)
+        // has no EROFS or EDQUOT cases — both hit default OTHER_ERROR.
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::ReadOnlyFilesystem)),
+            Status::OtherError
+        );
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::QuotaExceeded)),
+            Status::OtherError
+        );
+        // EPERM/EACCES and ENOSPC/EFBIG remain mapped.
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::PermissionDenied)),
+            Status::NoPermission
+        );
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::StorageFull)),
+            Status::NoSpace
+        );
     }
 
     #[test]

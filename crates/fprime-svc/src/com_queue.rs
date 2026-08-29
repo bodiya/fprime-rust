@@ -537,13 +537,15 @@ impl ComQueue {
 
     // -- Command handlers ----------------------------------------------------
 
-    /// C++ `getQueueNum`.
+    /// C++ `getQueueNum`: int-promoted add narrowed back to `FwIndexType`.
+    /// A ground-supplied index near `FwIndexType::MAX` must wrap to a
+    /// negative value (the C++ defined narrowing cast) — not overflow-panic
+    /// — so the callers' range check answers VALIDATION_ERROR.
     fn get_queue_num(queue_type: QueueType, port_num: FwIndexType) -> FwIndexType {
-        port_num
-            + match queue_type {
-                QueueType::ComQueue => 0,
-                QueueType::BufferQueue => COM_PORT_COUNT as FwIndexType,
-            }
+        port_num.wrapping_add(match queue_type {
+            QueueType::ComQueue => 0,
+            QueueType::BufferQueue => COM_PORT_COUNT as FwIndexType,
+        })
     }
 
     /// Drain one queue, returning buffer-queue entries via `bufferReturnOut`.
@@ -1536,6 +1538,32 @@ mod tests {
     fn flush_queue_validation_error() {
         let (comp, rec) = built_with_id_base(&default_table());
         run_cmd(&comp, OPCODE_FLUSH_QUEUE, 2, &[0, 0, 9]); // com index 9
+        assert_eq!(
+            rec.responses.lock().unwrap()[0].2,
+            CmdResponse::ValidationError
+        );
+    }
+
+    /// Regression: BUFFER_QUEUE with an index near i16::MAX wraps in
+    /// `get_queue_num` (the C++ int-promote + narrow) and answers
+    /// ValidationError instead of panicking on overflow.
+    #[test]
+    fn flush_queue_index_overflow_is_validation_error() {
+        let (comp, rec) = built_with_id_base(&default_table());
+        // FLUSH_QUEUE(BUFFER_QUEUE, 32767): [u8 1][i16 0x7FFF]
+        run_cmd(&comp, OPCODE_FLUSH_QUEUE, 1, &[1, 0x7F, 0xFF]);
+        assert_eq!(
+            rec.responses.lock().unwrap()[0].2,
+            CmdResponse::ValidationError
+        );
+    }
+
+    /// Regression: same overflow path through SET_QUEUE_PRIORITY.
+    #[test]
+    fn set_queue_priority_index_overflow_is_validation_error() {
+        let (comp, rec) = built_with_id_base(&default_table());
+        // SET_QUEUE_PRIORITY(BUFFER_QUEUE, 32767, 0): [u8 1][i16 0x7FFF][i16 0]
+        run_cmd(&comp, OPCODE_SET_QUEUE_PRIORITY, 1, &[1, 0x7F, 0xFF, 0, 0]);
         assert_eq!(
             rec.responses.lock().unwrap()[0].2,
             CmdResponse::ValidationError

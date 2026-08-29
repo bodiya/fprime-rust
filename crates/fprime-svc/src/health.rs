@@ -24,8 +24,8 @@ use fprime_comp::{
     PortRef, QueueFullPolicy, QueuedBase, SchedPort, TlmGlue, WatchDogPort,
 };
 use fprime_config::{
-    FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
-    FwSizeType, HEALTH_PING_PORTS,
+    FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType,
+    FwOpcodeType, FwQueuePriorityType, FwSizeType, HEALTH_PING_PORTS,
 };
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, CmdStringArg, Enabled, Endianness, LinearBuffer, LogSeverity,
@@ -38,9 +38,13 @@ use std::sync::{Arc, Mutex};
 const MSG_TYPE_PING_RETURN: FwEnumStoreType = 1;
 const MSG_TYPE_CMD_IN: FwEnumStoreType = 2;
 
-/// Queue message size: max over async invocations (the command envelope:
-/// 6 + 4 + 4 + 2 + (2 + 40 + 4 + 4) = 66 for `HLTH_CHNG_PING`).
-const MSG_SIZE: usize = 128;
+/// Queue message size: max over async invocations. The C++ autocoder sizes
+/// the message buffer for an async command to hold a FULL `Fw::CmdArgBuffer`
+/// (CmdDispatcher forwards an uplinked packet's raw arg bytes unchecked, up
+/// to 506): 6 (envelope) + 4 (opCode) + 4 (cmdSeq) + 2 + 506 (length-
+/// prefixed `CmdArgBuffer`) = 522. Oversized args then enqueue normally and
+/// the handlers' residual-bytes checks answer FORMAT_ERROR (C++ parity).
+const MSG_SIZE: usize = 6 + 4 + 4 + 2 + FW_CMD_ARG_BUFFER_MAX_SIZE;
 
 const PING_RETURN_PRIORITY: FwQueuePriorityType = 1;
 const CMD_IN_PRIORITY: FwQueuePriorityType = 1;
@@ -956,6 +960,24 @@ mod tests {
                 (opcode, 2, CmdResponse::FormatError),
                 (opcode, 3, CmdResponse::FormatError),
             ]
+        );
+    }
+
+    /// Regression: a command carrying a FULL `CmdArgBuffer` (506 bytes —
+    /// what CmdDispatcher can forward from a malformed uplink) must fit the
+    /// queue message (no assert on the dispatching thread) and answer
+    /// FORMAT_ERROR from the handler's residual-bytes check, C++ parity
+    /// (the autocoded queue message is sized for a full arg buffer).
+    #[test]
+    fn full_cmd_arg_buffer_enqueues_and_answers_format_error() {
+        let (comp, ground) = build(&[], 8);
+        let opcode = ID_BASE + Health::OPCODE_HLTH_ENABLE;
+        let args = [0xABu8; FW_CMD_ARG_BUFFER_MAX_SIZE];
+        send_cmd(&comp, opcode, 9, &args); // must not panic
+        run(&comp);
+        assert_eq!(
+            *ground.responses.lock().unwrap(),
+            vec![(opcode, 9, CmdResponse::FormatError)]
         );
     }
 

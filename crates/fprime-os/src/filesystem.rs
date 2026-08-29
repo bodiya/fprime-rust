@@ -97,8 +97,6 @@ fn map_io_error(error: &std::io::Error) -> Status {
         ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => Status::NoPermission,
         ErrorKind::AlreadyExists => Status::AlreadyExists,
         ErrorKind::NotADirectory => Status::NotDir,
-        ErrorKind::IsADirectory => Status::IsDir,
-        ErrorKind::DirectoryNotEmpty => Status::NotEmpty,
         // ENAMETOOLONG => INVALID_PATH in C++; std has no stable ErrorKind
         // for it at the 1.85 floor, so it lands in OtherError (noted
         // divergence).
@@ -108,10 +106,13 @@ fn map_io_error(error: &std::io::Error) -> Status {
         }
         // EMLINK => FILE_LIMIT
         ErrorKind::TooManyLinks => Status::FileLimit,
-        ErrorKind::ResourceBusy => Status::Busy,
         // EXDEV => EXDEV_ERROR
         ErrorKind::CrossesDevices => Status::ExdevError,
         ErrorKind::Unsupported => Status::NotSupported,
+        // The C++ table has NO cases for EISDIR, ENOTEMPTY, or EBUSY: they
+        // hit the default and become OTHER_ERROR, so IsADirectory,
+        // DirectoryNotEmpty, and ResourceBusy deliberately fall through
+        // here (IS_DIR/NOT_EMPTY/BUSY are never produced by errno mapping).
         _ => Status::OtherError,
     }
 }
@@ -503,11 +504,44 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(&file, b"x").unwrap();
 
-        // Non-empty directory: NOT_EMPTY.
-        assert_eq!(remove_directory(sub.to_str().unwrap()), Status::NotEmpty);
+        // Non-empty directory: ENOTEMPTY has no case in the C++
+        // errno_to_filesystem_status table, so it is OTHER_ERROR (not
+        // NOT_EMPTY).
+        assert_eq!(remove_directory(sub.to_str().unwrap()), Status::OtherError);
+        // remove_file on a directory: EISDIR likewise falls to OTHER_ERROR.
+        assert_eq!(remove_file(sub.to_str().unwrap()), Status::OtherError);
         assert_eq!(remove_file(file.to_str().unwrap()), Status::OpOk);
         assert_eq!(remove_directory(sub.to_str().unwrap()), Status::OpOk);
         assert_eq!(remove_file(file.to_str().unwrap()), Status::DoesntExist);
+    }
+
+    #[test]
+    fn errno_table_has_no_isdir_notempty_busy_cases() {
+        use std::io::{Error, ErrorKind};
+        // C++ errno_to_filesystem_status has no EISDIR/ENOTEMPTY/EBUSY
+        // cases — all three fall to OTHER_ERROR, never IS_DIR/NOT_EMPTY/BUSY.
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::IsADirectory)),
+            Status::OtherError
+        );
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::DirectoryNotEmpty)),
+            Status::OtherError
+        );
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::ResourceBusy)),
+            Status::OtherError
+        );
+        // EROFS and EDQUOT ARE in the filesystem table (unlike the file
+        // table): NO_PERMISSION and NO_SPACE respectively.
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::ReadOnlyFilesystem)),
+            Status::NoPermission
+        );
+        assert_eq!(
+            map_io_error(&Error::from(ErrorKind::QuotaExceeded)),
+            Status::NoSpace
+        );
     }
 
     #[test]

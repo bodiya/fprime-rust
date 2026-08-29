@@ -35,3 +35,10 @@ all = { level = "warn", priority = -1 }
 
 [profile.release]
 lto = true
+# C++ FW_ASSERT parity: a failed fw_assert! (or any other panic, e.g. a
+# poisoned component mutex) must fail-stop the whole deployment like the C++
+# assert(false)/SIGABRT — not unwind one thread and leave a half-dead process
+# with that component's work silently stopped. Dev/test builds intentionally
+# diverge (unwind) so #[should_panic]/catch_unwind tests work; see
+# crates/fprime-fw/src/assert.rs.
+panic = "abort"

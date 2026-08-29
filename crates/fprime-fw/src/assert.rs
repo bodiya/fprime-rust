@@ -4,7 +4,15 @@
 //! level: on failure the message `Assert: "file:line" arg1 ... argN` is
 //! built (truncated to `FW_ASSERT_TEXT_SIZE`), then dispatched to a
 //! registered [`AssertHook`] if any, else printed to stderr followed by a
-//! panic (the C++ `assert(false)`).
+//! panic.
+//!
+//! Fail-stop contract (C++ parity): the C++ `assert(false)` aborts the whole
+//! process (SIGABRT), which a supervisor/watchdog can observe. The panic here
+//! matches that only because the workspace release profile sets
+//! `panic = "abort"` — an unwinding panic would kill just the failing thread
+//! and leave the deployment running half-dead. Dev/test builds intentionally
+//! keep the unwind strategy so `#[should_panic]`/`catch_unwind` tests work;
+//! do not rely on surviving a failed `fw_assert!` in flight code.
 
 use fprime_config::{FW_ASSERT_TEXT_SIZE, FwAssertArgType};
 use std::sync::RwLock;
@@ -29,7 +37,10 @@ pub trait AssertHook: Send + Sync {
         eprintln!("{msg}");
     }
 
-    /// Take the assert action. Default: panic (the C++ `assert(false)`).
+    /// Take the assert action. Default: panic — which is the C++
+    /// `assert(false)` process abort in release builds (the workspace sets
+    /// `panic = "abort"`) and an unwind in dev/test builds so tests can
+    /// observe it.
     fn do_assert(&self) {
         panic!("FW_ASSERT failed");
     }
@@ -164,6 +175,32 @@ mod tests {
         });
         assert!(text.contains("Assert: \""), "got: {text}");
         assert!(text.contains(" 9 8"), "got: {text}");
+    }
+
+    #[test]
+    fn release_profile_aborts_on_panic_for_cpp_fail_stop_parity() {
+        // C++ FW_ASSERT terminates the whole process (assert(false) ->
+        // SIGABRT); an unwinding panic would kill only the failing thread
+        // and leave the deployment half-dead with that component's work
+        // silently stopped. The workspace release profile must therefore
+        // abort on panic. Dev/test builds intentionally diverge (unwind) so
+        // #[should_panic]/catch_unwind tests keep working.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let manifest =
+            std::fs::read_to_string(manifest).expect("workspace Cargo.toml must be readable");
+        let release = manifest
+            .split("[profile.release]")
+            .nth(1)
+            .expect("workspace must define [profile.release]");
+        // only inspect the [profile.release] table, not later tables
+        let release = release.split("\n[").next().unwrap_or(release);
+        assert!(
+            release.lines().any(|l| {
+                let l = l.split('#').next().unwrap_or("").replace(' ', "");
+                l == "panic=\"abort\""
+            }),
+            "[profile.release] must set panic = \"abort\" (C++ FW_ASSERT fail-stop parity)"
+        );
     }
 
     type SeenAsserts = Arc<Mutex<Vec<(String, u32, Vec<i32>)>>>;

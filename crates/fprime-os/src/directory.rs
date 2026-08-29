@@ -190,7 +190,8 @@ impl Directory {
 
     /// Fill `filenames` with entry names (port of `readDirectory`):
     /// rewinds before and after; `filename_count` receives the number of
-    /// entries stored.
+    /// entries stored. C++ parity: a mid-stream read failure returns
+    /// [`Status::OtherError`] with `filename_count` left at 0.
     pub fn read_directory(
         &mut self,
         filenames: &mut [FileNameString],
@@ -203,22 +204,36 @@ impl Directory {
         if self.rewind() != Status::OpOk {
             return Status::OtherError;
         }
-        *filename_count = 0;
-        let mut return_status = Status::OpOk;
-        for slot in filenames.iter_mut() {
-            match self.read(slot) {
-                Status::OpOk => *filename_count += 1,
-                Status::NoMoreFiles => break,
-                other => {
-                    return_status = other;
-                    break;
-                }
-            }
+        let status = Self::fill_from_reader(filenames, filename_count, |slot| self.read(slot));
+        if status != Status::OpOk {
+            return status;
         }
         if self.rewind() != Status::OpOk {
             return Status::OtherError;
         }
-        return_status
+        Status::OpOk
+    }
+
+    /// The `readDirectory` fill loop (C++ Os/Directory.cpp lines 125-138):
+    /// any read status other than OP_OK / NO_MORE_FILES returns OTHER_ERROR
+    /// immediately, leaving `filename_count` at 0 (the C++ early return
+    /// fires before `filenameCount = index` and skips the trailing rewind).
+    fn fill_from_reader(
+        filenames: &mut [FileNameString],
+        filename_count: &mut FwSizeType,
+        mut read: impl FnMut(&mut FileNameString) -> Status,
+    ) -> Status {
+        *filename_count = 0;
+        let mut index: FwSizeType = 0;
+        for slot in filenames.iter_mut() {
+            match read(slot) {
+                Status::OpOk => index += 1,
+                Status::NoMoreFiles => break,
+                _ => return Status::OtherError,
+            }
+        }
+        *filename_count = index;
+        Status::OpOk
     }
 
     /// Close the directory (idempotent).
@@ -343,5 +358,28 @@ mod tests {
         let mut two = [const { FileNameString::new() }; 2];
         assert_eq!(directory.read_directory(&mut two, &mut count), Status::OpOk);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn read_directory_mid_stream_failure_is_other_error_with_zero_count() {
+        // C++ readDirectory returns OTHER_ERROR immediately on any read
+        // status other than OP_OK/NO_MORE_FILES, before filenameCount is
+        // assigned — the caller sees OTHER_ERROR and count 0, never the raw
+        // read status or a partial count.
+        let mut names = [const { FileNameString::new() }; 4];
+        let mut count: FwSizeType = 99;
+        let mut reads = 0;
+        let status = Directory::fill_from_reader(&mut names, &mut count, |slot| {
+            reads += 1;
+            if reads <= 2 {
+                slot.set("entry");
+                Status::OpOk
+            } else {
+                // The one reachable mid-stream failure (readdir error).
+                Status::BadDescriptor
+            }
+        });
+        assert_eq!(status, Status::OtherError);
+        assert_eq!(count, 0);
     }
 }

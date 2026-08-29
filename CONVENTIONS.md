@@ -34,7 +34,10 @@ to build; this file defines how the code must look and behave.
   invariants that C++ also asserts (document each with a comment referencing
   the C++ behavior). Mutex poisoning: `.lock()` failures may panic (a
   poisoned lock means a thread already panicked — matches FW_ASSERT
-  philosophy).
+  philosophy). Note the C++ FW_ASSERT fail-stop is process-wide: release
+  builds set `panic = "abort"` in the workspace profile so any panic
+  (fw_assert or poison) takes the whole deployment down like the C++
+  `assert(false)`; dev/test builds unwind for testability.
 
 ## Memory discipline
 
