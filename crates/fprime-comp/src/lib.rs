@@ -20,6 +20,10 @@
 //!   equivalent to the autocoded base-class glue.
 //! - [`escrow`]: [`BufferEscrow`] — safe replacement for the C++ practice of
 //!   serializing raw `Fw::Buffer` pointers into async queue messages.
+//! - [`macros`]: the component-side codegen layer —
+//!   [`component_msg_types!`], [`input_port_adapter!`] and
+//!   [`async_input_port_adapter!`] generate the input-port thunks, envelope
+//!   codec and message-type discriminants that the C++ FPP autocoder emits.
 //!
 //! The integration test `tests/example_component.rs` is the normative
 //! exemplar of how a component is assembled from these pieces.
@@ -27,10 +31,19 @@
 pub mod active;
 pub mod escrow;
 pub mod glue;
+pub mod macros;
 pub mod msg;
 pub mod obj;
 pub mod port;
 pub mod queued;
+
+/// The project configuration crate, re-exported so macro expansions and
+/// downstream code can reach the `Fw*` type aliases through this crate.
+pub use fprime_config as config;
+/// The `Fw` core layer, re-exported for macro expansions.
+pub use fprime_fw as fw;
+/// The `Os` layer, re-exported for macro expansions.
+pub use fprime_os as os;
 
 pub use active::{ActiveBase, ActiveComponent, Lifecycle};
 pub use escrow::BufferEscrow;

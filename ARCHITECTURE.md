@@ -29,9 +29,14 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 
 **Non-goals (phase 1)**
 
-- No FPP autocoder. Components hand-implement the contract the C++ autocoder
-  generates, following the pattern in this document. A derive/proc-macro layer
-  can come later.
+- No FPP *compiler*: there is no `.fpp` parser and no build-time code
+  generator. Components declare the contract the C++ autocoder generates in
+  Rust source, with the declarative-macro codegen layer described under
+  "Codegen layer" below (`fpp_enum!`, `fpp_struct!`, `fpp_array!`,
+  `component_msg_types!`, `input_port_adapter!`,
+  `async_input_port_adapter!`) collapsing the mechanical parts. Anything a
+  macro cannot express faithfully stays hand-written — the macros never
+  half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
 - Not ported yet (see the status matrix in README.md): CmdSequencer,
   FileUplink/FileDownlink/FileManager, data products (Dp*), TlmPacketizer,
@@ -466,6 +471,84 @@ in this exact phase order:
 8. run (e.g. blocking timer loop driving the rate-group driver),
 9. teardown: `exit()` all active, `join()` all, then driver stop/join,
 then cleanup.
+
+## Codegen layer (FPP-style macros)
+
+What the C++ FPP autocoder emits is mostly mechanical: `Fw::Serializable`
+classes for the user-defined data types, and, per component, the static
+input-port thunks plus the async queue-message codec. That is what this
+layer generates — with `macro_rules!` only. **No proc macros**: `syn`/`quote`
+are third-party crates, and the workspace is zero-dependency, so the codegen
+layer costs the build nothing and stays auditable as ordinary source.
+
+The macros are declarative in both senses: they are `macro_rules!`, and their
+keys are the FPP model's own vocabulary (`component`, `port`, `input`,
+`handler`, `priority`, `queue_full`, `pre_msg_hook`, `msg_type`, `default`).
+Every generated public item carries a doc comment, and each macro accepts doc
+comments on the type and its members.
+
+### Data types — `fprime-fw` (`fw::fpp`)
+
+| macro | C++ counterpart | generates |
+|-------|-----------------|-----------|
+| `fpp_enum!` | `<Name>EnumAc` | `#[repr(R)]` enum with exact discriminants; `Default` from the `default` clause; `TryFrom<R>`; `SERIALIZED_SIZE`, `VALUES`, `NUM_CONSTANTS`, `as_repr`, `is_valid`, `is_valid_repr`; `Serialize`/`Deserialize` at the representation width with strict decode |
+| `fpp_struct!` | `<Name>SerializableAc` | struct with `pub` members in declaration order; optional `get_*`/`set_*` accessor pairs; `new(..)` and `set_all(..)`; `Default` from a `default { .. }` clause; `Debug`/`PartialEq`; `SERIALIZED_SIZE`; member-order `Serialize`/`Deserialize` |
+| `fpp_array!` | `<Name>ArrayAc` | `[T; N]` newtype with `SIZE`, `SERIALIZED_SIZE`, `new`/`fill`/`From`, `Index`/`IndexMut`, `iter`, `Default` (elementwise, `default fill E`, or `default [..]`); elementwise `Serialize`/`Deserialize` |
+
+Wire formats are the generated C++ ones exactly: an enum is its
+representation value big-endian; a struct is its members in declaration
+order with **no** header, count or padding; an array is its elements
+consecutively with **no** count prefix. Deserialization is
+commit-on-success for structs and arrays (a partial or invalid message
+leaves the target unmodified) and strict for enums (an undeclared value
+consumes its bytes and returns `DeserFormatError`).
+
+The `FppSized` trait carries the compile-time `SERIALIZED_SIZE` that the
+generated C++ classes expose as a static constant — the *maximum* on-wire
+size, used to size buffers; `Serialize::serialized_size` still reports the
+actual size of a given value (they differ only for string members).
+
+Two `macro_rules!` limitations are accepted rather than worked around:
+identifiers cannot be concatenated, so `get_x`/`set_x` accessor names are
+declared explicitly (`field: T { get_field, set_field }`, optional — members
+are always `pub`), and the FPP `format` qualifier / `toString` is not
+generated (`Debug` covers diagnostics; no consumer needs it yet).
+
+### Component boilerplate — `fprime-comp` (`comp::macros`)
+
+| macro | generates |
+|-------|-----------|
+| `component_msg_types!` | the component's queue-message discriminants as associated consts, numbered from 1 (0 is the EXIT sentinel) |
+| `input_port_adapter!` | SYNC/GUARDED input: adapter struct + port-trait impl forwarding to a named handler on the caller's thread + the `fn <name>(self: &Arc<Self>, port_num) -> PortRef<dyn XPort>` factory |
+| `async_input_port_adapter!` | ASYNC input: the same, plus the byte-exact envelope write (`[msg_type i32 BE][port_num i16 BE][args in order]`), the queue-full policy, an optional `pre_msg_hook`/`overflow_hook`, and the matching `fn <name>_deserialize(msg) -> Option<(args..)>` used by `dispatch_message` |
+
+Port arguments are declared once, with a passing mode that fixes both the
+trait-method signature and the codec — `val x: T` (`x: T`), `ref x: T`
+(`x: &T`), `mut x: T` (`x: &mut T`, the C++ non-buffer `ref` parameter), and
+`buf x: T` (`x: &mut T`, serialized as a nested length-prefixed buffer). The
+adapter's write side and the `_deserialize` read side expand from that one
+list, so the two **cannot drift** — which is the whole point of generating
+them together.
+
+Deliberately not generated: async ports carrying an owned `Fw::Buffer` (the
+`BufferEscrow` deposit/claim pairing is component state, not a per-port
+pattern); the `dispatch_message` switch itself (it is the component's own
+`doDispatch`); and adapters whose handler takes a different argument list
+than the port. Command/event/telemetry glue needs no macro — `CmdGlue`,
+`EventGlue` and `TlmGlue` already collapse it into ordinary calls.
+
+### Proof of equivalence
+
+The layer is validated by migration, not by new tests alone: `Fw::FrameContext`
+(`fpp_struct!`), `Svc::ActiveRateGroup` (`component_msg_types!` + two
+`async_input_port_adapter!`s, including the `CycleIn_preMsgHook` and the
+`drop` policy) and `Svc::FprimeDeframer` (two `input_port_adapter!`s) were
+converted with **no** change to their existing tests — including the
+literal-byte envelope and wire-format tests. `crates/fprime-comp/tests/
+macro_component.rs` additionally asserts the generated envelope is
+byte-for-byte equal to hand-written serialization, and
+`crates/fprime-comp/tests/example_component.rs` stays hand-written as the
+normative reference for what the macros expand to.
 
 ## fprime-utils
 

@@ -6,14 +6,14 @@
 //! every event and telemetry sample; `TimeInterval` is the 8-byte
 //! `[seconds u32][useconds u32]` pair with a commutative absolute `sub`.
 
-use crate::enums::fpp_enum;
+use crate::fpp_enum;
 use crate::serial::{Deserialize, Endianness, SerBuf, SerBufAny, Serialize, SerializeStatus};
 use crate::{fw_assert, fw_try};
 use fprime_config::{FwTimeBaseStoreType, FwTimeContextStoreType};
 
 fpp_enum! {
     /// Time base (`TimeBase`, repr `FwTimeBaseStoreType` = u16).
-    pub enum TimeBase : u16 { serialize_u16, deserialize_u16 } {
+    pub enum TimeBase : u16 {
         /// No time base has been established.
         TbNone = 0,
         /// Indicates time is processor cycle time (not related to an epoch).

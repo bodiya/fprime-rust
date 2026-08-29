@@ -4,15 +4,13 @@
 //! (the `Apid` / `Pvn` enums and the `FrameContext` FPP struct). See
 //! `docs/cpp-analysis/fw-services.md`.
 
-use crate::enums::fpp_enum;
-use crate::fw_try;
-use crate::serial::{Deserialize, Endianness, SerBuf, SerBufAny, Serialize, SerializeStatus};
+use crate::{fpp_enum, fpp_struct};
 use fprime_config::FwIndexType;
 
 fpp_enum! {
     /// Packet descriptor / CCSDS APID (`ComCfg::Apid`, repr
     /// `FwPacketDescriptorType` = u16). APIDs are 11 bits, max 0x7FF.
-    pub enum ComPacketType : u16 { serialize_u16, deserialize_u16 } {
+    pub enum ComPacketType : u16 {
         /// Command packet type - incoming.
         FwPacketCommand = 0x0000,
         /// Telemetry packet type - outgoing.
@@ -49,7 +47,7 @@ pub type Apid = ComPacketType;
 fpp_enum! {
     /// CCSDS Packet Version Number (`ComCfg::Pvn`, repr u8; 3 bits with only
     /// two valid values).
-    pub enum Pvn : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Pvn : u8 {
         /// Fully featured CCSDS Space Packet Protocol.
         SpacePacketProtocol = 0x0,
         /// Bare-bones CCSDS Encapsulation Packet Protocol.
@@ -63,94 +61,49 @@ fpp_enum! {
 /// Reserved SA-index sentinel meaning "unset" (`ComCfg::SaIndexUnset`).
 pub const SA_INDEX_UNSET: u16 = 0xFFFF;
 
-/// Context info passed between components during framing/deframing
-/// (`ComCfg::FrameContext` FPP struct). Serializes its fields in declaration
-/// order (13 bytes total).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameContext {
-    /// Queue index used by the ComQueue; other components shall not modify.
-    pub com_queue_index: FwIndexType,
-    /// 11-bit APID in CCSDS.
-    pub apid: Apid,
-    /// Secondary header flag for a SpacePacketFramer.
-    pub has_sec_hdr: bool,
-    /// 2-bit sequence flags (0b00=continuation, 0b01=first, 0b10=last,
-    /// 0b11=unsegmented).
-    pub sequence_flags: u8,
-    /// 14-bit sequence count, incremented per APID.
-    pub sequence_count: u16,
-    /// 6-bit virtual channel ID (AOS, TC, TM protocols).
-    pub vc_id: u8,
-    /// Packet Version Number (AOS deframing packet-type identification).
-    pub pvn: Pvn,
-    /// Flag to an AOS framer that this packet's frame should be sent ASAP.
-    pub send_now: bool,
-    /// Security Association index (set by SDLS deframers, read by framers).
-    pub sa_index: u16,
-}
-
-impl FrameContext {
-    /// On-wire size: i16 + u16 + 1 + 1 + u16 + 1 + 1 + 1 + u16 = 13 bytes.
-    pub const SERIALIZED_SIZE: usize = 13;
-}
-
-impl Default for FrameContext {
-    /// The FPP struct defaults from `ComCfg.fpp`.
-    fn default() -> Self {
-        Self {
-            com_queue_index: 0,
-            apid: Apid::FwPacketUnknown,
-            has_sec_hdr: false,
-            sequence_flags: 0x3,
-            sequence_count: 0,
-            vc_id: 1,
-            pvn: Pvn::InvalidUninitialized,
-            send_now: false,
-            sa_index: SA_INDEX_UNSET,
-        }
+fpp_struct! {
+    /// Context info passed between components during framing/deframing
+    /// (`ComCfg::FrameContext` FPP struct). Serializes its members in
+    /// declaration order (13 bytes total, no padding).
+    #[derive(Clone, Copy, Eq)]
+    pub struct FrameContext {
+        /// Queue index used by the ComQueue; other components shall not modify.
+        com_queue_index: FwIndexType { get_com_queue_index, set_com_queue_index },
+        /// 11-bit APID in CCSDS.
+        apid: Apid { get_apid, set_apid },
+        /// Secondary header flag for a SpacePacketFramer.
+        has_sec_hdr: bool { get_has_sec_hdr, set_has_sec_hdr },
+        /// 2-bit sequence flags (0b00=continuation, 0b01=first, 0b10=last,
+        /// 0b11=unsegmented).
+        sequence_flags: u8 { get_sequence_flags, set_sequence_flags },
+        /// 14-bit sequence count, incremented per APID.
+        sequence_count: u16 { get_sequence_count, set_sequence_count },
+        /// 6-bit virtual channel ID (AOS, TC, TM protocols).
+        vc_id: u8 { get_vc_id, set_vc_id },
+        /// Packet Version Number (AOS deframing packet-type identification).
+        pvn: Pvn { get_pvn, set_pvn },
+        /// Flag to an AOS framer that this packet's frame should be sent ASAP.
+        send_now: bool { get_send_now, set_send_now },
+        /// Security Association index (set by SDLS deframers, read by framers).
+        sa_index: u16 { get_sa_index, set_sa_index },
     }
-}
-
-impl Serialize for FrameContext {
-    fn serialize_to(&self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
-        fw_try!(buf.serialize_i16(self.com_queue_index, e));
-        fw_try!(self.apid.serialize_to(buf, e));
-        fw_try!(buf.serialize_bool(self.has_sec_hdr, e));
-        fw_try!(buf.serialize_u8(self.sequence_flags, e));
-        fw_try!(buf.serialize_u16(self.sequence_count, e));
-        fw_try!(buf.serialize_u8(self.vc_id, e));
-        fw_try!(self.pvn.serialize_to(buf, e));
-        fw_try!(buf.serialize_bool(self.send_now, e));
-        buf.serialize_u16(self.sa_index, e)
-    }
-    fn serialized_size(&self) -> usize {
-        Self::SERIALIZED_SIZE
-    }
-}
-
-impl Deserialize for FrameContext {
-    /// Deserializes into a temporary and commits only on full success
-    /// (enum members are validated per FPP rules).
-    fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
-        let mut tmp = FrameContext::default();
-        fw_try!(buf.deserialize_i16(&mut tmp.com_queue_index, e));
-        fw_try!(tmp.apid.deserialize_from(buf, e));
-        fw_try!(buf.deserialize_bool(&mut tmp.has_sec_hdr, e));
-        fw_try!(buf.deserialize_u8(&mut tmp.sequence_flags, e));
-        fw_try!(buf.deserialize_u16(&mut tmp.sequence_count, e));
-        fw_try!(buf.deserialize_u8(&mut tmp.vc_id, e));
-        fw_try!(tmp.pvn.deserialize_from(buf, e));
-        fw_try!(buf.deserialize_bool(&mut tmp.send_now, e));
-        fw_try!(buf.deserialize_u16(&mut tmp.sa_index, e));
-        *self = tmp;
-        SerializeStatus::Ok
+    // The FPP struct defaults from `ComCfg.fpp`; members not listed take
+    // their type default (0 / false / the enum `default` constant).
+    default {
+        apid = Apid::FwPacketUnknown,
+        sequence_flags = 0x3,
+        vc_id = 1,
+        pvn = Pvn::InvalidUninitialized,
+        sa_index = SA_INDEX_UNSET,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serial::LinearBuffer;
+    use crate::serial::{
+        Deserialize, Endianness, LinearBuffer, SerBuf, Serialize, SerializeStatus,
+    };
 
     #[test]
     fn apid_discriminants_match_cpp() {

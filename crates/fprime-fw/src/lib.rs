@@ -11,6 +11,7 @@ pub mod assert;
 pub mod buffer;
 pub mod com;
 pub mod enums;
+pub mod fpp;
 pub mod logger;
 pub mod packets;
 pub mod poly_type;
@@ -28,6 +29,7 @@ pub use enums::{
     CmdResponse, Completed, DeserialStatus, Enabled, Health, LogSeverity, ParamValid, Success,
     TlmValid, Wait,
 };
+pub use fpp::FppSized;
 pub use logger::FwLogger;
 pub use packets::{CmdPacket, LogPacket, TlmPacket};
 pub use poly_type::PolyType;

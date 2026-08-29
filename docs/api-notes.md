@@ -17,7 +17,10 @@ CRATE fprime_config (all pub at root unless noted):
   mod buffer_manager { MAX_NUM_BINS:usize=10 }
   mod com_queue { COM_PORTS:usize=2; BUFFER_PORTS:usize=1 }
 
-CRATE fprime_fw. Everything below is re-exported at crate root (fprime_fw::Time etc.); modules: serial, string, time, enums, com, buffer, packets, poly_type, assert, logger. Also `pub use fprime_config as config` (fw_assert! expansion needs this path; depend on fprime-fw and it resolves).
+CRATE fprime_fw. Everything below is re-exported at crate root (fprime_fw::Time etc.); modules: serial, string, time, enums, com, buffer, packets, poly_type, assert, logger, fpp. Also `pub use fprime_config as config` (fw_assert! expansion needs this path; depend on fprime-fw and it resolves).
+
+fpp (codegen layer; macros exported at the crate root — see "Codegen layer (FPP-style macros) - usage" below):
+  macros fpp_enum! / fpp_struct! / fpp_array!; trait FppSized { const SERIALIZED_SIZE: usize } (impl'd for u8..i64, f32, f64, bool, Time, TimeInterval, FwString<N>, and every macro-generated type)
 
 serial:
   #[must_use] #[repr(i32)] enum SerializeStatus { Ok=0, FormatError=1, NoRoomLeft=2, DeserBufferEmpty=3, DeserFormatError=4, DeserSizeMismatch=5, DeserTypeMismatch=6, DeserImmutable=7, DeserInvalidData=8, DiscardedExisting=9 }; fn is_ok(self)->bool
@@ -63,7 +66,7 @@ com:
   #[repr(u16)] enum ComPacketType { FwPacketCommand=0, FwPacketTelem=1, FwPacketLog=2, FwPacketFile=3, FwPacketPacketizedTlm=4, FwPacketDp=5, FwPacketIdle=6, FwPacketParam=7, FwPacketHand=0xFE, FwPacketUnknown=0xFF, SppIdlePacket=0x7FF, InvalidUninitialized=0x800 } (Default=InvalidUninitialized, TryFrom<u16>, Serialize/Deserialize u16-width); type Apid=ComPacketType
   #[repr(u8)] enum Pvn { SpacePacketProtocol=0, EncapsulationPacketProtocol=7, InvalidUninitialized=8 } (Default=InvalidUninitialized)
   const SA_INDEX_UNSET:u16=0xFFFF
-  struct FrameContext { pub com_queue_index:FwIndexType, pub apid:Apid, pub has_sec_hdr:bool, pub sequence_flags:u8, pub sequence_count:u16, pub vc_id:u8, pub pvn:Pvn, pub send_now:bool, pub sa_index:u16 } (Copy, Eq, Default per ComCfg.fpp, Serialize/Deserialize, const SERIALIZED_SIZE=13)
+  struct FrameContext { pub com_queue_index:FwIndexType, pub apid:Apid, pub has_sec_hdr:bool, pub sequence_flags:u8, pub sequence_count:u16, pub vc_id:u8, pub pvn:Pvn, pub send_now:bool, pub sa_index:u16 } (Copy, Eq, Default per ComCfg.fpp, Serialize/Deserialize, const SERIALIZED_SIZE=13, plus get_*/set_* accessor pairs and new()/set_all() — declared with fpp_struct!)
 
 buffer:
   type BufferStorage = Box<[u8]>
@@ -267,7 +270,9 @@ Deviations/gaps (all intentional): (1) The C++ Serializable/LinearBufferBase ove
 ## fprime-comp
 
 ```text
-CRATE fprime_comp — everything re-exported at root (modules: obj, port, msg, queued, active, glue, escrow).
+CRATE fprime_comp — everything re-exported at root (modules: obj, port, msg, queued, active, glue, escrow, macros).
+Crate re-exports for macro expansions and downstream convenience: `fprime_comp::config` (= fprime_config), `fprime_comp::fw` (= fprime_fw), `fprime_comp::os` (= fprime_os).
+Codegen macros (exported at the crate root, documented under "Codegen layer" below): component_msg_types!, input_port_adapter!, async_input_port_adapter!.
 
 obj::PassiveBase: fn new(name:&str)->Self; Default ("NoName"); get_obj_name()->ObjectName; set_obj_name(&self,&str); set_id_base(&self,FwIdType); get_id_base()->FwIdType; set_instance(&self,FwEnumStoreType); get_instance()->FwEnumStoreType. All &self.
 
@@ -340,7 +345,7 @@ glue: fn time_get(port:&OutputPort<dyn TimePort>)->Time  // Time::default() when
 
 escrow::BufferEscrow (Default, Debug): fn new(); with_capacity(usize)->Self; deposit(&self, Buffer)->u64; claim(&self, token:u64)->Buffer /*fw_assert invalid/stale/double*/; len()->usize; is_empty()->bool. Token = (generation<<32)|slot; serialize as u64 (8 bytes, same slot C++ uses for the pointer).
 
-COMPONENT PATTERN (normative; copy tests/example_component.rs): msg types start at 1; async input = adapter struct {comp: Arc<C>} impl Port trait — write_envelope_header + args + send_message(policy); sync/guarded input = impl trait on the component itself, handler locks the component's Mutex<State>; input factory: fn x_in(self:&Arc<Self>, port_num)->PortRef<dyn XPort>; async command envelope args = [opCode u32][cmdSeq u32][serialize_buffer(CmdArgBuffer)] and dispatch on op_code.wrapping_sub(id_base) with InvalidOpcode fallback, FormatError on deser failure or deserialize_size_left()!=0; topology order: construct -> set_id_base -> connect -> create_queue -> reg_commands -> start(&arc,..) -> exit -> join (EXIT is priority 0, so pending higher-priority traffic drains first — join is a deterministic sync point in tests).
+COMPONENT PATTERN (normative; copy tests/example_component.rs — hand-written; tests/macro_component.rs is the same shapes built with the codegen macros): msg types start at 1; async input = adapter struct {comp: Arc<C>} impl Port trait — write_envelope_header + args + send_message(policy); sync/guarded input = impl trait on the component itself, handler locks the component's Mutex<State>; input factory: fn x_in(self:&Arc<Self>, port_num)->PortRef<dyn XPort>; async command envelope args = [opCode u32][cmdSeq u32][serialize_buffer(CmdArgBuffer)] and dispatch on op_code.wrapping_sub(id_base) with InvalidOpcode fallback, FormatError on deser failure or deserialize_size_left()!=0; topology order: construct -> set_id_base -> connect -> create_queue -> reg_commands -> start(&arc,..) -> exit -> join (EXIT is priority 0, so pending higher-priority traffic drains first — join is a deterministic sync point in tests).
 ```
 
 ### Implementation notes / deviations
@@ -356,6 +361,229 @@ Deviations/decisions (all C++-behavior-preserving):
 8. BufferEscrow slots Vec can grow past with_capacity if more buffers are in flight than pre-sized (bounded in practice by queue depth); size with with_capacity for strict no-steady-state-alloc.
 9. Queue-full policies: Drop asserts on non-OK statuses other than Full (e.g. SizeMismatch) — only Full is a countable drop; Hook returns Full so the ADAPTER invokes its overflow hook with the original args (the hook cannot live in the base, C++ parity).
 Open questions: none blocking. git status shows uncommitted modifications to fprime-config/fw/os/utils lib.rs from the earlier implementer agents — untouched by me; I wrote only under crates/fprime-comp/.
+
+# Codegen layer (FPP-style macros) — usage
+
+Zero-dependency `macro_rules!` replacements for what the C++ FPP autocoder
+generates. Data types live in `fprime_fw` (module `fpp`, macros exported at
+the crate root); component boilerplate lives in `fprime_comp` (module
+`macros`, macros exported at the crate root). No proc macros, so nothing is
+added to the dependency graph.
+
+```text
+fprime_fw:   fpp_enum!  fpp_struct!  fpp_array!   trait FppSized { const SERIALIZED_SIZE: usize }
+fprime_comp: component_msg_types!  input_port_adapter!  async_input_port_adapter!
+```
+
+`FppSized` is the compile-time (maximum) on-wire size — the C++ static
+`SERIALIZED_SIZE`. It is implemented for `u8..i64`, `f32`, `f64`, `bool`,
+`Time`, `TimeInterval`, `FwString<N>`, and for every type these macros
+generate. `Serialize::serialized_size` remains the *actual* size of a value.
+
+## `fpp_enum!` — FPP `enum E : R`
+
+```rust
+fpp_enum! {
+    /// Event severity (`Fw::LogSeverity`).
+    pub enum LogSeverity : u8 {
+        /// A fatal non-recoverable event.
+        Fatal = 1,
+        /// A serious but recoverable event.
+        WarningHi = 2,
+    }
+    default Fatal
+}
+```
+
+Generates: `#[repr(u8)]` enum + `Debug, Clone, Copy, PartialEq, Eq, Hash`;
+`Default` = the `default` constant; `TryFrom<u8>` (`Err` carries the raw
+value); consts `SERIALIZED_SIZE`, `VALUES: &'static [Self]`, `NUM_CONSTANTS`;
+`as_repr()`, `is_valid()` (member; always true in Rust), `is_valid_repr(raw)`
+(static, exact declared values — values *between* declared constants are
+invalid); `Serialize`/`Deserialize` at the representation width, big-endian,
+with strict decode (undeclared value -> `DeserFormatError`, bytes consumed,
+target unmodified); `FppSized`.
+
+## `fpp_struct!` — FPP `struct S { .. } default { .. }`
+
+```rust
+fpp_struct! {
+    /// Context passed between comms components (`ComCfg::FrameContext`).
+    #[derive(Clone, Copy, Eq)]                 // Debug + PartialEq are automatic
+    pub struct FrameContext {
+        /// Queue index used by the ComQueue.
+        com_queue_index: FwIndexType { get_com_queue_index, set_com_queue_index },
+        /// 11-bit APID in CCSDS.
+        apid: Apid { get_apid, set_apid },
+        /// Secondary header flag.
+        has_sec_hdr: bool,                     // accessor pair is optional
+    }
+    default {
+        apid = Apid::FwPacketUnknown,          // members not listed use their type default
+    }
+}
+```
+
+Generates: the struct with all members `pub` in declaration order;
+`SERIALIZED_SIZE` = sum of the members' `FppSized` sizes; `new(..)` (full
+constructor) and `set_all(..)` (C++ `set`); the declared `get_*`/`set_*`
+pairs (**getters borrow** — `*ctx.get_apid()` — because C++ returns `const&`
+for class members; the `pub` field is there for everything else); `Default`
+from the clause; `Serialize`/`Deserialize` strictly in member order with no
+header/count/padding, deserialization committing only on full success.
+
+`macro_rules!` cannot concatenate identifiers, so accessor names are spelled
+out; omit the `{ .. }` clause on a member to get the field only. Add
+`Clone`/`Copy`/`Eq`/`Hash` with a plain `#[derive(..)]` above the struct.
+
+## `fpp_array!` — FPP `array A = [n] T`
+
+```rust
+fpp_array! {
+    /// Three cycle counts.
+    #[derive(Clone, Copy, Eq)]
+    pub array Counts = [u16; 3]
+    default fill 0xFFFF        // or: default [1, 2, 3]  — or omit for T::default()
+}
+```
+
+Generates: `pub struct Counts(pub [u16; 3])`; `SIZE`, `SERIALIZED_SIZE`
+(= `SIZE * element size`); `new([..])`, `fill(v)`, `From<[T; N]>` /
+`From<Self> for [T; N]`; `elements()`, `elements_mut()`, `as_slice()`,
+`iter()`, `IntoIterator for &Self`, `Index`/`IndexMut<usize>`; `Default`;
+elementwise `Serialize`/`Deserialize` with **no count prefix and no
+padding**, deserialization committing only on full success.
+
+## `component_msg_types!`
+
+```rust
+component_msg_types! {
+    /// Queue message types (0 is the EXIT sentinel).
+    impl ActiveRateGroup {
+        /// `CycleIn` async input port.
+        MSG_TYPE_CYCLE_IN,     // = 1
+        /// `PingIn` async input port.
+        MSG_TYPE_PING_IN,      // = 2
+    }
+}
+```
+
+Emits `pub const <NAME>: FwEnumStoreType` on the component, numbered from 1
+in declaration order. Refer to them as `Self::MSG_TYPE_CYCLE_IN`, including
+in the `dispatch_message` match arms.
+
+## Port-argument passing modes (both adapter macros)
+
+| mode | trait parameter | queue write | queue read |
+|------|-----------------|-------------|------------|
+| `val x: T` | `x: T` | `Serialize` | `Deserialize` |
+| `ref x: T` | `x: &T` | `Serialize` | `Deserialize` |
+| `mut x: T` | `x: &mut T` | `Serialize` | `Deserialize` |
+| `buf x: T` | `x: &mut T` | nested buffer (`u16` len + bytes) | nested buffer |
+
+`mut` is the C++ non-buffer `ref` parameter (`Fw::Time&`, `Fw::Success&`).
+Across an async queue the value is copy-in only — the caller's variable is
+not written back, exactly as the generated C++ behaves.
+
+## `input_port_adapter!` — SYNC / GUARDED input
+
+```rust
+input_port_adapter! {
+    /// `dataIn` — GUARDED `Svc.ComDataWithContext` input: one frame.
+    component: FprimeDeframer;
+    adapter: DataInAdapter;          // adapter struct name (identifiers can't be synthesized)
+    port: ComDataWithContextPort;
+    input: pub data_in;              // factory name, with its visibility
+    handler: data_in_handler;
+    // returns: ParamValid;          // only for port traits whose invoke returns a value
+    args { val data: Buffer, ref context: FrameContext }
+}
+```
+
+Generates the adapter struct, `impl ComDataWithContextPort for DataInAdapter`
+forwarding 1:1 to `self.comp.data_in_handler(port_num, data, context)` on the
+caller's thread, and
+`pub fn data_in(self: &Arc<Self>, port_num) -> PortRef<dyn ComDataWithContextPort>`.
+Guarded semantics stay the handler's job (it locks the component's state
+mutex) — in C++ only the generated lock differs, and here that lock is the
+handler's `Mutex<State>`.
+
+## `async_input_port_adapter!` — ASYNC input
+
+```rust
+async_input_port_adapter! {
+    /// `CycleIn` — ASYNC `Svc.Cycle` input with the `drop` queue-full policy.
+    component: ActiveRateGroup;
+    adapter: CycleInAdapter;
+    port: CyclePort;
+    input: pub cycle_in;
+    deserialize: cycle_in_deserialize;
+    handler: cycle_in_handler;
+    base: active.queued;                          // dotted path to the QueuedBase
+    msg_type: ActiveRateGroup::MSG_TYPE_CYCLE_IN;
+    msg_size: MSG_SIZE;                           // usize const; sizes LinearBuffer<{MSG_SIZE}>
+    priority: CYCLE_IN_PRIORITY;
+    queue_full: QueueFullPolicy::Drop;            // FPP assert / drop / block / hook
+    args { ref cycle_start: RawTime }
+    pre_msg_hook |comp, _port_num| {              // optional; SENDER's thread, before enqueue
+        comp.cycle_started.store(true, Ordering::Relaxed);
+    }
+    // overflow_hook |comp, port_num| { .. }      // optional; runs when the send returned Full
+}
+```
+
+Generates, on top of the sync macro's output, the byte-exact envelope
+`[msg_type i32 BE][port_num i16 BE][args in declaration order]` (serialize
+failures are `fw_assert!` — `msg_size` is the worst case, C++ parity), the
+`send_message` call under the given policy, and
+
+```rust
+fn cycle_in_deserialize(msg: &mut dyn SerBufAny) -> Option<(RawTime,)>
+```
+
+which reads the arguments only (`msg_type`/`port_num` are already consumed by
+the dispatch loop and by `dispatch_message`) and returns `None` on any decode
+failure. Both hook closures bind `comp: &Component` and the port number under
+names *you* choose (macro hygiene), and the port arguments are in scope too.
+
+Use it from `dispatch_message`:
+
+```rust
+match msg_type {
+    Self::MSG_TYPE_CYCLE_IN => match Self::cycle_in_deserialize(buf) {
+        Some((cycle_start,)) => {
+            self.cycle_in_handler(port_num, &cycle_start);
+            MsgDispatchStatus::Ok
+        }
+        None => MsgDispatchStatus::Error,
+    },
+    _ => MsgDispatchStatus::Error,
+}
+```
+
+Note the one-element tuple pattern `(cycle_start,)`; a `buf` argument comes
+back owned, so bind it `Some((op_code, cmd_seq, mut args))` and pass
+`&mut args`.
+
+## When NOT to use a macro
+
+Keep hand-writing (the macros deliberately do not cover these):
+
+- **Async ports carrying an owned `Fw::Buffer`** — the `BufferEscrow`
+  deposit/claim pairing is component state, not a per-port pattern.
+- **The `dispatch_message` switch** — it is the component's own `doDispatch`.
+- **Adapters that drop or reorder arguments** on the way to the handler
+  (e.g. `FprimeFramer::data_return_in`, whose handler ignores `context`):
+  forwarding is 1:1 or the macro does not apply.
+- Command/event/telemetry emission — `CmdGlue` / `EventGlue` / `TlmGlue`
+  already reduce that to ordinary calls.
+
+Reference implementations: `crates/fprime-fw/src/com.rs` (`fpp_enum!` +
+`fpp_struct!`), `crates/fprime-svc/src/active_rate_group.rs`
+(`component_msg_types!` + `async_input_port_adapter!`),
+`crates/fprime-svc/src/fprime_deframer.rs` (`input_port_adapter!`),
+`crates/fprime-comp/tests/macro_component.rs` (all of them, with byte-level
+assertions against hand-written serialization).
 
 # Service crate API notes
 

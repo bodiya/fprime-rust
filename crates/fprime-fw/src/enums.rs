@@ -6,87 +6,15 @@
 //! their declared representation width (u8 here) — NOT the 4-byte
 //! `FwEnumStoreType` of plain C++ enums — and deserialization validates the
 //! exact declared values, returning `DeserFormatError` otherwise.
+//!
+//! Every enum here is declared with the [`fpp_enum!`](crate::fpp_enum) macro
+//! of the codegen layer ([`crate::fpp`]).
 
-/// Define an FPP-style enum: exact discriminants, `Default`, `TryFrom` of the
-/// representation type, and `Serialize`/`Deserialize` at the representation
-/// width with strict value validation on decode.
-macro_rules! fpp_enum {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident : $repr:ty { $ser:ident, $deser:ident } {
-            $($(#[$vmeta:meta])* $var:ident = $val:literal),+ $(,)?
-        }
-        default $def:ident
-    ) => {
-        $(#[$meta])*
-        #[repr($repr)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        $vis enum $name {
-            $($(#[$vmeta])* $var = $val),+
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::$def
-            }
-        }
-
-        impl TryFrom<$repr> for $name {
-            type Error = $repr;
-            /// Map a raw representation value to the enum; `Err` carries the
-            /// unmatched raw value.
-            fn try_from(v: $repr) -> Result<Self, $repr> {
-                match v {
-                    $($val => Ok(Self::$var),)+
-                    other => Err(other),
-                }
-            }
-        }
-
-        impl $crate::serial::Serialize for $name {
-            fn serialize_to(
-                &self,
-                buf: &mut dyn $crate::serial::SerBufAny,
-                e: $crate::serial::Endianness,
-            ) -> $crate::serial::SerializeStatus {
-                use $crate::serial::SerBuf;
-                buf.$ser(*self as $repr, e)
-            }
-            fn serialized_size(&self) -> usize {
-                size_of::<$repr>()
-            }
-        }
-
-        impl $crate::serial::Deserialize for $name {
-            fn deserialize_from(
-                &mut self,
-                buf: &mut dyn $crate::serial::SerBufAny,
-                e: $crate::serial::Endianness,
-            ) -> $crate::serial::SerializeStatus {
-                use $crate::serial::SerBuf;
-                let mut raw: $repr = 0;
-                let status = buf.$deser(&mut raw, e);
-                if status != $crate::serial::SerializeStatus::Ok {
-                    return status;
-                }
-                // C++ parity: an undeclared value is DeserFormatError; the
-                // raw bytes are consumed but the target is left unmodified.
-                match Self::try_from(raw) {
-                    Ok(v) => {
-                        *self = v;
-                        $crate::serial::SerializeStatus::Ok
-                    }
-                    Err(_) => $crate::serial::SerializeStatus::DeserFormatError,
-                }
-            }
-        }
-    };
-}
-pub(crate) use fpp_enum;
+use crate::fpp_enum;
 
 fpp_enum! {
     /// Generic pass/fail (`Fw::Success`).
-    pub enum Success : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Success : u8 {
         /// Representing failure.
         Failure = 0,
         /// Representing success.
@@ -97,7 +25,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Enabled/disabled state (`Fw::Enabled`).
-    pub enum Enabled : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Enabled : u8 {
         /// Disabled state.
         Disabled = 0,
         /// Enabled state.
@@ -108,7 +36,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Wait or don't wait for an operation (`Fw::Wait`).
-    pub enum Wait : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Wait : u8 {
         /// Wait for the operation.
         Wait = 0,
         /// Don't wait for the operation.
@@ -119,7 +47,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Completion status (`Fw::Completed`).
-    pub enum Completed : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Completed : u8 {
         /// The operation ran to completion.
         Completed = 0,
         /// The operation was canceled.
@@ -132,7 +60,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Health state (`Fw::Health`).
-    pub enum Health : u8 { serialize_u8, deserialize_u8 } {
+    pub enum Health : u8 {
         /// Healthy.
         Healthy = 0,
         /// Sick (missed pings, below fatal threshold).
@@ -145,7 +73,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Command completion status (`Fw::CmdResponse`).
-    pub enum CmdResponse : u8 { serialize_u8, deserialize_u8 } {
+    pub enum CmdResponse : u8 {
         /// Command successfully executed.
         Ok = 0,
         /// Invalid opcode dispatched.
@@ -165,7 +93,7 @@ fpp_enum! {
 fpp_enum! {
     /// Event severity (`Fw::LogSeverity`). NOTE: values start at 1; 0 is not
     /// a declared value and fails deserialization.
-    pub enum LogSeverity : u8 { serialize_u8, deserialize_u8 } {
+    pub enum LogSeverity : u8 {
         /// A fatal non-recoverable event.
         Fatal = 1,
         /// A serious but recoverable event.
@@ -186,7 +114,7 @@ fpp_enum! {
 
 fpp_enum! {
     /// Parameter validity (`Fw::ParamValid`).
-    pub enum ParamValid : u8 { serialize_u8, deserialize_u8 } {
+    pub enum ParamValid : u8 {
         /// Parameter uninitialized.
         Uninit = 0,
         /// Parameter valid.
@@ -209,7 +137,7 @@ impl ParamValid {
 
 fpp_enum! {
     /// Telemetry-get validity (`Fw::TlmValid`).
-    pub enum TlmValid : u8 { serialize_u8, deserialize_u8 } {
+    pub enum TlmValid : u8 {
         /// Valid channel value returned.
         Valid = 0,
         /// Channel not found / never written.
@@ -221,7 +149,7 @@ fpp_enum! {
 fpp_enum! {
     /// GDS-visible u8 shadow of the deserialize side of
     /// [`SerializeStatus`](crate::serial::SerializeStatus) (`Fw::DeserialStatus`).
-    pub enum DeserialStatus : u8 { serialize_u8, deserialize_u8 } {
+    pub enum DeserialStatus : u8 {
         /// Operation succeeded.
         Ok = 0,
         /// Buffer was empty.
