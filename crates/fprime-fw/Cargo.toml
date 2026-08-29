@@ -1,0 +1,14 @@
+[package]
+name = "fprime-fw"
+description = "F Prime Rust port: Fw core - serialization, types, strings, time, buffers, packets, assert, logger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fprime-config.workspace = true

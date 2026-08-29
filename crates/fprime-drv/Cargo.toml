@@ -1,0 +1,17 @@
+[package]
+name = "fprime-drv"
+description = "F Prime Rust port: drivers - byte stream driver model, TCP client/server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fprime-config.workspace = true
+fprime-fw.workspace = true
+fprime-os.workspace = true
+fprime-comp.workspace = true

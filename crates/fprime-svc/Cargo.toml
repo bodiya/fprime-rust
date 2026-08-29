@@ -1,0 +1,18 @@
+[package]
+name = "fprime-svc"
+description = "F Prime Rust port: standard service components - rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fprime-config.workspace = true
+fprime-fw.workspace = true
+fprime-os.workspace = true
+fprime-utils.workspace = true
+fprime-comp.workspace = true

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fprime-config",
+    "crates/fprime-fw",
+    "crates/fprime-os",
+    "crates/fprime-utils",
+    "crates/fprime-comp",
+    "crates/fprime-svc",
+    "crates/fprime-drv",
+    "crates/fprime-ref",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/bodiya/fprime-rust"
+
+[workspace.dependencies]
+fprime-config = { path = "crates/fprime-config" }
+fprime-fw = { path = "crates/fprime-fw" }
+fprime-os = { path = "crates/fprime-os" }
+fprime-utils = { path = "crates/fprime-utils" }
+fprime-comp = { path = "crates/fprime-comp" }
+fprime-svc = { path = "crates/fprime-svc" }
+fprime-drv = { path = "crates/fprime-drv" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = true

@@ -1,0 +1,24 @@
+[package]
+name = "fprime-ref"
+description = "F Prime Rust port: reference deployment binary (Ref-style topology, GDS-compatible)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fprime-config.workspace = true
+fprime-fw.workspace = true
+fprime-os.workspace = true
+fprime-utils.workspace = true
+fprime-comp.workspace = true
+fprime-svc.workspace = true
+fprime-drv.workspace = true
+
+[[bin]]
+name = "fprime-ref"
+path = "src/main.rs"

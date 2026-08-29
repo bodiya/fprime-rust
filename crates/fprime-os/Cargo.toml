@@ -1,0 +1,15 @@
+[package]
+name = "fprime-os"
+description = "F Prime Rust port: OS abstraction layer - task, mutex, priority queue, file, filesystem, console, rawtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fprime-config.workspace = true
+fprime-fw.workspace = true
