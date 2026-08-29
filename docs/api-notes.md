@@ -715,3 +715,809 @@ tcp_client::TcpClient / tcp_server::TcpServer (identical surface unless noted):
 
 Full workspace build green; cargo test -p fprime-svc also fully green (208 tests) — sibling modules converged, no blockers. Documented behavior-preserving divergences (all in doc comments): (1) TcpStream handles are duplicated per operation via try_clone (the C++ copy-fd-out-of-lock idiom); close()/stop() use TcpStream::shutdown(Both) to break blocking recvs, plus an optional per-recv read timeout (Timing::read_timeout, default 500 ms, None = exact C++ blocking behavior) as belt-and-braces — a timeout maps to SOCK_NO_DATA_AVAILABLE/RecvNoData exactly like C++ EAGAIN, so upstream sees periodic benign RecvNoData deliveries. (2) TcpServer: std cannot set listen backlog (C++ uses 1) nor SO_REUSEADDR, and cannot shutdown a TcpListener, so the listener is non-blocking and open_protocol polls accept at reconnect_wait_interval checking stop flags (equivalent responsiveness); std bind() conflates bind/listen failures into FailedToBind. (3) Client connect uses connect_timeout (Timing::connect_timeout, 1 s) to keep the reconnect loop responsive; C++ blocks in connect(2). (4) EBADF is unrepresentable through std io::ErrorKind; ConnectionReset/ConnectionAborted cover the C++ ECONNRESET/EBADF -> DISCONNECTED branch. (5) configure() drops the C++ send-timeout parameters per the task signature; timeouts live in SocketHelper::set_timing (defaults = IpCfg.hpp values). (6) The full C++ send-when-closed path is ported (requestReconnect + bounded waitForReconnect, then send on success), not just the OtherError shortcut — covered by the send_before_connect integration test. Loopback tests run 6x consecutively green (~60 ms/suite); all waits are bounded deadline polls. Did not commit or push, wrote only under crates/fprime-drv/.
 
+# Remaining-subsystem crate API notes
+
+## PrmDb
+
+```text
+CRATE fprime_svc, module `prm_db` (fprime_svc::prm_db::*).
+
+consts: NUM_DB_ENTRIES: usize = 25; ENTRY_DELIMITER: u8 = 0xA5; MIN_RECORD_SIZE: u32 = 4; MAX_RECORD_SIZE: u32 = 510; QUEUE_MSG_SIZE: usize = 522.
+
+fpp_enum types (u8 repr, Serialize/Deserialize/TryFrom/as_repr/VALUES):
+  PrmDbType { DbActive=0, DbStaging=1 } (default DbActive)
+  PrmDbFileLoadState { Idle=0, LoadingFileUpdates=1, FileUpdatesStaged=2 } (default Idle)
+  PrmReadError { Open=0, Delimiter=1, DelimiterSize=2, DelimiterValue=3, RecordSize=4, RecordSizeSize=5, RecordSizeValue=6, ParameterId=7, ParameterIdSize=8, ParameterValue=9, ParameterValueSize=10, Crc=11, CrcSize=12, CrcBuffer=13, SeekZero=14 }
+  PrmWriteError { Open=0, Delimiter=1, DelimiterSize=2, RecordSize=3, RecordSizeSize=4, ParameterId=5, ParameterIdSize=6, ParameterValue=7, ParameterValueSize=8, CrcPlace=9, CrcReal=10, CurrPosition=11, SeekZero=12, SeekPosition=13 }
+  Merge { Merge=0, Reset=1 } (default Merge)
+  PrmLoadAction { SetParameter=0, SaveFileCommand=1, LoadFileCommand=2, CommitStagedCommand=3 }
+plain enums: PrmUpdateType { NoSlots, ParamAdded, ParamUpdated }; PrmLoadStatus { Success, Error }.
+pub struct PrmDbStore (Debug): pub fn len()->usize; is_empty()->bool; iter()->impl Iterator<Item=(FwPrmIdType, &ParamBuffer)> (insertion order). Construction/mutation are internal to the component.
+
+pub struct PrmDb (use as Arc<PrmDb>):
+  pub fields: active: ActiveBase, cmd: CmdGlue, evt: EventGlue, ping_out: OutputPort<dyn PingPort>
+  fn new(name:&str)->Arc<Self>
+  fn init(&self, queue_depth: FwSizeType)                 // creates the queue, msg size QUEUE_MSG_SIZE
+  fn configure(&self, file:&str)                          // parameter file name (C++ configure)
+  fn configure_load_sandbox(&self, directory:&str)        // optional; restricts commanded PRM_LOAD_FILE paths
+  fn read_param_file(&self)                               // boot-time load into ACTIVE; run BEFORE active.start
+  fn reg_commands(&self)                                  // registers opcodes 0,1,2
+  input factories (all fn x(self:&Arc<Self>, port_num: FwIndexType) -> PortRef<dyn ...>):
+    get_prm  -> dyn PrmGetPort   (GUARDED, returns ParamValid)
+    set_prm  -> dyn PrmSetPort   (ASYNC)
+    ping_in  -> dyn PingPort     (ASYNC)
+    cmd_in   -> dyn CmdPort      (ASYNC, own commands)
+  msg types: PrmDb::MSG_TYPE_SET_PRM=1, MSG_TYPE_PING_IN=2, MSG_TYPE_CMD=3
+  opcodes: OPCODE_PRM_SAVE_FILE=0x00, OPCODE_PRM_LOAD_FILE=0x01, OPCODE_PRM_COMMIT_STAGED=0x02
+  event ids: EVENTID_PRM_ID_NOT_FOUND=0 (WARNING_LO, PRM_ID_NOT_FOUND_THROTTLE=5), EVENTID_PRM_ID_UPDATED=1 (ACTIVITY_HI), EVENTID_PRM_DB_FULL=2 (WARNING_HI), EVENTID_PRM_ID_ADDED=3 (ACTIVITY_HI), EVENTID_PRM_FILE_WRITE_ERROR=4 (WARNING_HI), EVENTID_PRM_FILE_SAVE_COMPLETE=5 (ACTIVITY_HI), EVENTID_PRM_FILE_READ_ERROR=6 (WARNING_HI), EVENTID_PRM_FILE_LOAD_COMPLETE=7 (ACTIVITY_HI), EVENTID_PRM_DB_COMMIT_COMPLETE=8 (ACTIVITY_HI), EVENTID_PRM_DB_COPY_ALL_COMPLETE=9 (ACTIVITY_HI), EVENTID_PRM_DB_FILE_LOAD_FAILED=10 (WARNING_HI), EVENTID_PRM_DB_FILE_LOAD_INVALID_ACTION=11 (WARNING_LO), EVENTID_PRM_FILE_BAD_CRC=12 (WARNING_HI)
+  no telemetry channels.
+  impls ComponentDispatch + ActiveComponent.
+
+Topology order: PrmDb::new -> set_id_base -> connect (cmd.cmd_reg_out, cmd.cmd_response_out, evt.log_out/text_log_out/time_out, ping_out; wire get_prm/set_prm/ping_in/cmd_in into the users, dispatcher and health) -> init(depth) -> configure(path) [-> configure_load_sandbox(dir)] -> read_param_file() -> reg_commands() -> active.start(&arc, prio, stack, affinity) -> ... -> active.exit()/join(). Components' load_parameters() must run after read_param_file().
+```
+
+### Implementation notes / deviations
+
+Deviations / decisions (each documented in the source):
+1. Two owned stores + `std::mem::swap` under the component lock replace the C++ `PrmDbStore*` pair; the swap is inside the same lock the guarded getPrm takes, so getPrm never observes a half-swapped pair. Backing Vecs are `with_capacity(25)` at construction and never grow.
+2. `getPrm` drops the state lock before emitting PrmIdNotFound (C++ holds the guarded mutex across the log call). CONVENTIONS.md requires output-port invocations outside the state lock; behavior is otherwise identical. The save loop DOES hold the lock across the whole file write, matching the C++ lock()/unLock() bracket, and emits nothing while holding it.
+3. `Os::SandboxedFile` / `Os::FilePathUtils` are not ported in fprime-os, so the sandbox is implemented inline in this module: `resolve_path`/`resolve_from_cwd` (lexical `.`/`..`/`//` resolution against the cwd, MAX_PATH_LENGTH = FILE_NAME_STRING_SIZE = 240) plus `checkContainment` semantics, mapping a violation onto `file::Status::OutsideSandbox` reported as PrmFileReadError(Open, 0, 12). Unit-tested against the C++ algorithm's cases. If fprime-os later gains SandboxedFile, these two helpers should be deleted in favor of it.
+4. C++ parity quirks kept deliberately (each has a test): (a) `OPEN_WRITE` does not truncate, so a shorter image over a longer file leaves residue and the next load fails the CRC (the CRC covers everything to EOF); (b) `PRM_LOAD_FILE`'s file name is a `Fw::CmdStringArg` (40 bytes) even though the FPP model declares `string size FileNameStringSize` (240) — a longer name is a FormatError, exactly as the C++ generated handler behaves (verified against PrmDbImpl.hpp and CmdSequencer's identical shape); (c) records past the 25th are silently ignored; (d) a dropped record fails the load only after the remaining records are processed.
+5. U32 fields are read/written with `to_be_bytes`/`from_be_bytes` rather than through a `WorkingBuffer` — identical encoding to the Fw serialize layer, locked down by the literal-byte file test.
+6. Events with `string` args serialize via `LogStringArg::serialize_to_truncated(.., 80, ..)` (FPP default string size).
+7. Test scratch directories are deliberately short (`/tmp/fpdb<pid>_<n>`) because PRM_LOAD_FILE path arguments are capped at 40 bytes; a very long `TMPDIR` would break those tests.
+8. Nothing was deliberately left unported. Sibling report: `cargo clippy -p fprime-svc --all-targets -- -D warnings` failed for a while on `crates/fprime-svc/src/file_uplink.rs:448` (clippy::int_plus_one, another agent's file — I did not touch it); it was fixed by that agent and the final whole-crate clippy, build (`cargo build --workspace`), `cargo test -p fprime-svc` (244 tests) and `cargo doc` runs are all green, with `rustfmt --edition 2024 --check` clean on prm_db.rs. I ran rustfmt on my file only rather than `cargo fmt -p fprime-svc`, to avoid rewriting siblings' in-progress files.
+
+## File services (FilePacket, CFDP checksum, FileUplink/Downlink/Manager)
+
+```text
+```text
+fprime_fw::file_packet (module fprime_fw::file_packet; NOT re-exported at the crate root — use the full path)
+  const HEADER_SIZE: usize = 5; DATA_PACKET_HEADER_SIZE: usize = 11; PATH_NAME_MAX_LENGTH: usize = 255
+  fpp_enum FilePacketType : u8 { Start=0, Data=1, End=2, Cancel=3, None=255 } (Default=None, TryFrom<u8>, Serialize/Deserialize u8, as_repr(), SERIALIZED_SIZE)
+  struct Header (Copy, Eq, Default) { pub packet_type: FilePacketType, pub sequence_index: u32 }: const fn new(FilePacketType, u32); const fn buffer_size()->usize
+  struct StartPacket<'a> (Copy, Eq) { pub header: Header, pub file_size: u32, pub source_path: &'a [u8], pub destination_path: &'a [u8] }
+    fn initialize(file_size: u32, source_path: &'a [u8], destination_path: &'a [u8]) -> Self   // forces sequence_index = 0, truncates paths to 255
+    fn buffer_size(&self) -> usize
+  struct DataPacket<'a> (Copy, Eq) { pub header, pub byte_offset: u32, pub data_size: u16, pub data: &'a [u8] }
+    fn initialize(sequence_index: u32, byte_offset: u32, data_size: u16, data: &'a [u8]) -> Self  // trims data to data_size
+    const fn fixed_length_size(&self)->usize; fn buffer_size(&self)->usize
+  struct EndPacket (Copy, Eq) { pub header, pub checksum_value: u32 }: const fn initialize(seq: u32, checksum_value: u32); const fn buffer_size()->usize
+  struct CancelPacket (Copy, Eq) { pub header }: const fn initialize(seq: u32); const fn buffer_size()->usize
+  enum FilePacket<'a> (Copy, Eq) { Start(StartPacket<'a>), Data(DataPacket<'a>), End(EndPacket), Cancel(CancelPacket) }
+    fn header(&self)->Header; fn packet_type(&self)->FilePacketType; fn buffer_size(&self)->usize
+    fn serialize_to(&self, buf: &mut dyn SerBufAny) -> SerializeStatus          // always big-endian
+    fn from_buffer(data: &'a [u8]) -> Result<FilePacket<'a>, SerializeStatus>   // Err carries the C++ status (DecodeError arg)
+
+fprime_utils::cfdp (module fprime_utils::cfdp; NOT re-exported at the crate root)
+  struct Checksum (Debug, Clone, Copy, Default, PartialEq, Eq, Hash):
+    const fn new(); const fn from_value(u32); const fn get_value(&self)->u32
+    fn update(&mut self, data: &[u8], file_offset: u32)     // any alignment/order; equals the whole-file value
+    fn add_byte_at_offset(&mut self, byte: u8, offset: u8)  // offset is a WORD offset 0..=3
+
+fprime_svc::file_uplink (ACTIVE)
+  pub trait FileAnnouncePort: Send + Sync { fn invoke(&self, port_num: FwIndexType, file_name: &mut FileNameString) }
+  pub const QUEUE_MSG_SIZE: FwSizeType = 14; MAX_PATH_LENGTH: usize = 240
+  pub enum PathStatus { Valid=0, OutsideSandbox=1, InvalidPath=2, TooLong=3 }
+  pub fn resolve_path(path: &str, base_dir: &str, resolved: &mut FileNameString) -> PathStatus
+  pub fn resolve_from_cwd(path: &str, resolved: &mut FileNameString) -> PathStatus
+  pub fn check_containment(resolved_path: &str, allowed_directory: &str) -> PathStatus
+  pub struct SandboxedFile (Default = fail-open "/"): new(); configure(&mut self, dir: &str); sandbox_directory()->&FileNameString; is_configured()->bool;
+      open(&mut self, path:&str, mode: os::file::Mode)->os::file::Status; close(); is_open(); size(&mut FwSizeType); seek(i64, SeekType); read(&mut [u8], &mut FwSizeType, WaitType); write(&[u8], &mut FwSizeType, WaitType)
+  pub struct FileUplink { pub active: ActiveBase, pub evt: EventGlue, pub tlm: TlmGlue,
+      pub buffer_send_out: OutputPort<dyn BufferSendPort>, pub ping_out: OutputPort<dyn PingPort>,
+      pub file_announce: OutputPort<dyn FileAnnouncePort> }
+    fn new(name:&str)->Arc<Self>; fn init(&self, queue_depth: FwSizeType); fn configure(&self, directory: &str)
+    fn buffer_send_in(self:&Arc<Self>, port_num)->PortRef<dyn BufferSendPort>   // async
+    fn ping_in(self:&Arc<Self>, port_num)->PortRef<dyn PingPort>                // async
+    impl ComponentDispatch + ActiveComponent. No commands.
+    consts EVENTID_BAD_CHECKSUM=0, FILE_OPEN_ERROR=1, FILE_RECEIVED=2, FILE_WRITE_ERROR=3, INVALID_RECEIVE_MODE=4,
+      PACKET_OUT_OF_BOUNDS=5, PACKET_OUT_OF_ORDER=6, PACKET_DUPLICATE=7, UPLINK_CANCELED=8, DECODE_ERROR=9,
+      INVALID_PACKET_RECEIVED=10; THROTTLE_5=5, THROTTLE_20=20;
+      CHANID_FILES_RECEIVED=0, PACKETS_RECEIVED=1, WARNINGS=2, FILES_RECEIVED_FAILED=3
+  Topology: new -> active.queued.base.set_id_base -> connect(evt.log_out/evt.text_log_out/evt.time_out, tlm.tlm_out,
+      buffer_send_out, ping_out, [file_announce]) -> init(depth) -> active.start(&arc,prio,stack,affinity) -> exit()/join()
+
+fprime_svc::file_downlink (ACTIVE)
+  pub const INTERNAL_BUFFER_SIZE=512; MAX_DATA_SIZE=499; FILE_DOWN_COMPLETE_PORTS=1;
+        COMMAND_FAILURES_DISABLED: bool = true; QUEUE_MSG_SIZE: FwSizeType = 522
+  fpp_enum SendFileStatus : u8 { StatusOk=0, StatusError=1, StatusInvalid=2, StatusBusy=3 }
+  fpp_struct SendFileResponse { status: SendFileStatus {get_status,set_status}, context: u32 {get_context,set_context} }
+        (Copy, Eq, SERIALIZED_SIZE=5, new(status, context), wire = [u8][u32 BE])
+  pub type SendFileNameArg = FwString<100>
+  pub trait SendFileRequestPort { fn invoke(&self, port_num, source: &SendFileNameArg, dest: &SendFileNameArg, offset: u32, length: u32) -> SendFileResponse }
+  pub trait SendFileCompletePort { fn invoke(&self, port_num, resp: SendFileResponse) }
+  pub enum Mode { Idle=0, Downlink=1, Cancel=2, Wait=3, Cooldown=4 }; pub enum CallerSource { Command=0, Port=1 }
+  pub struct FileEntry { src_filename/dest_filename: FileNameString, offset, length: u32, source: CallerSource, op_code: FwOpcodeType, cmd_seq, context: u32 } (Default)
+  pub struct FileDownlink { pub active: ActiveBase, pub cmd: CmdGlue, pub evt: EventGlue, pub tlm: TlmGlue,
+      pub buffer_send_out: OutputPort<dyn BufferSendPort>,
+      pub file_complete: [OutputPort<dyn SendFileCompletePort>; 1],
+      pub ping_out: OutputPort<dyn PingPort> }
+    fn new(name:&str)->Arc<Self>; fn configure(&self, cooldown: u32, cycle_time: u32, file_queue_depth: usize);
+    fn configure_sandbox(&self, directory: &str); fn init(&self, queue_depth: FwSizeType); fn reg_commands(&self); fn mode(&self)->Mode
+    fn run_in(&Arc,port)->PortRef<dyn SchedPort> (async, msg 1); fn buffer_return_in(..)->PortRef<dyn BufferSendPort> (async, msg 2, escrow);
+    fn ping_in(..)->PortRef<dyn PingPort> (async, msg 3); fn cmd_in(..)->PortRef<dyn CmdPort> (async, msg 4);
+    fn send_file_in(..)->PortRef<dyn SendFileRequestPort> (GUARDED, component impls the trait)
+    consts OPCODE_SEND_FILE=0x00, OPCODE_CANCEL=0x01, OPCODE_SEND_PARTIAL=0x02;
+      EVENTID_FILE_OPEN_ERROR=0x00, FILE_READ_ERROR=0x01, FILE_SENT=0x02, DOWNLINK_CANCELED=0x03,
+      DOWNLINK_PARTIAL_WARNING=0x05, DOWNLINK_PARTIAL_FAIL=0x06, SEND_DATA_FAIL=0x07, SEND_STARTED=0x08,
+      DOWNLINK_ZERO_SIZE_FILE=0x09, FILENAME_SOURCE_OVERFLOW=0x10, FILENAME_DESTINATION_OVERFLOW=0x11,
+      SOURCE_OUT_OF_SANDBOX=0x12; CHANID_FILES_SENT=0x00, PACKETS_SENT=0x01, WARNINGS=0x02
+    Command wire args: SendFile = [CmdStringArg src][CmdStringArg dst]; Cancel = none;
+      SendPartial = [CmdStringArg src][CmdStringArg dst][u32 startOffset][u32 length]
+  Topology: new -> set_id_base -> connect(cmd.cmd_reg_out/cmd.cmd_response_out, evt.*, tlm.tlm_out, buffer_send_out,
+      file_complete[0], ping_out) -> configure(cooldown,cycle,depth) [-> configure_sandbox] -> init(depth)
+      -> reg_commands() -> active.start(&arc,..) -> exit()/join()
+
+fprime_svc::file_manager (ACTIVE)
+  pub const FILES_PER_RATE_TICK=1, GENERATE_DP_MAX_CHUNK_SIZE=1024, CHUNKS_PER_RATE_TICK=1, DEFAULT_DP_PRIORITY=10;
+        QUEUE_MSG_SIZE: FwSizeType = 522
+  fpp_enum GenerateDpStage : i32 { Open=0, Size=1, Seek=2, Read=3, Serialize=4, Busy=5 }
+  fpp_enum GenerateDpMode : i32 { Paced=0, Immediate=1 }
+  fpp_enum StringFormatStatus : u8 { Success=0, Overflowed=1, InvalidFormatString=2, SizeOverflow=3, OtherError=4 }
+  pub struct FileManager { pub active: ActiveBase, pub cmd: CmdGlue, pub evt: EventGlue, pub tlm: TlmGlue,
+      pub ping_out: OutputPort<dyn PingPort> }
+    fn new(name:&str)->Arc<Self>; fn init(&self, queue_depth: FwSizeType); fn reg_commands(&self)
+    fn ping_in(&Arc,port)->PortRef<dyn PingPort> (async, msg 1); fn cmd_in(..)->PortRef<dyn CmdPort> (async, msg 2);
+    fn sched_in(..)->PortRef<dyn SchedPort> (SYNC — component impls SchedPort; internal run message is msg 3, DROP policy)
+    consts OPCODE_CREATE_DIRECTORY=0x00, MOVE_FILE=0x01, REMOVE_DIRECTORY=0x02, REMOVE_FILE=0x03, APPEND_FILE=0x05,
+      FILE_SIZE=0x06, LIST_DIRECTORY=0x07, CALCULATE_CRC=0x08, GENERATE_DP=0x09   (0x04 is a gap)
+      EVENTID_* 0x00..0x22 exactly per Events.fppi (gaps 0x04, 0x07, 0x0D);
+      CHANID_COMMANDS_EXECUTED=0x00, CHANID_ERRORS=0x01
+    Command wire args (all strings are CmdStringArg = [u16 len][bytes], max 40): CreateDirectory/RemoveDirectory/
+      FileSize/ListDirectory/CalculateCrc = [str]; MoveFile/AppendFile = [str][str];
+      RemoveFile = [str][bool 0xFF/0x00]; GenerateDp = [str][u32 chunkSize][u64 begin][u64 end][u32 priority][i32 mode]
+  Topology: new -> set_id_base -> connect(cmd.*, evt.*, tlm.tlm_out, ping_out) -> init(depth) -> reg_commands()
+      -> active.start(&arc,..); wire sched_in into a rate group -> exit()/join()
+```
+```
+
+### Implementation notes / deviations
+
+DEVIATIONS (each documented in the code)
+
+1. `FilePacket::from_buffer` returns `Result<FilePacket<'_>, SerializeStatus>` instead of the C++ in-place `SerializeStatus fromBuffer(&Buffer)`. The task's enum has no `T_NONE` variant, so there is nothing to fill in place; the `Err` carries the exact C++ status that `FileUplink` logs as `DecodeError`. An unknown/`T_NONE` type byte is `DeserFormatError` (the C++ `FW_ASSERT(false)` in the caller's dispatch switch would crash on ground-supplied data).
+
+2. `Os::SandboxedFile` and `Os::FilePathUtils` are NOT in fprime-os (that crate's notes list SandboxedFile as "not ported" and it is owned by an earlier wave, so I may not edit it). I ported them into `file_uplink.rs` as public items (`SandboxedFile`, `PathStatus`, `resolve_path`, `resolve_from_cwd`, `check_containment`, `MAX_PATH_LENGTH`) and `file_downlink.rs` imports `SandboxedFile` from there. They should move to `fprime-os` when that crate is next touched. Semantics are exact: fail-open default (`/`, configured), purely textual resolution (no `canonicalize`, no symlink following), and the resolved path is what gets opened.
+
+3. `Fw.StringFormatStatus` is declared in `file_manager.rs` for the same reason (fprime-fw's `enums` module is not mine to edit). Move it to `fprime_fw::enums` later.
+
+4. FileDownlink buffer arenas: C++ keeps two static `[u8;512]` arrays and wraps `Fw::Buffer` views around them. Rust `Buffer`s own their storage and move through ports, so I keep a two-slot `BufferStorage` pool that recycles whatever returns on `bufferReturn` — INCLUDING buffers whose return is otherwise ignored (a stale return would otherwise leak the storage). The load-bearing part, the context bookkeeping (`context + 1 == last_buffer_id`, one id per `get_buffer`, a second one for a CANCEL packet), is reproduced exactly and tested.
+
+5. FileDownlink's internal `Os::Queue` of memcpy'd `FileEntry` PODs is a bounded `VecDeque<FileEntry>` (capacity = `file_queue_depth`, never grown, FIFO, non-blocking, full => the C++ send-failure path). The analysis explicitly sanctions a typed queue here; nothing on the wire depends on it.
+
+6. Non-UTF-8 paths: Rust file APIs take `&str`. FileUplink's `File::open` returns `BAD_SIZE` (surfacing as `FileOpenError`, the same event the C++ produces for its own `BAD_SIZE`) and FileDownlink's returns `OTHER_ERROR` (surfacing as `FileOpenError`) for a path that is not valid UTF-8. C++ passes raw bytes to `open(2)`.
+
+7. FileManager's internal `run` message carries a `port_num = 0` field after the msg type; C++ internal-interface messages omit it. This matches the existing fprime-comp dispatch contract and the EventManager precedent — internal only, never crosses a hub.
+
+8. FileUplink/FileManager/FileDownlink hold their `Mutex<State>` across event/telemetry emission where the C++ component has no mutex at all (all the mutating paths are async, i.e. component-thread only). That preserves the C++ event/telemetry interleaving exactly and cannot deadlock, since no output port can re-enter the component synchronously. FileDownlink's `Mode` has its own mutex (`mode()`/`set_mode()` lock briefly), mirroring the C++ `m_mode`; state and mode are never held simultaneously in a way that can invert.
+
+NOT PORTED (deliberate)
+
+- FileManager `GenerateDp` (0x09) chunking: `Fw/Dp`, `DpContainer` and the `Fw.DataProductSync` ports do not exist yet (`fprime-fw/src/dp.rs`, `dp_manager.rs`, `dp_writer.rs` are still one-line placeholders being written by another wave). The handler validates its arguments (`FormatError` / `ValidationError` on the `GenerateDpMode` enum) and then takes the exact path the C++ takes when `productGetOut`/`productSendOut` are unconnected: `GenerateDpBufferFailed` + `cmdResponse OK`. The `GenerateDpStage`/`GenerateDpMode` enums and the event ids are in place; the paced chunk loop, `FileChunkHeader` record and the DP-pacing half of `run_internalInterfaceHandler` are the only work left, and `run_internal_handler` has the hook comment marking where it goes.
+- No shell/exec command: opcode 0x04 is a deliberate upstream gap (the historic `ShellCommand` was removed). The task text said "ShellCommand if present"; it is not present in `Svc/FileManager/Commands.fppi`, and the analysis says explicitly not to add one. A test asserts 0x04 answers `InvalidOpcode`.
+- FileDownlink `FilenameSourceOverflow`/`FilenameDestinationOverflow` are implemented but unreachable in the stock configuration (both C++ and Rust): command strings are `Fw::CmdStringArg` (40 bytes) and port strings are 100 bytes, both below the 240-byte `FileNameString` capacity they are compared against. Kept for control-flow parity.
+- `FileUplink::File::open`'s `BAD_SIZE`-on-long-path branch is likewise unreachable (a `PathName` length is a `U8` <= 255 and the C++ buffer is 256), kept for parity.
+
+CONFIG CONSTANTS: the analysis's list of new `fprime-config` entries (`FW_FILE_BUFFER_MAX_SIZE`, `FileDownCompletePorts`, `FILEDOWNLINK_*`, `FileManagerConfig::*`) live as module consts in the owning component modules, because `fprime-config` belongs to an earlier wave. They are flagged in the doc comments for migration.
+
+TESTS: 116 new tests. Literal-byte tests cover every FilePacket variant (START/DATA/END/CANCEL), both parse and serialize directions, every error status, path truncation and zero-copy aliasing; the CFDP checksum is checked against hand-computed vectors, a byte-by-byte reference, unaligned starts 0..8, and chunked/out-of-order equivalence. Every documented gotcha in `file-services.md` has a named test. The end-to-end test downlinks a 2345-byte temp file (START + 5 DATA + END, exact chunk sizes and sequence indices), feeds the produced buffers straight into FileUplink, and asserts the reconstructed file is byte-identical with `FileReceived` as the only event.
+
+TEST-PATH CAVEAT: command string arguments are `Fw::CmdStringArg` (40 bytes) in both C++ and this port, so the FileDownlink/FileManager tests deliberately use short temp directory names (`/tmp/fpr<pid>_<n>`); longer paths get silently truncated by the command path, which is C++ behavior, not a port bug.
+
+SIBLINGS: no sibling module was edited. At final verification `cargo build --workspace`, `cargo test --workspace` (all crates green, fprime-svc 330 tests incl. my 86), `cargo clippy -p fprime-fw -p fprime-utils -p fprime-svc --all-targets -- -D warnings` and `cargo fmt --check` were all clean; fprime-svc was re-run three times with no flakes. Nothing was committed or pushed.
+
+## CmdSequencer
+
+```text
+CRATE fprime_svc, module `cmd_sequencer` (already declared in lib.rs; use fully-qualified paths, e.g. `fprime_svc::cmd_sequencer::CmdSequencer`). Nothing was added to lib.rs.
+
+```text
+MODULE CONSTS
+  SEQUENCE_ARGUMENTS_MAX_SIZE: usize = 255
+  SEQUENCE_HEADER_SIZE: usize = 11; SEQUENCE_CRC_SIZE: usize = 4
+  QUEUE_MSG_SIZE: usize = 522        // pass to create_queue via CmdSequencer::init
+  NO_SEQ: &str = "<no seq>"
+
+SVC/SEQ TYPES (all Serialize/Deserialize, Default)
+  pub struct SeqArgsBuffer(pub [u8; 255])  // fpp_array!, Clone+Copy+Eq; SIZE, SERIALIZED_SIZE=255
+  pub struct SeqArgs { pub size: FwSizeType, pub buffer: SeqArgsBuffer }  // fpp_struct!, Clone+Copy+Eq
+      SeqArgs::SERIALIZED_SIZE = 263; new(size, buffer); set_all(..); get_size/set_size; get_buffer/set_buffer
+      wire = [size u64 BE][255 raw bytes]
+  pub enum BlockState : u8 { Block = 0, NoBlock = 1 }   default Block; TryFrom<u8>, as_repr(), VALUES
+  pub enum SeqMode : u8 { Step = 0, Auto = 1 }          default Step   (the REPORTED mode; inverted vs StepMode)
+  pub enum FileReadStage : u8 { ReadHeader=0, ReadHeaderSize=1, DeserSize=2, DeserNumRecords=3,
+                                DeserTimeBase=4, DeserTimeContext=5, ReadSeqCrc=6, ReadSeqData=7,
+                                ReadSeqDataSize=8 }     default ReadHeader
+
+PORT TRAITS (defined here; `Send + Sync`, object-safe — use as OutputPort<dyn X> / PortRef<dyn X>)
+  pub trait CmdSeqInPort     { fn invoke(&self, port_num: FwIndexType, filename: &FileNameString, args: &SeqArgs) }
+  pub trait CmdSeqCancelPort { fn invoke(&self, port_num: FwIndexType) }
+  pub trait FileDispatchPort { fn invoke(&self, port_num: FwIndexType, file_name: &mut FileNameString) }
+
+INTERNAL STATE ENUMS (public for introspection/tests)
+  pub enum RunMode  { Stopped = 0, Running = 1 }   (repr i32, Default = Stopped)
+  pub enum StepMode { Auto = 0, Manual = 1 }       (repr i32, Default = Auto)
+  pub enum RecordDescriptor { Absolute = 0, Relative = 1, EndOfSequence = 2 }  (repr u8, Default = EndOfSequence)
+
+SEQUENCE FORMAT
+  pub struct SequenceHeader { pub file_size: u32, pub num_records: u32, pub time_base: TimeBase, pub time_context: u8 }
+      Default = {0, 0, TbDontCare, FW_CONTEXT_DONT_CARE}
+  pub struct SequenceRecord { pub descriptor: RecordDescriptor, pub time_tag: Time, pub command: ComBuffer }
+  pub enum SequenceLoadEvent { FileNotFound, FileReadError, FileInvalid{stage,error}, FileSizeError{size},
+      FileCrcFailure{stored,computed}, RecordInvalid{record_number,error}, RecordMismatch{header_records,extra_bytes},
+      TimeBaseMismatch{current,seq}, TimeContextMismatch{current,seq}, NoRecords }
+  pub trait Sequence: Send {
+      fn allocate_buffer(&mut self, identifier: FwEnumStoreType, bytes: usize)   // fw_assert bytes >= 11
+      fn deallocate_buffer(&mut self); fn capacity(&self) -> usize
+      fn set_file_name(&mut self, &CmdStringArg)
+      fn file_name(&self) -> &CmdStringArg; fn log_file_name(&self) -> &LogStringArg
+      fn string_file_name(&self) -> &FwDefaultString; fn header(&self) -> &SequenceHeader
+      fn load_file(&mut self, &CmdStringArg, current_time: &Time, event: &mut Option<SequenceLoadEvent>) -> bool
+      fn has_more_records(&self) -> bool; fn next_record(&mut self, &mut SequenceRecord)  // fw_asserts on bad deser
+      fn reset(&mut self)   // rewind read cursor
+      fn clear(&mut self)   // drop data (both cursors)
+  }
+  pub struct FPrimeSequence : Sequence  (Default) — fn new(); allocator_id() -> FwEnumStoreType; stored_crc() -> u32
+
+  pub struct Timer (Copy, Default) — const new(); set(Time); clear(); is_expired_at(&Time) -> bool
+      (`compare(exp, now) != Gt`, so INCOMPARABLE counts as EXPIRED); expiration_time() -> Time; is_armed() -> bool
+
+COMPONENT
+  pub struct CmdSequencer {
+      pub active: ActiveBase,
+      pub cmd: CmdGlue,                                   // cmdRegOut / cmdResponseOut
+      pub evt: EventGlue,                                 // logOut / LogText / timeCaller
+      pub tlm: TlmGlue,                                   // tlmOut
+      pub com_cmd_out:   OutputPort<dyn ComPort>,         // Fw.Com — the sequenced command packets
+      pub seq_done:      OutputPort<dyn CmdResponsePort>, // Fw.CmdResponse
+      pub seq_start_out: OutputPort<dyn CmdSeqInPort>,    // Svc.CmdSeqIn
+      pub ping_out:      OutputPort<dyn PingPort>,
+  }
+  fn new(name: &str) -> Arc<CmdSequencer>
+  fn init(&self, queue_depth: FwSizeType)                          // create_queue(depth, QUEUE_MSG_SIZE)
+  fn reg_commands(&self)                                           // registers opcodes 0..=7
+  fn set_sequence_format(&self, Box<dyn Sequence>)                 // C++ setSequenceFormat
+  fn allocate_buffer(&self, identifier: FwEnumStoreType, bytes: usize)  // Ref: (0, 5*1024)
+  fn deallocate_buffer(&self)
+  fn set_timeout(&self, timeout_seconds: u32)                      // 0 = disabled (default)
+  fn load_sequence(&self, &CmdStringArg)                           // fw_asserts run_mode == Stopped
+  fn run_mode(&self) -> RunMode; fn step_mode(&self) -> StepMode   // introspection
+  impl ComponentDispatch + ActiveComponent
+
+  Input-port factories (all `fn x(self: &Arc<Self>, port_num: FwIndexType) -> PortRef<dyn ...>`, all ASYNC,
+  `assert` queue-full policy, queue priority 1):
+      seq_cancel_in   -> PortRef<dyn CmdSeqCancelPort>
+      cmd_response_in -> PortRef<dyn CmdResponsePort>
+      ping_in         -> PortRef<dyn PingPort>
+      seq_run_in      -> PortRef<dyn CmdSeqInPort>
+      seq_dispatch_in -> PortRef<dyn FileDispatchPort>
+      sched_in        -> PortRef<dyn SchedPort>
+      cmd_in          -> PortRef<dyn CmdPort>
+  Msg types: CmdSequencer::MSG_TYPE_SEQ_CANCEL_IN=1, MSG_TYPE_CMD_RESPONSE_IN=2, MSG_TYPE_PING_IN=3,
+             MSG_TYPE_SEQ_RUN_IN=4, MSG_TYPE_SEQ_DISPATCH_IN=5, MSG_TYPE_SCHED_IN=6, MSG_TYPE_CMD_IN=7
+
+  Associated consts (FPP-relative):
+    OPCODE_CS_RUN=0, OPCODE_CS_VALIDATE=1, OPCODE_CS_CANCEL=2, OPCODE_CS_START=3,
+    OPCODE_CS_STEP=4, OPCODE_CS_AUTO=5, OPCODE_CS_MANUAL=6, OPCODE_CS_JOIN_WAIT=7
+    EVENTID_CS_SEQUENCE_LOADED=0, _SEQUENCE_CANCELED=1, _FILE_READ_ERROR=2, _FILE_INVALID=3,
+    _RECORD_INVALID=4, _FILE_SIZE_ERROR=5, _FILE_NOT_FOUND=6, _FILE_CRC_FAILURE=7,
+    _COMMAND_COMPLETE=8, _SEQUENCE_COMPLETE=9, _COMMAND_ERROR=10, _INVALID_MODE=11,
+    _RECORD_MISMATCH=12, _TIME_BASE_MISMATCH=13, _TIME_CONTEXT_MISMATCH=14,
+    _PORT_SEQUENCE_STARTED=15, _UNEXPECTED_COMPLETION=16, _MODE_SWITCHED=17,
+    _NO_SEQUENCE_ACTIVE=18, _SEQUENCE_VALID=19, _SEQUENCE_TIMEOUT=20, _CMD_STEPPED=21,
+    _CMD_STARTED=22, _JOIN_WAITING=23, _JOIN_WAITING_NOT_COMPLETE=24, _NO_RECORDS=25
+    CHANID_CS_LOAD_COMMANDS=0, _CANCEL_COMMANDS=1, _ERRORS=2, _COMMANDS_EXECUTED=3,
+    _SEQUENCES_COMPLETED=4, _CURRENT_SEQUENCE=5 (string 240, update on change)
+
+  Command wire args: CS_RUN = [u16 len][name bytes][u8 BlockState]; CS_VALIDATE = [u16 len][name bytes];
+  the other six take no arguments. File names deserialize into `Fw::CmdStringArg` (40) exactly as the C++
+  generated handler does, so a longer name answers FormatError.
+
+  Topology order: CmdSequencer::new -> active.queued.base.set_id_base -> connect
+  (cmd.cmd_reg_out, cmd.cmd_response_out, evt.log_out, evt.text_log_out, evt.time_out, tlm.tlm_out,
+   com_cmd_out -> CmdDispatcher::seq_cmd_buff_in, seq_done, seq_start_out, ping_out) ->
+  init(depth) -> allocate_buffer(0, 5*1024) -> set_timeout(..) -> reg_commands() ->
+  [load_sequence(..)] -> active.start(&arc, prio 20, stack, affinity) -> ... -> active.exit() / active.join()
+  -> deallocate_buffer().
+  Ref wiring: rateGroup2Comp.RateGroupMemberOut[0] -> cmdSeq.sched_in;
+  cmdSeq.com_cmd_out -> CmdDispatcher.seq_cmd_buff_in; CmdDispatcher.seq_cmd_status -> cmdSeq.cmd_response_in.
+```
+```
+
+### Implementation notes / deviations
+
+DEVIATIONS (each documented in code)
+
+1. Exactly-once CS_RUN response. C++ ends `CS_RUN_cmdHandler` with `if (NO_BLOCK == m_blockState) cmdResponse(OK)` reading the *member*. When a sequence completes synchronously inside `performCmd_Step` (a file whose FIRST record is END_OF_SEQUENCE) `sequenceComplete` has already answered the BLOCK caller and reset `m_blockState`, so stock C++ answers a second time. Because the task mandates exactly-once responses, the port tests the block state the command ARRIVED with. Every other path is byte-identical; covered by `block_mode_answers_exactly_once_for_an_immediately_complete_sequence`.
+
+2. `Header::validateTime` calls `component.getTime()` in C++; here the component samples `timeCaller` once in `load_file` and passes the `Time` into `Sequence::load_file`. Equivalent (synchronous port, single thread), and it keeps the `Sequence` trait free of a back-pointer to the component.
+
+3. `Sequence::Events` (which calls back into the component) became a returned `Option<SequenceLoadEvent>`: every failing load path emits at most one event and returns immediately, so this is faithful. The component maps it to the event id and calls `error()` for all variants except `RecordMismatch` (C++ TODO).
+
+4. `deserialize_header` commits header fields only on full success; C++ writes them as it goes. Unobservable — after a failed load the component clears the sequence and nothing reads the header.
+
+5. `MemAllocator`/`ExternalSerializeBuffer` -> owned `Box<[u8]>` plus explicit `ser_loc`/`deser_loc`. `allocate_buffer` keeps the `identifier` argument as an inert field for API parity (`FPrimeSequence::allocator_id()`); `recoverable` is dropped. Reading the records *over* the header is not needed: the CRC takes the 11 header bytes as read, then the record slice — bit-identical.
+
+6. A file name that is not valid UTF-8 cannot reach `fprime_os::File::open`, so it reports `CS_FileReadError` (C++ would hand the bytes to open(2) and fail there).
+
+7. `Sequence::capacity()` is an addition (no C++ equivalent) used by the buffer-size check and tests.
+
+8. State is held in a `Mutex<CmdSequencerState>` per workspace convention and the lock is held across output-port invocations. C++ has no mutex at all here; every input port is ASYNC so there is no re-entrancy and no guarded port, which makes this safe and semantically identical.
+
+NOT PORTED (per the analysis)
+- `formats/AMPCSSequence` (alternate format with a `.CRC32` sidecar) — the `Sequence` trait keeps it addable.
+- `Os::ValidateFile` — a dead include in `CmdSequencerImpl.hpp`.
+
+C++ PARITY QUIRKS DELIBERATELY KEPT (all tested)
+- `fileSize` includes the trailing CRC; CRC covers header(11)+records(fileSize-4) only.
+- `recordSize + sizeof(FwPacketDescriptorType) > 512` is over-strict by 2 (max usable 510).
+- `Timer::is_expired_at` treats INCOMPARABLE as EXPIRED, while `performCmd_Step_ABSOLUTE`'s `>=` does not.
+- `perform_cmd_cancel` uses `reset()` (rerunnable), complete/validate/load-failure use `clear()`.
+- `CS_RecordMismatch` does not bump `CS_Errors`.
+- `CS_JOIN_WAIT` logs the PREVIOUS cmdSeq/opCode.
+- `do_sequence_run` invokes `seqDone` unguarded on its error paths (fw_asserts when unconnected) while cancel/complete guard — covered by a `#[should_panic]` test.
+- `schedIn`'s `else if` (a due dispatch suppresses the timeout check) and its second `getTime()`.
+- `set_cmd_timeout` only when `timeout > 0` AND step mode AUTO.
+- A malformed record time tag with `useconds >= 1e6` fail-stops through `fw_assert!`, exactly like the C++ `Fw::Time::set` FW_ASSERT.
+
+VERIFICATION
+`cargo build --workspace` green; `cargo test -p fprime-svc` fully green (428 tests, 84 of them mine); `cargo clippy -p fprime-svc --all-targets -- -D warnings` clean; `rustfmt --edition 2024 --check` clean on my file.
+
+SIBLING NOTE (not a defect in my work): `cargo fmt -p fprime-svc -- --check` currently reports formatting drift in `crates/fprime-svc/src/dp_writer.rs` (a sibling agent's in-progress module) — I did not touch it. Caution for the orchestrator: earlier in this session I ran `cargo fmt -p fprime-svc`, which formats the whole crate and may have applied whitespace-only rustfmt changes to sibling files present at that moment; the current drift shows they have since been rewritten. Nothing was committed or pushed, and no other file was edited by hand.
+
+## Data products (DpContainer, DpManager, DpWriter, DpCatalog)
+
+```text
+## fprime_fw::dp (NOT re-exported at the crate root — use `fprime_fw::dp::*`)
+
+```text
+const CONTAINER_USER_DATA_SIZE: usize = 32; HASH_DIGEST_LENGTH: usize = 4
+fn crc32(data: &[u8]) -> u32   // standard complemented CRC-32 (= Utils::Hash value)
+
+fpp_enum DpState : u8 { Untransmitted=0, Partial=1, Transmitted=2 } default Untransmitted
+fpp_enum ProcType : u8 { None=0x00, ZlibDeflate=0x01, One=0x02, Two=0x04 } default None
+  // bit MASK: DpWriter fans out on bit index n -> proc_buffer_send_out[n]
+
+struct Header (offsets, all `usize` assoc consts): PACKET_DESCRIPTOR_OFFSET=0, ID_OFFSET=2,
+  PRIORITY_OFFSET=6, TIME_TAG_OFFSET=10, PROC_TYPES_OFFSET=21, USER_DATA_OFFSET=22,
+  DP_STATE_OFFSET=54, DATA_SIZE_OFFSET=55, SIZE=57
+
+struct DpContainer (Debug, Default):
+  consts HEADER_HASH_OFFSET=57, DATA_OFFSET=61, MIN_PACKET_SIZE=65
+  const fn packet_size_for_data_size(FwSizeType) -> FwSizeType
+  pub user_data: [u8; 32]
+  fn new() -> Self; with_buffer(id: FwDpIdType, buffer: Buffer) -> Self /*asserts size>=65*/
+  id/set_id, priority/set_priority, time_tag/set_time_tag (Time), proc_types/set_proc_types (u8),
+    state()->DpState / set_dp_state, data_size/set_data_size (FwSizeType)
+  fn packet_size(&self)->FwSizeType; data_hash_offset(&self)->FwSizeType
+  fn buffer(&self)->&Buffer; buffer_mut(&mut self)->&mut Buffer
+  fn set_buffer(&mut self, Buffer) /*asserts >=65, resets data_size*/
+  fn take_buffer(&mut self)->Buffer  // Rust form of invalidateBuffer
+  fn shrink_buffer_size(&mut self)   // asserts shrink-only
+  fn data_capacity(&self)->FwSizeType; data(&self)->&[u8]; data_region_mut(&mut self)->&mut [u8]
+  fn data_serializer(&mut self)->ExtBuf<'_>   // the C++ m_dataBuffer, cursor at 0
+  fn serialize_header(&mut self) /*asserts; also updates the header hash*/
+  fn deserialize_header(&mut self)->SerializeStatus /*FormatError on bad descriptor*/
+  fn header_hash/compute_header_hash(&self)->u32; set_header_hash(u32); update_header_hash()
+  fn check_header_hash(&self)->(Success, stored: u32, computed: u32)
+  fn data_hash/compute_data_hash(&self)->u32; set_data_hash(u32); update_data_hash()
+  fn check_data_hash(&self)->(Success, stored: u32, computed: u32)
+
+Port traits (all `: Send + Sync`, object-safe, use as OutputPort<dyn XPort>):
+  DpGetPort::invoke(&self, port_num, id: FwDpIdType, data_size: FwSizeType, buffer: &mut Buffer) -> Success
+  DpRequestPort::invoke(&self, port_num, id: FwDpIdType, data_size: FwSizeType)
+  DpResponsePort::invoke(&self, port_num, id: FwDpIdType, buffer: Buffer /*by move*/, status: Success)
+  DpSendPort::invoke(&self, port_num, id: FwDpIdType, buffer: Buffer /*by move*/)
+```
+
+## fprime_svc::dp_manager
+
+```text
+const DP_MANAGER_NUM_PORTS: usize = 5; QUEUE_MSG_SIZE: FwSizeType = 522
+DpManager::new(name)->Arc<Self>; init(&self, queue_depth); reg_commands(&self)
+fields: pub active: ActiveBase, cmd: CmdGlue, evt: EventGlue, tlm: TlmGlue,
+  product_response_out: [OutputPort<dyn DpResponsePort>; 5],
+  buffer_get_out: [OutputPort<dyn BufferGetPort>; 5],
+  product_send_out: [OutputPort<dyn BufferSendPort>; 5]
+input factories fn x(self:&Arc<Self>, port_num)->PortRef<..>:
+  product_get_in (SYNC dyn DpGetPort, 0..5, asserts range), product_request_in (async dyn DpRequestPort),
+  product_send_in (async dyn DpSendPort, escrowed buffer), sched_in (async dyn SchedPort),
+  cmd_in (async dyn CmdPort)
+msg types 1..=4 (SCHED_IN, PRODUCT_REQUEST_IN, PRODUCT_SEND_IN, CMD_IN), priority 1
+consts: OPCODE_CLEAR_EVENT_THROTTLE=0; EVENTID_BUFFER_ALLOCATION_FAILED=0;
+  CHANID_NUM_SUCCESSFUL_ALLOCATIONS=0, NUM_FAILED_ALLOCATIONS=1, NUM_DATA_PRODUCTS=2, NUM_BYTES=3
+```
+
+## fprime_svc::dp_writer
+
+```text
+const DP_WRITER_NUM_PROC_PORTS: usize = 5; DP_EXT = ".fdp"; QUEUE_MSG_SIZE = 522
+fn format_dp_file_name(base_dir:&str, id:FwDpIdType, seconds:u32, useconds:u32)
+   -> (FileNameString, StringFormatStatus)      // "<dir>/Dp_%08_%08_%08.fdp"; >240 -> Overflowed
+trait DpWrittenPort: Send+Sync { fn invoke(&self, port_num, file_name:&FileNameString,
+   priority: FwDpPriorityType, size: FwSizeType) }        // Svc.DpWritten lives here
+trait DpProcPort:   Send+Sync { fn invoke(&self, port_num, buffer:&mut Buffer) }  // procBufferSendOut
+DpWriter::new(name)->Arc<Self>; init(&self, queue_depth); configure(&self, dp_file_name_prefix:&str);
+  reg_commands(&self)
+fields: pub active, cmd, evt, tlm, proc_buffer_send_out: [OutputPort<dyn DpProcPort>; 5],
+  dp_written_out: OutputPort<dyn DpWrittenPort> (optional), dealloc_buffer_send_out: OutputPort<dyn BufferSendPort>
+input factories: buffer_send_in (async dyn BufferSendPort, escrowed), sched_in (async dyn SchedPort),
+  cmd_in (async dyn CmdPort)
+msg types 1..=3 (SCHED_IN, BUFFER_SEND_IN, CMD_IN), priority 1
+consts: OPCODE_CLEAR_EVENT_THROTTLE=0; EVENTID_ INVALID_BUFFER=0, BUFFER_TOO_SMALL_FOR_PACKET=1,
+  INVALID_HEADER_HASH=2, INVALID_HEADER=3, BUFFER_TOO_SMALL_FOR_DATA=4, FILE_NAME_FORMAT_ERROR=5,
+  FILE_OPEN_ERROR=6, FILE_WRITE_ERROR=7, FILE_WRITTEN=8;
+  CHANID_ NUM_BUFFERS_RECEIVED=0, NUM_BYTES_WRITTEN=1, NUM_SUCCESSFUL_WRITES=2, NUM_FAILED_WRITES=3, NUM_ERRORS=4
+```
+
+## fprime_svc::dp_catalog
+
+```text
+const DP_MAX_DIRECTORIES=2; DP_MAX_FILES=127; STATE_FILE_RECORD_SIZE=31; QUEUE_MSG_SIZE=522
+fpp_enum DpHdrField : u8 { Descriptor=0, Id=1, Priority=2, Crc=3 }
+fpp_struct DpRecord (Clone, Copy; SERIALIZED_SIZE=29) { id: FwDpIdType, t_sec: u32, t_sub: u32,
+  priority: u32, size: u64, blocks: u32, state: DpState } + get_*/set_* pairs
+struct DpStateEntry { pub dir: FwIndexType, pub record: DpRecord }  // Ord == compare_entries
+fn compare_entries(&DpStateEntry, &DpStateEntry) -> std::cmp::Ordering  // priority, tSec, tSub, id; dir EXCLUDED
+DpCatalog::new(name)->Arc<Self>; init(&self, queue_depth); reg_commands(&self);
+  configure(&self, directories: &[FileNameString], state_file: &FileNameString)
+  configure_with_slots(&self, dirs, state_file, requested_slots: FwSizeType)  // 0 = the no-memory path
+  shutdown(&self); catalog_size(&self)->usize
+fields: pub active, cmd, evt, tlm, ping_out: OutputPort<dyn PingPort>,
+  file_out: OutputPort<dyn SendFileRequestPort>
+input factories: ping_in (async dyn PingPort), file_done (async dyn SendFileCompletePort),
+  add_to_cat (async dyn DpWrittenPort), cmd_in (async dyn CmdPort)
+msg types 1..=4 (PING_IN, FILE_DONE, ADD_TO_CAT, CMD_IN), priority 1
+consts: OPCODE_ BUILD_CATALOG=0, START_XMIT_CATALOG=1 (wait: Fw.Wait, remainActive: bool),
+  STOP_XMIT_CATALOG=2, CLEAR_CATALOG=3
+  EVENTID_* with the FPP explicit ids: DIRECTORY_OPEN_ERROR=0 .. DIRECTORY_NOT_MANAGED=5,
+  CATALOG_XMIT_STARTED=10 (never emitted), CATALOG_XMIT_STOPPED=11, CATALOG_XMIT_COMPLETED=12,
+  SENDING_PRODUCT=13, PRODUCT_COMPLETE=14, COMPONENT_NOT_INITIALIZED=20 .. FILE_SIZE_ERROR=31,
+  NO_DP_MEMORY=32, XMIT_NOT_ACTIVE=34, STATE_FILE_*=35..40 (DP_DUPLICATE=28 never emitted),
+  DP_FILE_XMIT_ERROR=41, DP_FILE_SEND_ERROR=42, DP_FILE_ADDED=43, NOT_LOADED=44, DP_FILE_SKIPPED=45,
+  XMIT_UNBUILT_CATALOG=46, INVALID_FILE_NAME=47, FILE_CORRUPTED_DATA_ERROR=48, FILE_NAME_FORMAT_ERROR=49
+  CHANID_CATALOG_DPS=0, CHANID_DPS_SENT=1  (declared, never written — C++ parity)
+```
+
+Topology wiring: DpManager.product_send_out[i] -> DpWriter.buffer_send_in; DpWriter.dp_written_out ->
+DpCatalog.add_to_cat; DpCatalog.file_out -> FileDownlink.send_file_in; FileDownlink's completion port ->
+DpCatalog.file_done. Order per component: new -> set_id_base -> connect -> init(queue_depth) ->
+configure (DpWriter/DpCatalog) -> reg_commands -> active.start.
+```
+
+### Implementation notes / deviations
+
+DELIBERATE DEVIATIONS (each documented in the module headers)
+
+1. zlib is OUT OF SCOPE, as instructed: `Svc::DpZLibCompressor` and `Svc::DpCompressProc` are not ported (they call libz; the workspace has zero third-party deps). `ProcType::ZlibDeflate` (0x01) is kept for wire parity and DpWriter's 5-port `procTypes & (1<<portNum)` fan-out is ported verbatim, so any processing component can be wired later. With nothing connected procTypes is 0x00 and `perform_processing` is a no-op; the rest of the chain is fully functional.
+
+2. Home of the port traits: DpGet/DpRequest/DpResponse/DpSend are defined in `fprime_fw::dp` (they are declared in `Fw/Dp/Dp.fpp` next to `DpState` and are meaningless without `DpContainer`; `fprime-comp` is not writable by this task). `Svc.DpWritten` is defined in `fprime_svc::dp_writer`, next to its only emitter (Svc/DpPorts holds nothing else). Both are `: Send + Sync` object-safe traits and work with `fprime_comp::OutputPort<dyn ...>` unchanged.
+
+3. `procBufferSendOut` is FPP `Fw.BufferSend`, but C++ keeps using the buffer after the synchronous call (`ref Fw::Buffer`). The framework's `BufferSendPort` moves the buffer, so the fan-out uses a new `DpProcPort` taking `&mut Buffer` — same call graph, same in-place mutation, no ownership loss. `bufferSendIn`/`productSendIn`/`deallocBufferSendOut` stay real `BufferSendPort`s.
+
+4. `DpContainer` owns its `Buffer` (the Rust `Fw::Buffer` owns storage). `invalidateBuffer` becomes `take_buffer() -> Buffer` so ownership is handed back rather than dropped, and the C++ `m_dataBuffer` alias into the packet is replaced by `data_region_mut()` / `data_serializer()` plus explicit `set_data_size`. The C++ double `setBuffer` in DpWriter's `deserializePacketHeader` is preserved literally (take + set) because the data-size reset it performs is load-bearing.
+
+5. Hashes are `u32` instead of `Utils::HashBuffer` (4-byte digest stored big-endian, so this is exactly `HashBuffer::asBigEndianU32()`, which is what every event argument uses). The CRC-32 table/algorithm is duplicated in `fprime-fw/src/dp.rs` because `fprime-fw` cannot depend on `fprime-utils` (the DAG runs utils -> fw); this mirrors the duplication `fprime-os` already carries. A test pins it against the standard vectors (`"123456789"` -> 0xCBF43926) and against the literal 57-byte header CRC.
+
+6. `Fw.StringFormatStatus` is reused from `crate::file_manager` (an earlier wave declared it there with a note that it belongs in `fprime-fw::enums`); I did not duplicate it. `Svc.SendFileStatus`/`SendFileResponse`/`SendFileRequestPort`/`SendFileCompletePort` come from `crate::file_downlink`, and `DpCatalog` truncates its 240-byte file names into the port's `string size 100` exactly as C++ does.
+
+7. `FwSizeType` event arguments (DpWriter's `bufferSize`) are serialized as 8 raw big-endian bytes, matching the repo precedent set by EventManager's `EventsDropped` FwSizeType channel. If the FPP autocoder is later found to use `serializeSize` (U16) for size-typed event args, DpWriter's three affected events are the only place to change.
+
+8. DpCatalog's `MemAllocator` is replaced by `configure_with_slots(.., requested_slots)`, which sizes a `Box<[DpStateFileEntry]>` and derives `num_dp_slots = min(requested, DP_MAX_FILES)`; `requested_slots == 0` reproduces the C++ short/failed-allocation path (`ComponentNoMemory` / `NoDpMemory`). The catalog itself keeps its fixed 127-entry capacity independent of the slot count, as in C++.
+
+9. `Fw::RedBlackTreeSet` is a sorted fixed-capacity `Vec` (capacity allocated once at construction) with binary-search find/insert/remove; the order is `compare_entries` verbatim and `first()` is `begin()`.
+
+C++ QUIRKS REPRODUCED ON PURPOSE (all covered by tests)
+- DpManager: `NumBytes` adds the whole `Fw::Buffer` size, not the packet size; `productRequestIn` always answers, with an invalid buffer + FAILURE on allocation failure; responses/sends mirror the request port index.
+- DpWriter: `CLEAR_EVENT_THROTTLE` clears 7 of the 8 throttled events (FileNameFormatError, id 5, is throttled but never cleared); the double `setBuffer`; `updateHeaderHash()` followed by `serializeHeader()` (which re-hashes) after processing; the file is never explicitly closed (Rust `File` closes on drop); `OPEN_CREATE` defaults to NO_OVERWRITE so rewriting an existing product is a FileOpenError.
+- DpCatalog: `FileHdrError` passes (exp = computed, act = stored) — the reverse of the argument names; `dir` is excluded from ordering/equality so the same product in two managed directories is a duplicate, while `getFileState` DOES require a `dir` match; `CLEAR_CATALOG` neither checks nor clears the xmit flags (a later `fileDone` unwinds with EXECUTION_ERROR); `STOP_XMIT_CATALOG` does not cancel the in-flight transfer; `START_XMIT_CATALOG` arms the waited response before starting; `addToCat` ignores the port's priority/size arguments; only insert failure and slot overflow return QUIT while every other file error continues the scan; a directory open/read/count error aborts the entire build; the state file is unframed, appended without dedup, and a short trailing record is a benign truncation; `CatalogXmitStarted` (10), `DpDuplicate` (28) and both telemetry channels are declared but never emitted/written.
+- A rebuild does NOT skip a product that was transmitted in a previous session: C++ never rewrites the file's own header, so only a header whose `DpState` is TRANSMITTED is skipped; the state file only merges `state`/`blocks` into the catalog entry. A test pins this (it is easy to mis-implement as a skip).
+
+OPEN QUESTIONS / NOTES FOR THE ORCHESTRATOR
+- `docs/api-notes.md` was not edited (docs/ is off-limits for this task); the API block above is ready to paste under a "Data products" heading.
+- `fprime-fw/src/lib.rs` was not touched, so `dp` is reachable as `fprime_fw::dp::...` only. Add `pub use dp::{DpContainer, DpState, ProcType};` there if a crate-root re-export is wanted.
+- Mid-task, `cargo build -p fprime-svc` once failed with an unclosed delimiter in a sibling's `cmd_sequencer.rs`, and two `ccsds::space_packet_framer` should_panic tests failed transiently; both cleared on their own. Final state: `cargo build --workspace`, `cargo test --workspace` (all crates green, fprime-svc 519 tests), `cargo clippy -p fprime-fw -p fprime-svc --all-targets -D warnings` and `cargo fmt --check` are all clean. `cargo fmt` touched only my own files (verified by mtime).
+
+## CCSDS stack (CRC-16, types, ApidManager, SpacePacket/TM/TC)
+
+```text
+All items live under `fprime_svc::ccsds::{crc16, types, apid_manager, space_packet_framer, space_packet_deframer, tm_framer, tc_deframer}` (nothing re-exported at the crate root; fully-qualified paths work).
+
+crc16:
+  const POLYNOMIAL:u16=0x1021; INIT:u16=0xFFFF; XOR_OUT:u16=0x0000
+  struct Crc16 (Debug,Clone,Copy,Eq,Default): const fn new(); fn update(&mut self,u8); fn update_all(&mut self,&[u8]); const fn finalize(&self)->u16; const fn register(&self)->u16; fn compute(&[u8])->u16
+
+types:
+  const SPACECRAFT_ID:u16=0x0044; TM_FRAME_FIXED_SIZE:usize=1024; AOS_MAX_FRAME_FIXED_SIZE:usize=1536; AGGREGATION_SIZE:usize=1009
+  fpp_enum FrameError:u8 {SpInvalidPacket=0,SpInvalidLength=1,TcInvalidScid=2,TcInvalidLength=3,TcInvalidVcid=4,TcInvalidCrc=5,AosInvalidScid=6,AosInvalidLength=7,AosInvalidVcid=8,AosInvalidCrc=9,AosInvalidVersion=10,AosInvalidEpp=11,AosVcFrameCountGap=12,SdlsDecryptionFailure=13} default SpInvalidPacket
+  fpp_enum SdlsStatus:u8 {Success=0,UnknownSa=1,UnknownPort=2,EncryptionFailure=3,DecryptionFailure=4,KeyError=5}; fpp_enum Tfvn:u8 {TmTc=0,Aos=1,ProxOne=2,Uslp=3,InvalidUninitialized=4} default InvalidUninitialized
+  mod space_packet_subfields {PVN_MASK 0xE000, PKT_TYPE_MASK 0x1000, SEC_HDR_MASK 0x0800, APID_MASK 0x07FF, PVN_OFFSET 13, PKT_TYPE_OFFSET 12, SEC_HDR_OFFSET 11, SEQ_FLAGS_MASK 0xC000, SEQ_COUNT_MASK 0x3FFF, SEQ_FLAGS_OFFSET 14, APID_WIDTH 11, SEQ_COUNT_WIDTH 14}
+  mod tm_subfields {FRAME_VERSION_OFFSET 14, SPACECRAFT_ID_OFFSET 4, VIRTUAL_CHANNEL_ID_OFFSET 1, SEG_LENGTH_OFFSET 11, FRAME_VERSION_MASK 0xC000, SPACECRAFT_ID_MASK 0x3FF0, VIRTUAL_CHANNEL_ID_MASK 0x000E, OCF_FLAG_MASK 0x0001, SEC_HDR_FLAG_MASK 0x8000, SYNC_FLAG_MASK 0x4000, PACKET_ORDER_FLAG_MASK 0x2000, SEG_LENGTH_MASK 0x1800, FIRST_HEADER_POINTER_MASK 0x07FF}
+  mod tc_subfields {FRAME_VERSION_MASK 0xC000, BYPASS_FLAG_MASK 0x2000, CONTROL_FLAG_MASK 0x1000, RESERVED_MASK 0x0C00, SPACECRAFT_ID_MASK 0x03FF, BYPASS_FLAG_OFFSET 13, VC_ID_MASK 0xFC00, FRAME_LENGTH_MASK 0x03FF, VC_ID_OFFSET 10}
+  mod m_pdu_subfields {FHP_NO_PACKET_START 0xFFFF, FHP_IDLE_DATA_ONLY 0xFFFE}
+  struct SpacePacketHeader (Clone,Copy,Eq,Debug,PartialEq,Default,Serialize/Deserialize,SERIALIZED_SIZE=6) {pub packet_identification:u16, packet_sequence_control:u16, packet_data_length:u16} + get_*/set_* pairs + new(a,b,c)/set_all
+    const fn build_packet_identification(pvn:u8, packet_type:u8, has_sec_hdr:bool, apid:u16)->u16 (all fields masked)
+    const fn build_packet_sequence_control(sequence_flags:u8, sequence_count:u16)->u16
+    const fn pvn()->u8; packet_type()->u8; has_sec_hdr()->bool; apid_value()->u16; sequence_flags()->u8; sequence_count()->u16; data_field_length()->u32 (token+1, widened); length_token(data_field_length:u16)->u16
+  struct TMHeader (SERIALIZED_SIZE=6) {global_vc_id:u16, master_frame_count:u8, virtual_frame_count:u8, data_field_status:u16}
+    const fn build_global_vc_id(spacecraft_id:u16, vc_id:u8, ocf_flag:bool)->u16  // UNMASKED, reproduces the C++ overflow gotcha
+    const fn build_data_field_status(sec_hdr:bool, sync:bool, packet_order:bool, segment_length_id:u8, first_header_pointer:u16)->u16
+    const fn frame_version()->u8; spacecraft_id()->u16; vc_id()->u8; ocf_flag()->bool; segment_length_id()->u8; first_header_pointer()->u16
+  struct TMTrailer{fecf:u16} (2); struct TCTrailer{fecf:u16} (2); struct AOSTrailer{fecf:u16} (2)
+  struct TCHeader (SERIALIZED_SIZE=5) {flags_and_sc_id:u16, vc_id_and_length:u16, frame_sequence_num:u8}
+    const fn build_flags_and_sc_id(bypass:bool, control_command:bool, spacecraft_id:u16)->u16  // (true,false,0x0044)==0x2044, the frame-detector token
+    const fn build_vc_id_and_length(vc_id:u8, total_frame_length:u16)->u16  // stores length-1
+    const fn frame_version()->u8; bypass_flag()->bool; control_command_flag()->bool; spacecraft_id()->u16; vc_id()->u8; total_frame_length()->u16 (token+1)
+  struct AOSHeader{global_vc_id:u16, frame_count_and_signaling:u32} (6); struct MPduHeader{first_header_pointer:u16} (2, default 0xFFFF); struct SaMapEntry{security_association_index:u16, port_index:FwIndexType}
+  trait ApidSequenceCountPort: Send+Sync { fn invoke(&self, port_num:FwIndexType, apid:Apid, sequence_count:u16)->u16 }
+  trait ErrorNotifyPort: Send+Sync { fn invoke(&self, port_num:FwIndexType, error_code:FrameError) }
+
+apid_manager::ApidManager (PASSIVE, both inputs guarded):
+  fn new(name:&str)->Arc<Self>; pub base: PassiveBase; pub evt: EventGlue
+  input factories: get_apid_seq_count_in(self:&Arc<Self>, port_num)->PortRef<dyn ApidSequenceCountPort>; validate_apid_seq_count_in(..)->PortRef<dyn ApidSequenceCountPort>
+  no output ports besides evt; const MAX_TRACKED_APIDS:usize=12 (=Apid::NUM_CONSTANTS); EVENTID_UNEXPECTED_SEQUENCE_COUNT=0 (WARNING_LO, args [u16 transmitted][u16 expected])
+  fn owns nothing else; const fn calculate_next_seq_count(u16)->u16; module const SEQ_COUNT_MODULUS:u32=1<<14
+  Topology: new -> set_id_base -> connect evt.log_out/text_log_out/time_out -> hand its input factories to the framer/deframer output ports.
+
+space_packet_framer::SpacePacketFramer (PASSIVE, all inputs sync):
+  fn new(name:&str)->Arc<Self>; pub base: PassiveBase; pub evt: EventGlue
+  output ports: buffer_allocate: OutputPort<dyn BufferGetPort>, buffer_deallocate: OutputPort<dyn BufferSendPort>, get_apid_seq_count: OutputPort<dyn ApidSequenceCountPort>, data_out / data_return_out: OutputPort<dyn ComDataWithContextPort>, com_status_out: OutputPort<dyn SuccessConditionPort>
+  input factories: data_in(..)->PortRef<dyn ComDataWithContextPort>; data_return_in(..)->PortRef<dyn ComDataWithContextPort>; com_status_in(..)->PortRef<dyn SuccessConditionPort>
+  fn clear_no_buffer_available_throttle(&self)
+  module consts: EVENTID_NO_BUFFER_AVAILABLE:FwEventIdType=0 (WARNING_HI, no args), EVENTID_NO_BUFFER_AVAILABLE_THROTTLE:u32=5
+  Requires buffer_allocate, buffer_deallocate, get_apid_seq_count, data_out, data_return_out connected (unconnected .get() asserts); com_status_out is optional.
+
+space_packet_deframer::SpacePacketDeframer (PASSIVE, dataIn guarded):
+  fn new(name:&str)->Arc<Self>; pub base, evt
+  output ports: data_out, data_return_out: OutputPort<dyn ComDataWithContextPort>; validate_apid_seq_count: OutputPort<dyn ApidSequenceCountPort> (REQUIRED, invoked unconditionally); error_notify: OutputPort<dyn ErrorNotifyPort> (OPTIONAL, connection-checked)
+  input factories: data_in(..), data_return_in(..) -> PortRef<dyn ComDataWithContextPort>
+  module consts: EVENTID_INVALID_PACKET=0 (WARNING_HI, no args), EVENTID_INVALID_LENGTH=1 (WARNING_HI, args [u64 transmitted][u64 actual])
+
+tm_framer::TmFramer (PASSIVE, all inputs sync):
+  fn new(name:&str)->Arc<Self>; pub base: PassiveBase (NO evt/tlm/cmd — the component has none)
+  output ports: data_out, data_return_out: OutputPort<dyn ComDataWithContextPort>, com_status_out: OutputPort<dyn SuccessConditionPort>
+  input factories: data_in(..), data_return_in(..) -> PortRef<dyn ComDataWithContextPort>; com_status_in(..)->PortRef<dyn SuccessConditionPort>
+  fn owns_frame_buffer(&self)->bool (observability for the OWNED/NOT_OWNED handshake)
+  module consts: IDLE_DATA_PATTERN:u8=0x44; TRAILER_OFFSET:usize=1022; TM_PAYLOAD_CAPACITY:usize=1016; MIN_IDLE_PACKET_SIZE:usize=7; MAX_PAYLOAD_SIZE:usize=1009; SEGMENT_LENGTH_ID:u8=3; IDLE_SEQUENCE_FLAGS:u8=3
+  Ownership contract: exactly one frame in flight; dataIn asserts the buffer is owned, dataReturnIn asserts it is not owned and that capacity==1024. Downstream MUST copy the frame before returning it.
+
+tc_deframer::TcDeframer (PASSIVE, dataIn guarded):
+  fn new(name:&str)->Arc<Self>; pub base, evt
+  fn configure(&self, vc_id:u16, spacecraft_id:u16, accept_all_vcid:bool)  // defaults: vc_id 0, SPACECRAFT_ID, accept_all=true
+  output ports: data_out, data_return_out: OutputPort<dyn ComDataWithContextPort>; error_notify: OutputPort<dyn ErrorNotifyPort> (OPTIONAL)
+  input factories: data_in(..), data_return_in(..) -> PortRef<dyn ComDataWithContextPort>
+  module consts: EVENTID_INVALID_PACKET=0 (WARNING_LO, no args), EVENTID_INVALID_SPACECRAFT_ID=1 (WARNING_LO, [u16][u16]), EVENTID_INVALID_FRAME_LENGTH=2 (WARNING_HI, [u16 transmitted][u64 actual]), EVENTID_INVALID_VC_ID=3 (ACTIVITY_LO, [u16][u16]), EVENTID_INVALID_CRC=4 (WARNING_HI, [u16 computed][u16 transmitted] — inverted vs the FPP declaration, C++ parity); MIN_TC_FRAME_SIZE:usize=7
+
+No component here has async ports, a queue, commands, telemetry or parameters, so there are no msg types and no queue-message sizing.
+Typical ComCcsds wiring: comQueue.dataOut -> spacePacketFramer.data_in; spacePacketFramer.data_out -> tmFramer.data_in; tmFramer.data_out -> comStub; returns mirror backwards through data_return_in/data_return_out; spacePacketFramer.get_apid_seq_count -> apidManager.get_apid_seq_count_in; uplink: frameAccumulator -> tcDeframer.data_in -> spacePacketDeframer.data_in -> fprimeRouter.data_in, with spacePacketDeframer.validate_apid_seq_count -> apidManager.validate_apid_seq_count_in.
+```
+
+### Implementation notes / deviations
+
+Deviations (all documented in the module doc comments):
+1. `getApidSeqCount` / `validateApidSeqCount` are ordinary `OutputPort`s whose `.get()` fw_asserts when unconnected, matching the C++ generated return-value output ports (which FW_ASSERT connectivity). ccsds.md porting note 7 suggests making them optional; I did not, because making them optional would silently frame packets with sequence count 0 instead of failing like C++. `errorNotify` IS connection-checked (`try_get`), as in C++.
+2. TmFramer's static `U8 m_frameBuffer[1024]` + `BufferOwnershipState` become `Option<BufferStorage>` (Some == OWNED). The C++ "returned pointer lies within m_frameBuffer" assert becomes: not currently owned AND capacity == TM_FRAME_FIXED_SIZE. Same crash on the same misuse.
+3. Events are emitted after the state mutex is released (ApidManager, TcDeframer) — the house pattern already used by BufferManager; C++ emits under the guarded mutex. Behaviorally equivalent, deadlock-safe. The map read/insert pair in ApidManager::validate stays inside one critical section, so the resync remains atomic.
+4. TcDeframer's InvalidCrc argument inversion (declared `(transmitted, computed)`, emitted `(computed, transmitted)`) is reproduced verbatim for byte-compatibility with C++ flight software, with a loud comment and a test that pins it. Flagging it here as the analysis asks.
+5. `M_PDUHeader` is spelled `MPduHeader` (Rust identifier conventions); every other C++ type name is preserved (TMHeader, TCHeader, AOSHeader...).
+6. ComCfg CCSDS constants (SPACECRAFT_ID, TM_FRAME_FIXED_SIZE, AOS_MAX_FRAME_FIXED_SIZE, AGGREGATION_SIZE) live in `ccsds::types` because I may not edit fprime-config; AGGREGATION_SIZE is derived from the others, not hardcoded. If config-forking is wanted later they should move to `fprime-config` (a mechanical move; nothing outside ccsds/ references them today).
+7. The CCSDS port traits (ApidSequenceCountPort, ErrorNotifyPort) are declared in `ccsds::types` following the com_stub precedent for crate-local port traits.
+8. `TM_FRAME_FIXED_SIZE` is a plain const, not a const generic — the C++ is equally static (`ComCfg::TmFrameFixedSize`); const-parameterizing TmFramer was judged unnecessary complexity for phase 1 (noted as ccsds.md porting note 9's "ideally").
+9. Deliberately NOT ported (outside my file list / out of scope per the analysis): CcsdsTcFrameDetector (belongs in `frame_accumulator.rs`, which I do not own — nothing in the workspace implements it yet, so the CCSDS uplink has no frame synchronizer; it would be ~40 lines over `Crc16` + `TCHeader::build_flags_and_sc_id(true,false,SPACECRAFT_ID)==0x2044` and the existing `FrameDetector` trait), ComAggregator, and the AOS/SDLS/CFDP siblings. AOSHeader/AOSTrailer/MPduHeader/SaMapEntry/SdlsStatus/Tfvn are declared for Types.fpp parity but nothing consumes them yet.
+10. No async ports exist anywhere in this subsystem (all five components are passive with sync/guarded inputs), so the queue-message sizing rule does not apply here.
+No sibling breakage observed: `cargo build --workspace`, `cargo clippy -p fprime-svc --all-targets -- -D warnings`, `cargo fmt -p fprime-svc` clean; `cargo test -p fprime-svc` green (558 passed, 85 of them in ccsds) and a full `cargo test --workspace` run was green (22 test binaries, 0 failures). `cargo doc -p fprime-svc --no-deps` is warning-free for these files. Nothing committed or pushed; only files under crates/fprime-svc/src/ccsds/ were modified (mod.rs untouched).
+
+## Svc utilities (TlmPacketizer, ComLogger, SystemResources)
+
+```text
+## TlmPacketizer (fprime_svc::tlm_packetizer, ACTIVE)
+
+```text
+TlmPacketizer::new(name: &str) -> Arc<Self>
+pub fields: active: ActiveBase; cmd: CmdGlue; evt: EventGlue; tlm: TlmGlue; prm: PrmGlue;
+            pkt_send: [OutputPort<dyn ComPort>; TELEMETRY_SEND_PORTS=2]; ping_out: OutputPort<dyn PingPort>
+init(&self, queue_depth: FwSizeType)                       // queue msg size = QUEUE_MSG_SIZE (usize 522)
+reg_commands(&self)                                        // opcodes 0..=5
+set_packet_list(&self, packets: &[TlmPacketizerPacket<'_>], ignore_list: &[TlmPacketizerChannelEntry], start_level: FwChanIdType)
+load_parameters(&self)                                     // no-op when prm_get_out unconnected
+serialize_param(&self, base_id, local_id: FwPrmIdType, buf: &mut dyn SerBufAny) -> SerializeStatus
+deserialize_param(&self, base_id, local_id, prm_stat: ParamValid, buf: &mut dyn SerBufAny) -> SerializeStatus
+
+Input factories (fn(self: &Arc<Self>, port_num: FwIndexType) -> PortRef<...>):
+  tlm_recv_in  -> PortRef<dyn TlmPort>                       (SYNC)
+  tlm_get_in   -> PortRef<dyn crate::tlm_chan::TlmGetPort>   (SYNC, returns TlmValid)
+  control_in   -> PortRef<dyn EnableSectionPort>             (async, Assert, msg 1)
+  ping_in      -> PortRef<dyn PingPort>                      (async, Assert, msg 2)
+  run_in       -> PortRef<dyn SchedPort>                     (async, Assert, msg 3)
+  configure_section_group_rate_in -> PortRef<dyn ConfigureGroupRatePort> (async, Assert, msg 4)
+  cmd_in       -> PortRef<dyn CmdPort>                       (async, Assert, msg 5)
+impls ComponentDispatch + ActiveComponent.
+
+New public port traits (defined here, absent from fprime-comp):
+  trait EnableSectionPort { fn invoke(&self, port_num, section: TelemetrySection, enabled: Enabled) }
+  trait ConfigureGroupRatePort { fn invoke(&self, port_num, section: TelemetrySection, tlm_group: FwChanIdType,
+                                           rate_logic: RateLogic, min_delta: u32, max_delta: u32) }
+
+Public types:
+  fpp_enum TelemetrySection : i32 { Realtime=0, Recorded=1, NumSections=2 }   (NumSections IS a valid wire value)
+  fpp_enum RateLogic : i32 { Silenced=0, EveryMax=1, OnChangeMin=2, OnChangeMinOrEveryMax=3 }
+  struct GroupConfig { enabled: Enabled, force_enabled: Enabled, rate_logic: RateLogic, min: u32, max: u32 }
+         (Copy, Default = DEFAULT_GROUP_CONFIG, SERIALIZED_SIZE = 14, Serialize/Deserialize/FppSized, const new(..))
+  fpp_array GroupConfigs = [GroupConfig; 4] (56 B); fpp_array SectionConfigs = [GroupConfigs; 2] (112 B)
+  struct SectionEnabled(pub [Enabled; 2])  (Default = all ENABLED, SERIALIZED_SIZE = 2, Index/IndexMut)
+  struct TlmPacketizerChannelEntry { id: FwChanIdType, size: FwSizeType }  + const new(id, size)
+  struct TlmPacketizerPacket<'a> { channels: &'a [TlmPacketizerChannelEntry], id: FwTlmPacketizeIdType, level: FwChanIdType } + const new(..)
+  const IGNORE_OMIT_LIST: &[TlmPacketizerChannelEntry] = &[]
+
+Module consts: MAX_PACKETIZER_PACKETS=50, MAX_PACKETIZER_CHANNELS=200, TLMPACKETIZER_MAX_MISSING_TLM_CHECK=25,
+  MAX_CONFIGURABLE_TLMPACKETIZER_GROUP=3, NUM_CONFIGURABLE_TLMPACKETIZER_GROUPS=4, NUM_SECTIONS=2,
+  TELEMETRY_SEND_PORTS=2, TELEMETRY_SEND_PORT_MAPPING=[[0,0,0,0],[1,1,1,1]], QUEUE_MSG_SIZE=522, PACKET_HEADER_SIZE=15
+Assoc consts: OPCODE_SET_LEVEL=0, OPCODE_SEND_PKT=1, OPCODE_ENABLE_SECTION=2, OPCODE_ENABLE_GROUP=3,
+  OPCODE_FORCE_GROUP=4, OPCODE_CONFIGURE_GROUP_RATES=5; EVENTID_NO_CHAN=0, LEVEL_SET=1, MAX_LEVEL_EXCEED=2,
+  PACKET_SENT=3, PACKET_NOT_FOUND=4, SECTION_UNCONFIGURABLE=5, OVERSIZED_CHANNEL=6 (OVERSIZED_CHANNEL_THROTTLE=10);
+  CHANID_GROUP_CONFIGS=0, CHANID_SECTION_ENABLED=1; PARAMID_SECTION_ENABLED=0, PARAMID_SECTION_CONFIGS=1;
+  MSG_TYPE_CONTROL_IN=1, MSG_TYPE_PING_IN=2, MSG_TYPE_RUN=3, MSG_TYPE_CONFIGURE_SECTION_GROUP_RATE=4, MSG_TYPE_CMD_IN=5
+
+Topology: new -> active.queued.base.set_id_base -> connect(pkt_send[0..2], ping_out, cmd/evt/tlm/prm ports)
+  -> init(depth) -> set_packet_list(...) -> reg_commands -> load_parameters -> active.start(&arc, prio, stack, aff)
+  -> ... -> active.exit()/join().  Packet wire layout: [u16 0x0004][u16 pktId][Time 11B][raw channel values].
+```
+
+## ComLogger (fprime_svc::com_logger, ACTIVE)
+
+```text
+ComLogger::new(name) -> Arc<Self>                                   // UNINITIALIZED (drops buffers)
+ComLogger::with_log_file(name, file_prefix: &str, max_file_size: u32, store_buffer_length: bool) -> Arc<Self>
+init_log_file(&self, file_prefix, max_file_size, store_buffer_length)
+init(&self, queue_depth: FwSizeType)                                // queue msg size = QUEUE_MSG_SIZE (usize 524)
+reg_commands(&self)                                                 // opcode 0x00
+file_name(&self) -> FileNameString;  is_file_open(&self) -> bool
+pub fields: active: ActiveBase; cmd: CmdGlue; evt: EventGlue; ping_out: OutputPort<dyn PingPort>
+Input factories: com_in -> PortRef<dyn ComPort> (async, msg 1); ping_in -> PortRef<dyn PingPort> (async, msg 2);
+                 cmd_in -> PortRef<dyn CmdPort> (async, msg 3).  impls ComponentDispatch + ActiveComponent + Drop.
+Assoc consts: OPCODE_CLOSE_FILE=0x00; EVENTID_FILE_OPEN_ERROR=0x00, FILE_WRITE_ERROR=0x01,
+  FILE_VALIDATION_ERROR=0x02, FILE_CLOSED=0x03, FILE_NOT_INITIALIZED=0x04 (FILE_NOT_INITIALIZED_THROTTLE=5);
+  MSG_TYPE_COM_IN=1, MSG_TYPE_PING_IN=2, MSG_TYPE_CMD_IN=3
+Module items: pub const QUEUE_MSG_SIZE: usize = 524; pub const VFILE_HASH_CHUNK_SIZE: usize = 256;
+  pub enum ValidateStatus (repr u32, Os::ValidateFile ordinals 0..=9);
+  pub fn create_validation(file_name: &str, hash_file_name: &str) -> ValidateStatus  // BIG-endian .CRC32 sidecar
+Topology: new/with_log_file -> set_id_base -> connect -> init(depth) -> reg_commands -> active.start -> exit/join.
+```
+
+## SystemResources (fprime_svc::system_resources, PASSIVE)
+
+```text
+SystemResources::new(name) -> Arc<Self>                             // default ProcSampler
+SystemResources::with_sampler(name, Box<dyn ResourceSampler>) -> Arc<Self>
+reg_commands(&self); cpu_count(&self) -> usize; is_enabled(&self) -> bool
+pub fields: base: PassiveBase; cmd: CmdGlue; evt: EventGlue (log/text/time); tlm: TlmGlue
+Input factories: run_in -> PortRef<dyn SchedPort> (GUARDED); cmd_in -> PortRef<dyn CmdPort> (GUARDED command)
+Public types: fpp_enum SystemResourceEnabled : u8 { Disabled=0, Enabled=1 };
+  enum GenericStatus { OpOk=0, Error=1 }; struct UsedTotal { used: FwSizeType, total: FwSizeType };
+  trait ResourceSampler { cpu_count(&self,&mut FwSizeType)->GenericStatus;
+      cpu_ticks(&self,&mut UsedTotal, cpu_index: FwSizeType)->GenericStatus;
+      memory_usage(&self,&mut UsedTotal)->GenericStatus;
+      free_space(&self, path:&str, total:&mut FwSizeType, free:&mut FwSizeType)->fprime_os::filesystem::Status }
+  struct ProcSampler (default impl)
+Module consts: CPU_COUNT=16; NON_VOLATILE_PATH="/"
+Assoc consts: OPCODE_ENABLE=0; CHANID_MEMORY_TOTAL=0, MEMORY_USED=1, NON_VOLATILE_TOTAL=2, NON_VOLATILE_FREE=3,
+  CPU=4, CPU_00=5 (CPU_nn = CPU_00 + nn, up to 20)
+Topology: new -> base.set_id_base -> connect cmd/evt/tlm/time ports -> reg_commands -> wire run_in to a rate group.
+```
+```
+
+### Implementation notes / deviations
+
+**Verification.** `cargo build --workspace` green; `cargo test -p fprime-svc` 616/616 green (58 of them mine: 33 tlm_packetizer, 14 com_logger, 11 system_resources); `cargo test --workspace` fully green (no sibling breakage observed at any point); `cargo clippy -p fprime-svc --all-targets -- -D warnings` clean; `cargo fmt -p fprime-svc --check` clean (verified 3 consecutive full-crate runs, no flakes). Nothing committed; only my three files were written (verified by mtime that `cargo fmt -p fprime-svc` did not touch sibling modules).
+
+**Deviations, each documented in code:**
+1. `Os::Cpu`/`Os::Memory` are not ported in fprime-os, so — as the task allows — the sampling lives INSIDE `system_resources.rs` behind the `ResourceSampler` trait: `ProcSampler` reads `/proc/stat` (a direct port of `getCpuData`, incl. the "cpu" prefix check, the CPU-index field check and USER+NICE+SYSTEM/+IDLE arithmetic) and `/proc/meminfo` (`MemTotal`/`MemFree` ×1024 — deliberately NOT `MemAvailable`, matching `sysinfo`'s `freeram`), with `std::thread::available_parallelism()` as the non-Linux core-count fallback.
+2. Free space goes through `fprime_os::filesystem::get_free_space`, which is `NotSupported` in this workspace (no zero-dependency statvfs), so `NON_VOLATILE_TOTAL/FREE` are skipped by default — behaviorally identical to the C++ VxWorks path. A project supplies a real one through the OSAL seam or its own `ResourceSampler`.
+3. `Os::ValidateFile` is not ported either, so `com_logger::create_validation` + `ValidateStatus` + the status-translation table are implemented in the module (256-byte chunked hashing, BIG-endian `HashBuffer` sidecar — explicitly NOT the native-endian `Utils::CRCChecker` encoding).
+4. `GroupConfig` and `SectionEnabled` are hand-written instead of `fpp_struct!`/`fpp_array!`-generated because their members are `Fw::Enabled`, which has no `FppSized` impl in fprime-fw and cannot get one here (orphan rule). `GroupConfigs`/`SectionConfigs` DO use `fpp_array!` (I added `impl FppSized for GroupConfig`, a local type). Byte formats verified by test: 14/56/112 and 2 bytes.
+5. Lock scope: the C++ `m_lock` is reproduced exactly (per-packet in `TlmRecv`/`TlmGet`, twice per packet in `Run`, `has_value` written inside it). The channel table sits behind an `RwLock` (C++ reads it lock-free after init) and the `[section][group]` config/flags behind a second mutex; lock order is always table → packets → ctrl, so no inversion. In `Run` the flag/counter updates happen just before the port invocations rather than just after, so the ports are invoked outside the ctrl lock — nothing reads those fields in between. Same pattern in SystemResources (`run` samples under the mutex, writes telemetry after release, order preserved) and in the tlm_packetizer command handlers.
+6. Enum command args answer `ValidationError` (workspace discipline; stock C++ generated code would answer `FORMAT_ERROR` at deserialize) — including the SEND_PKT/ENABLE_* `TelemetrySection` and `RateLogic` args. Short/residual args are `FormatError`. `TelemetrySection::NumSections` is a declared FPP constant, so it deserializes fine and is rejected by the range check with `ValidationError`, exactly as in C++.
+7. `ComLogger`'s C++ `FW_ASSERT`ed `format()` statuses become explicit length `fw_assert!`s (Rust `FwString::set` truncates silently, C++ asserts).
+8. Not ported deliberately: the C++ `Fw::ParamExternalDelegate` registration machinery (fprime-comp has no external-parameter framework) — the delegate methods are public on the component and `load_parameters()` drives them through `PrmGlue`; and the `configureSectionGroupRate` port's C++ `FW_ASSERT`-on-bad-args behavior is kept (bad port args crash, unlike the command path).
+
+**Test coverage highlights:** literal-byte packetized packets (descriptor 0x0004, packet id, the 11 time bytes rewritten in place, per-channel offsets, zeros for unwritten channels), the 112-byte `SectionConfigs` default, both async envelopes, packet-table lookup/missing-channel/ignore/oversize paths, `TlmGet` padding, `set_packet_list` re-entrancy and all four configuration asserts (`#[should_panic]`), every rate-logic branch (ON_CHANGE_MIN, EVERY_MAX, SILENCED counter freeze, section disable + force override, unconnected ports, the retained-REQUESTED-flag gotcha), all command status branches; ComLogger file naming, record bytes with and without length prefixes, rotation at the strict `>` boundary, the `.CRC32` sidecar (canonical `123456789` vector), destructor close-without-event, uninitialized throttle, one-shot open-error latch; SystemResources full channel order with an injected sampler, backwards-counter skip, zero-delta 100%, hard-coded "/" path, per-sampler error isolation, ENABLE gating and status branches.
+
+**Open questions / for the doc wave:** the config constants for all three components (`MAX_PACKETIZER_*`, `TELEMETRY_SEND_PORT_MAPPING`, `CPU_COUNT`, `VFILE_HASH_CHUNK_SIZE`, …) live as module consts because `fprime-config` has no slots for them and is owned by another wave — flagged for migration, same as `PassiveTextLoggerCfg`. `crate::tlm_chan::TlmGetPort` is reused for the `TlmGet` port rather than redeclaring it.
+
+## Linux hardware drivers (GPIO, UART, I2C, SPI)
+
+```text
+All items are reached by fully-qualified path (lib.rs was not edited): `fprime_drv::gpio::*`, `::uart::*`, `::i2c::*`, `::spi::*`.
+
+GPIO (gpio.rs)
+  enum Logic : u8 {Low=0, High=1} (fpp_enum: Default=Low, TryFrom<u8>, Serialize/Deserialize u8, VALUES/NUM_CONSTANTS/SERIALIZED_SIZE)
+  enum GpioStatus : u8 {OpOk=0, NotOpened=1, InvalidMode=2, UnknownError=3} (same fpp_enum surface)
+  enum GpioConfiguration {GpioOutput, GpioInput, GpioInterruptRisingEdge, GpioInterruptFallingEdge, GpioInterruptBothRisingAndFallingEdges}: const fn is_interrupt()->bool; edge_fires(from:Logic,to:Logic)->bool; sysfs_edge()->&'static str
+  trait GpioWritePort: Send+Sync { fn invoke(&self, port_num: FwIndexType, state: Logic) -> GpioStatus }
+  trait GpioReadPort: Send+Sync  { fn invoke(&self, port_num: FwIndexType, state: &mut Logic) -> GpioStatus }
+  fn errno_to_file_status(&io::Error)->fprime_os::file::Status; fn errno_to_gpio_status(&io::Error)->GpioStatus
+  struct GpioChipInfo { pub name: String, pub label: String, pub pin_message: String }: fn new(name,label)->Self (pin_message="Unknown")
+  enum GpioOpenError { Chip(FileStatus), Pin{pin_message:String, status:FileStatus} }: const fn status(&self)->FileStatus
+  enum PollOutcome { Interrupt, NoInterrupt, ReadError{expected:u32, got:u32}, PollError(i32) }
+  trait GpioBackend: Send+Sync { fn open(&self, device:&str, gpio:u32, configuration:GpioConfiguration, default_state:Logic, consumer:&str) -> Result<GpioChipInfo, GpioOpenError>; fn read(&self)->Result<Logic,GpioStatus>; fn write(&self, state:Logic)->GpioStatus; fn poll(&self, timeout:Duration)->PollOutcome; fn close(&self) {} }
+  struct StubGpioBackend: const fn new()
+  struct SysfsGpioBackend: fn new(); with_root<P:AsRef<Path>>(P); with_sample_interval(Duration)->Self (builder); sample_interval()->Duration; line()->Option<u32>
+  consts: DEFAULT_SAMPLE_INTERVAL: Duration = 10ms; SYSFS_GPIO_ROOT = "/sys/class/gpio"; fn default_backend()->Box<dyn GpioBackend>
+  struct LinuxGpioDriver { pub base: PassiveBase, pub evt: EventGlue, pub gpio_interrupt_out: OutputPort<dyn CyclePort> }
+    fn new(name)->Arc<Self>; fn with_backend(name, Box<dyn GpioBackend>)->Arc<Self>
+    fn open(&self, device:&str, gpio:u32, configuration:GpioConfiguration, default_state:Logic) -> fprime_os::file::Status
+    fn close(&self); fn configuration(&self)->Option<GpioConfiguration>
+    fn start(self:&Arc<Self>, priority:FwTaskPriorityType, stack_size:FwSizeType, cpu_affinity:FwSizeType)->GpioStatus  // InvalidMode unless an interrupt mode
+    fn stop(&self); fn join(&self)->fprime_os::task::Status   // stop() MUST precede join()
+    input factories: fn gpio_read_in(self:&Arc<Self>, port_num)->PortRef<dyn GpioReadPort>; fn gpio_write_in(..)->PortRef<dyn GpioWritePort>
+    assoc consts: EVENTID_OPEN_CHIP=0, EVENTID_OPEN_CHIP_ERROR=1, EVENTID_OPEN_PIN_ERROR=2, EVENTID_INTERRUPT_READ_ERROR=3, EVENTID_POLLING_ERROR=4, EVENTID_INTERRUPT_TIME_ERROR=5; GPIO_POLL_TIMEOUT: u64 = 500 (ms); CONSUMER_LABEL_SIZE=32
+    Wiring: connect evt.log_out/text_log_out/time_out; connect gpio_interrupt_out to an ASYNC input (it fires on the poll thread). No Tlm, no Cmd ports (FPP parity).
+
+UART (uart.rs) — reuses crate::byte_stream::{ByteStreamStatus, ByteStreamSendPort, ByteStreamDataPort, ByteStreamReadyPort}
+  enum UartBaudRate (repr u32, discriminants ARE the baud numbers): Baud9600..Baud4000K; const fn as_u32()->u32
+  enum UartFlowControl {NoFlow=0, HwFlow=1} (Default NoFlow); enum UartParity {ParityNone=0, ParityOdd=1, ParityEven=2} (Default ParityNone)
+  enum UartConfigPolicy {Reject (Default), Stty, TrustExternal}
+  fn stty_arguments(device:&str, baud, flow_control, parity) -> Vec<String>
+  trait SerialBackend: Send+Sync { fn open(&self, device:&str)->io::Result<()>; fn read(&self, dest:&mut [u8])->io::Result<usize>; fn write(&self, data:&[u8])->io::Result<usize>; fn is_open(&self)->bool; fn close(&self) {} }
+  struct FileSerialBackend: fn new()
+  struct LinuxUartDriver { pub base: PassiveBase, pub evt: EventGlue, pub tlm: TlmGlue, pub allocate_out: OutputPort<dyn BufferGetPort>, pub deallocate_out: OutputPort<dyn BufferSendPort>, pub recv_out: OutputPort<dyn ByteStreamDataPort>, pub ready_out: OutputPort<dyn ByteStreamReadyPort> }
+    fn new(name)->Arc<Self>; fn with_backend(name, Box<dyn SerialBackend>)->Arc<Self>
+    fn set_config_policy(&self, UartConfigPolicy); fn config_policy(&self)->UartConfigPolicy
+    fn open(&self, device:&str, baud:UartBaudRate, fc:UartFlowControl, parity:UartParity, allocation_size:FwSizeType)->bool
+    fn open_preconfigured(&self, device:&str, allocation_size:FwSizeType)->bool
+    fn start(self:&Arc<Self>, priority, stack_size, cpu_affinity); fn quit_read_thread(&self); fn join(&self)->task::Status; fn close(&self)
+    fn bytes_sent(&self)->FwSizeType; fn bytes_received(&self)->FwSizeType
+    input factories: send_in -> PortRef<dyn ByteStreamSendPort>; recv_return_in -> PortRef<dyn BufferSendPort>; run_in -> PortRef<dyn SchedPort>
+    assoc consts: EVENTID_OPEN_ERROR=0, EVENTID_CONFIG_ERROR=1, EVENTID_WRITE_ERROR=2, EVENTID_READ_ERROR=3, EVENTID_PORT_OPENED=4, EVENTID_NO_BUFFERS=5, EVENTID_BUFFER_TOO_SMALL=6 (reserved); ERROR_EVENT_THROTTLE=5, NO_BUFFERS_THROTTLE=20; CHANID_BYTES_SENT=0, CHANID_BYTES_RECV=1; NO_BUFFER_RETRY_US=50_000, IDLE_READ_RETRY_US=50_000
+    Topology order: new -> set_id_base -> connect (allocate/deallocate/recv/ready/evt/tlm) -> set_config_policy -> open*/open_preconfigured -> start -> ... -> quit_read_thread -> join -> close
+
+I2C (i2c.rs)
+  const I2C_DRIVER_PORTS: usize = 10
+  enum I2cStatus : u8 {I2cOk=0, I2cAddressErr=1, I2cWriteErr=2, I2cReadErr=3, I2cOpenErr=4, I2cOtherErr=5} (fpp_enum)
+  trait I2cPort { fn invoke(&self, port_num, addr:u32, ser_buffer:&mut Buffer)->I2cStatus }
+  trait I2cWriteReadPort { fn invoke(&self, port_num, addr:u32, write_buffer:&mut Buffer, read_buffer:&mut Buffer)->I2cStatus }
+  port types only (no implementation in tree): I2cRequestPort, I2cWriteReadRequestPort, I2cCallbackPort, I2cWriteReadCallbackPort
+  trait I2cBackend: Send+Sync { fn open(&self, device:&str)->bool; fn write(&self, addr:u32, data:&[u8])->I2cStatus; fn read(&self, addr:u32, dest:&mut [u8])->I2cStatus; fn write_read(&self, addr:u32, write:&[u8], read:&mut [u8])->I2cStatus /* must report failures as I2cOtherErr */; fn close(&self) {} }
+  struct StubI2cBackend: const fn new()  (open->true, all transfers->I2cOk: upstream stub parity)
+  struct LinuxI2cDriver { pub base: PassiveBase }
+    fn new(name)->Arc<Self>; fn with_backend(name, Box<dyn I2cBackend>)->Arc<Self>; fn open(&self, device:&str)->bool; fn is_open(&self)->bool; fn device(&self)->String; fn close(&self)
+    input factories (all GUARDED): write_in -> PortRef<dyn I2cPort>; read_in -> PortRef<dyn I2cPort>; write_read_in -> PortRef<dyn I2cWriteReadPort>
+    No events/telemetry/commands and no special ports (FPP parity).
+
+SPI (spi.rs)
+  enum SpiStatus : u8 {SpiOk=0, SpiOpenErr=1, SpiConfigErr=2, SpiMismatchErr=3, SpiWriteErr=4, SpiOtherErr=5} (fpp_enum)
+  enum SpiFrequency (repr u32): SpiFrequency1Mhz..SpiFrequency20Mhz; const fn as_hz()->u32
+  enum SpiMode (repr u8, Default SpiModeCpolLowCphaLow): 0..3; const fn as_kernel_mode()->u8
+  trait SpiWriteReadPort { fn invoke(&self, port_num, write_buffer:&mut Buffer, read_buffer:&mut Buffer)->SpiStatus }
+  trait SpiReadWritePort  { fn invoke(&self, port_num, write_buffer:&mut Buffer, read_buffer:&mut Buffer) }  // DEPRECATED upstream
+  struct SpiConfigMismatch { pub parameter: String, pub write_value: u32, pub read_value: u32 }
+  enum SpiOpenError { Open(i32), Config(i32) }
+  trait SpiBackend: Send+Sync { fn open(&self, device:FwIndexType, select:FwIndexType, clock:SpiFrequency, mode:SpiMode)->Result<Vec<SpiConfigMismatch>, SpiOpenError>; fn write_read(&self, write:&[u8], read:&mut [u8])->Result<(), i32>; fn close(&self) {} }
+  struct StubSpiBackend: const fn new()  (DEFAULT: open fails with Open(-1), transfer Ok)
+  struct HalfDuplexSpidevBackend: fn new_write_then_read_not_full_duplex()->Self; with_device_root<P:Into<PathBuf>>(P)->Self; device_path(device, select)->PathBuf; const SPIDEV_ROOT = "/dev"
+  struct LinuxSpiDriver { pub base: PassiveBase, pub evt: EventGlue, pub tlm: TlmGlue }
+    fn new(name)->Arc<Self>; fn with_backend(name, Box<dyn SpiBackend>)->Arc<Self>
+    fn open(&self, device:FwIndexType, select:FwIndexType, clock:SpiFrequency, mode:SpiMode)->bool  // fw_asserts device>=0, select>=0
+    fn is_open(&self)->bool; fn bytes(&self)->FwSizeType; fn close(&self)
+    input factories: spi_write_read_in -> PortRef<dyn SpiWriteReadPort> (GUARDED); spi_read_write_in -> PortRef<dyn SpiReadWritePort> (deprecated, routed through the same mutex)
+    assoc consts: EVENTID_SPI_OPEN_ERROR=0, EVENTID_SPI_CONFIG_ERROR=1, EVENTID_SPI_WRITE_ERROR=2, EVENTID_SPI_CONFIG_MISMATCH=3, EVENTID_SPI_PORT_OPENED=4 (reserved, never emitted); WRITE_ERROR_THROTTLE=5; CHANID_SPI_BYTES=0
+```
+
+### Implementation notes / deviations
+
+DEVIATIONS (all documented in rustdoc on the public API, not just here):
+1. No ioctl anywhere, so: GPIO character-device access, UART termios, all I2C transactions and SPI full duplex/config are unreachable. Each driver is the full component surface over a backend trait (GpioBackend / SerialBackend / I2cBackend / SpiBackend) so a downstream crate that permits libc/unsafe can drop in hardware access without forking.
+2. GPIO interrupts via SysfsGpioBackend are LEVEL SAMPLED (poll(2) unavailable): pulses shorter than the sample interval are missed, latency is bounded by the interval (default 10 ms, configurable), two edges in one interval collapse, and the timestamp is the sampler's RawTime::now(). Stated loudly on the type and in the module header. The `edge` attribute is still written best-effort. /dev/gpiochipN -> sysfs global line is resolved by indexing gpiochip* dirs sorted by `base` (the only mapping plain file reads allow) — documented as a heuristic; missing root/chip -> FileStatus::NotSupported.
+3. GPIO ApiVersion (v1/v2 uAPI selection) not ported — meaningless without ioctl. The C++ stub's silent open() becomes an OpenChipError event here because the event path lives in the component; the returned status is identical.
+4. UART: configuration is opt-in. Default UartConfigPolicy::Reject emits ConfigError (FPP id 1, never emitted upstream) and does NOT open, rather than silently running at the wrong baud; Stty applies settings via std::process::Command (external `stty` dependency, argument vector exposed and unit-tested); TrustExternal / open_preconfigured skip configuration. O_NOCTTY cannot be requested (the process may acquire the tty as controlling terminal) — documented. OpenError's `error` field is always -1 here (C++ passes the fd, which is -1 on open failure but a valid fd on later termios failures — there is no termios stage here). The read retry sleeps IDLE_READ_RETRY_US=50 ms because VMIN/VTIME cannot be applied; the C++ loop relies on VTIME. quit_read_thread is only re-checked between reads (same caveat as C++). Device string is OWNED (C++ keeps the caller's const char*).
+5. I2C: stub backend only. StubI2cBackend reproduces LinuxI2cDriverStub.cpp exactly (open->true, all handlers I2cOk). The trait documents that write_read must report failures only as I2cOtherErr.
+6. SPI: StubSpiBackend is the default; because the component keeps the REAL driver's open-gate, a stub-backed driver answers SpiOpenErr from transfers where upstream's stub returned SPI_OK (documented divergence; the stub backend's own transfer still returns Ok, matching upstream at the seam). HalfDuplexSpidevBackend exists only behind new_write_then_read_not_full_duplex() and is documented as two separate bus transactions, NOT SpiWriteRead's full-duplex exchange, with mode/speed/bits coming from the device tree (so SPI_ConfigError/SPI_ConfigMismatch are unreachable with it). Both SPI ports are routed through the same mutex-locked handler — an improvement over C++'s unguarded deprecated port, documented.
+7. Fw.Logic is declared in gpio.rs (fpp_enum!, byte-identical to Fw/Types/Types.fpp) because fprime-fw was outside my file set; moving it later is a source-only change.
+8. Os.FileStatus / Os.RawTimeStatus event arguments are serialized as U8 (their FPP width) by casting the repr(i32) fprime-os enums — noted at each call site.
+9. No lib.rs edits: the four modules were already declared; everything is reached by fully-qualified path (fprime_drv::gpio::LinuxGpioDriver, etc.). If the orchestrator wants root re-exports, add them to lib.rs centrally.
+
+VERIFICATION: 83 new unit tests (gpio 30, uart 20, i2c 13, spi 20); fprime-drv totals 107 lib + 6 integration tests, all passing. `cargo build --workspace` green; full `cargo test --workspace` observed fully green (1122 tests, including siblings' fprime-svc 616). `cargo clippy -p fprime-drv --all-targets -- -D warnings` clean; `cargo fmt -p fprime-drv -- --check` clean; `cargo doc -p fprime-drv --no-deps` emits no warnings. Literal-byte tests cover every event/telemetry payload emitted (GPIO OpenChip/OpenChipError/OpenPinError/InterruptReadError/PollingError, UART ConfigError/PortOpened/OpenError/WriteError/ReadError/NoBuffers + both u64 channels, SPI OpenError/ConfigError/ConfigMismatch/WriteError + SPI_Bytes) plus the exact sysfs file contents (export/unexport/direction "low"/"high"/"in"/edge/value "0"/"1") and the exact stty argument vector. No sibling-file problems encountered.
+
+OPEN QUESTION (non-blocking): the sysfs chip-index-by-base mapping cannot be verified without real hardware; a deployment that knows its global line numbers may prefer a backend that takes them directly.
+
