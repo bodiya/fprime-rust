@@ -11,9 +11,13 @@
 //! deployment bridges the families with tiny adapter shims.
 
 pub mod byte_stream;
+pub mod gpio;
+pub mod i2c;
 pub mod socket_helper;
+pub mod spi;
 pub mod tcp_client;
 pub mod tcp_server;
+pub mod uart;
 
 pub use byte_stream::{
     BufferSendPort, ByteStreamDataPort, ByteStreamReadyPort, ByteStreamSendPort, ByteStreamStatus,

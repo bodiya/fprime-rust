@@ -10,7 +10,9 @@
 pub mod assert;
 pub mod buffer;
 pub mod com;
+pub mod dp;
 pub mod enums;
+pub mod file_packet;
 pub mod fpp;
 pub mod logger;
 pub mod packets;

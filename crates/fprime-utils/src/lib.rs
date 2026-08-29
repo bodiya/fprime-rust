@@ -11,6 +11,7 @@
 //! of `docs/cpp-analysis/svc-comms.md`. None of these types are thread safe
 //! (C++ parity); callers wrap them in concurrency constructs.
 
+pub mod cfdp;
 pub mod crc_checker;
 pub mod hash;
 pub mod rate_limiter;
