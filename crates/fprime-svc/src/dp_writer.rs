@@ -34,9 +34,9 @@ use fprime_comp::{
     msg,
 };
 use fprime_config::{
-    FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwDpIdType, FwDpPriorityType,
-    FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
-    FwSizeType,
+    FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FwChanIdType,
+    FwDpIdType, FwDpPriorityType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
+    FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::dp::DpContainer;
 use fprime_fw::{
@@ -120,8 +120,15 @@ pub const QUEUE_MSG_SIZE: FwSizeType =
 /// FPP declares no `priority` qualifier on any async input.
 const PORT_PRIORITY: FwQueuePriorityType = 1;
 
-/// Event string arguments are `string size FileNameStringSize` (240).
-const EVENT_STRING_SIZE: usize = FILE_NAME_STRING_SIZE;
+/// Event string arguments are `string size FileNameStringSize` (240), but
+/// the generated `log_*` methods serialize through `Fw::LogStringArg`
+/// (`StringTemplate<FW_LOG_STRING_MAX_SIZE>`), so the effective on-wire cap
+/// is `min(declared size, FW_LOG_STRING_MAX_SIZE)` = 200.
+const EVENT_STRING_SIZE: usize = if FILE_NAME_STRING_SIZE < FW_LOG_STRING_MAX_SIZE {
+    FILE_NAME_STRING_SIZE
+} else {
+    FW_LOG_STRING_MAX_SIZE
+};
 
 type MsgBuffer = LinearBuffer<{ QUEUE_MSG_SIZE as usize }>;
 
@@ -1278,6 +1285,33 @@ mod tests {
         assert_eq!(h.comp.state.lock().unwrap().num_errors, 1);
         // The buffer still comes back.
         assert_eq!(h.ground.deallocated.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_event_file_name_is_clipped_to_the_log_string_cap() {
+        // C++ parity: the event arg is declared `string size
+        // FileNameStringSize` (240) but the generated `log_*` method carries
+        // it as `Fw::LogStringArg` = `StringTemplate<FW_LOG_STRING_MAX_SIZE>`,
+        // so anything past 200 bytes never reaches the wire.
+        let prefix = format!("/nonexistent-dp-dir{}", "x".repeat(171));
+        assert_eq!(prefix.len(), 190);
+        let h = Harness::with_prefix(&prefix);
+        h.send(make_packet(1, 0, 2, 3, 0x00, &[], 0));
+
+        // 190 + "/" + "Dp_00000001_00000002_00000003.fdp" (33) = 224 bytes:
+        // under FileNameString's 240, over FW_LOG_STRING_MAX_SIZE.
+        let full = format!("{prefix}/Dp_00000001_00000002_00000003.fdp");
+        assert_eq!(full.len(), 224);
+
+        let events = h.events();
+        assert_eq!(events[0].0, ID_BASE + DpWriter::EVENTID_FILE_OPEN_ERROR);
+        // status (u32) then the string: 2-byte length then the bytes.
+        let args = &events[0].2;
+        assert_eq!(&args[4..6], &(FW_LOG_STRING_MAX_SIZE as u16).to_be_bytes());
+        assert_eq!(args.len(), 4 + 2 + FW_LOG_STRING_MAX_SIZE);
+        assert_eq!(&args[6..], &full.as_bytes()[..FW_LOG_STRING_MAX_SIZE]);
+        // The un-clipped name still reaches the file-name port in full.
+        assert_eq!(EVENT_STRING_SIZE, FW_LOG_STRING_MAX_SIZE);
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! byte-stream port traits (`fprime-drv`'s are canonical). This module is
 //! the deployment-side bridge the two crates document: one tiny adapter
 //! per crossing direction, each forwarding to a wired [`PortRef`] and
-//! mapping the identical-discriminant [`ByteStreamStatus`] enums.
+//! mapping the identical-discriminant `ByteStreamStatus` enums.
 //!
 //! Crossings in the reference topology:
 //!

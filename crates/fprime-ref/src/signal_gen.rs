@@ -2,10 +2,11 @@
 //!
 //! C++ source: `TestDeploymentsProject/Ref/SignalGen/SignalGen.{fpp,cpp}`
 //! (analysis: `docs/cpp-analysis/ref-topology.md`, "Example component
-//! SignalGen"). Deliberately simplified — no data products, no
-//! history/pair arrays — but real: it exercises async commands (with the
-//! exact response discipline), events (one with a throttle), telemetry,
-//! and the time port.
+//! SignalGen"). Deliberately simplified — no history/pair arrays — but
+//! real: it exercises async commands (with the exact response discipline),
+//! events (one with a throttle), telemetry, the time port, one parameter
+//! (the deployment's `prmDb` client) and the synchronous data-product
+//! producer path.
 //!
 //! Queued-component semantics (the load-bearing part, C++ parity): the
 //! component owns a message queue but NO thread. Async commands sit in the
@@ -20,11 +21,27 @@
 //! | command   | `SETTINGS`       | 0   | `(frequency: U32, amplitude: F32, phase: F32, sig_type: SignalType/U8)` |
 //! | command   | `TOGGLE`         | 1   | no args — start/stop the generator |
 //! | command   | `SKIP`           | 2   | no args — zero the next sample |
+//! | command   | `DP`             | 3   | `(records: U32)` — produce one data product synchronously |
+//! | command   | `AMPLITUDE_PARAM_SET`  | 4 | `(val: F32)` — stage the parameter |
+//! | command   | `AMPLITUDE_PARAM_SAVE` | 5 | no args — write it to `prmDb` |
 //! | event     | `SettingsChanged`| 0   | ACTIVITY_LO `(U32, F32, F32, U8)` |
 //! | event     | `Toggled`        | 1   | ACTIVITY_LO `(running: bool)` |
 //! | event     | `SampleSkipped`  | 2   | ACTIVITY_LO, **throttle 3** (cleared by `TOGGLE`), no args |
+//! | event     | `DpSent`         | 3   | ACTIVITY_LO `(records: U32, bytes: U32)` |
+//! | event     | `DpBufferFailed` | 4   | WARNING_HI `(records: U32)` |
+//! | event     | `AmplitudeUpdated`| 5  | ACTIVITY_HI `(val: F32)` |
 //! | telemetry | `SignalValue`    | 0   | F32 |
 //! | telemetry | `SignalType`     | 1   | U8 enum ([`SignalType`]: `Sine = 0`, `Triangle = 1`) |
+//! | parameter | `Amplitude`      | 0   | F32, default `0.0` |
+//! | product   | `DataContainer`  | 0   | default priority 10, records of `[id U32][value F32]` |
+//!
+//! Data products: only the SYNCHRONOUS request kind is ported
+//! (`productGetOut` + `productSendOut`, i.e. C++ `DpReqType::IMMEDIATE`).
+//! The asynchronous pair (`productRequestOut`/`productRecvIn`) needs an
+//! async `Fw.DpResponse` input port carrying an owned buffer; it buys
+//! nothing the synchronous path does not already prove end to end, so it
+//! is deliberately left unported and its ports are absent (rather than
+//! present-but-unconnected).
 //!
 //! Divergence from the task's one-line command sketch (documented): the
 //! task lists `SETTINGS (u32, f32, f32)`, but the signal *type* must be
@@ -36,15 +53,17 @@
 
 use fprime_comp::msg;
 use fprime_comp::{
-    CmdGlue, CmdPort, ComponentDispatch, EventGlue, EventThrottle, MsgDispatchStatus, PortRef,
-    QueueFullPolicy, QueuedBase, SchedPort, TlmGlue,
+    CmdGlue, CmdPort, ComponentDispatch, EventGlue, EventThrottle, MsgDispatchStatus, OutputPort,
+    PortRef, PrmGlue, QueueFullPolicy, QueuedBase, SchedPort, TlmGlue,
 };
 use fprime_config::{
-    FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
-    FwSizeType,
+    FwChanIdType, FwDpIdType, FwEnumStoreType, FwEventIdType, FwIndexType, FwOpcodeType,
+    FwPrmIdType, FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::dp::{DpContainer, DpGetPort, DpSendPort};
 use fprime_fw::{
-    CmdArgBuffer, CmdResponse, Endianness, LinearBuffer, SerBuf, SerBufAny, fw_assert,
+    Buffer, CmdArgBuffer, CmdResponse, Endianness, LinearBuffer, ParamBuffer, ParamValid, SerBuf,
+    SerBufAny, Success, fw_assert,
 };
 use std::sync::{Arc, Mutex};
 
@@ -73,6 +92,34 @@ pub const OPCODE_SETTINGS: FwOpcodeType = 0;
 pub const OPCODE_TOGGLE: FwOpcodeType = 1;
 /// `SKIP` opcode.
 pub const OPCODE_SKIP: FwOpcodeType = 2;
+/// `DP(records: U32)` opcode — produce one data product synchronously
+/// (C++ `Dp` opcode 3, reduced to the IMMEDIATE/synchronous request kind).
+pub const OPCODE_DP: FwOpcodeType = 3;
+/// `AMPLITUDE_PARAM_SET(val: F32)` opcode — the autocoded parameter-set
+/// command (stages the value in the component only).
+pub const OPCODE_AMPLITUDE_PARAM_SET: FwOpcodeType = 4;
+/// `AMPLITUDE_PARAM_SAVE` opcode — the autocoded parameter-save command
+/// (pushes the staged value to the parameter database via `prmSetOut`).
+pub const OPCODE_AMPLITUDE_PARAM_SAVE: FwOpcodeType = 5;
+
+/// `Amplitude: F32` parameter id (component-relative).
+pub const PARAMID_AMPLITUDE: FwPrmIdType = 0;
+/// FPP `default` for the `Amplitude` parameter.
+pub const AMPLITUDE_DEFAULT: f32 = 0.0;
+
+/// `DataContainer` data-product container id (component-relative; C++
+/// `container DataContainer id 0 default priority 10`).
+pub const CONTAINER_ID_DATA: FwDpIdType = 0;
+/// FPP `default priority 10` for [`CONTAINER_ID_DATA`].
+pub const CONTAINER_PRIORITY_DATA: u32 = 10;
+/// `DataRecord` record id inside [`CONTAINER_ID_DATA`] (C++ `record
+/// DataRecord: SignalInfo id 0`). Each record is `[id u32][value f32]`.
+pub const RECORD_ID_DATA: FwDpIdType = 0;
+/// Serialized size of one `DataRecord` entry (`[id u32][value f32]`).
+pub const RECORD_SIZE_DATA: FwSizeType = 8;
+/// Records per `DP` command are capped so one container always fits the
+/// data-product BufferManager bin.
+pub const DP_MAX_RECORDS: u32 = 64;
 
 /// `SettingsChanged(frequency: U32, amplitude: F32, phase: F32, sig_type: U8)`
 /// — ACTIVITY_LO (C++ `SignalGen_SettingsChanged`).
@@ -83,6 +130,13 @@ pub const EVENTID_TOGGLED: FwEventIdType = 1;
 pub const EVENTID_SAMPLE_SKIPPED: FwEventIdType = 2;
 /// FPP-style `throttle 3` on [`EVENTID_SAMPLE_SKIPPED`].
 pub const SAMPLE_SKIPPED_THROTTLE: u32 = 3;
+/// `DpSent(records: U32, bytes: U32)` — ACTIVITY_LO.
+pub const EVENTID_DP_SENT: FwEventIdType = 3;
+/// `DpBufferFailed(records: U32)` — WARNING_HI (the allocation failed).
+pub const EVENTID_DP_BUFFER_FAILED: FwEventIdType = 4;
+/// `AmplitudeUpdated(val: F32)` — ACTIVITY_HI, the `parameterUpdated`
+/// notification for the `Amplitude` parameter.
+pub const EVENTID_AMPLITUDE_UPDATED: FwEventIdType = 5;
 
 /// `SignalValue: F32` telemetry channel.
 pub const CHANID_SIGNAL_VALUE: FwChanIdType = 0;
@@ -137,6 +191,12 @@ struct SignalGenState {
     running: bool,
     /// Zero the next sample (C++ `skipOne`).
     skip_next: bool,
+    /// Staged `Amplitude` parameter value (the autocoded `m_Amplitude`).
+    amplitude_param: f32,
+    /// Validity of the staged parameter (autocoded `m_Amplitude_valid`).
+    amplitude_valid: ParamValid,
+    /// Sample counter used to fill data-product records.
+    dp_samples: u32,
 }
 
 impl Default for SignalGenState {
@@ -151,6 +211,9 @@ impl Default for SignalGenState {
             ticks: 0,
             running: false,
             skip_next: false,
+            amplitude_param: AMPLITUDE_DEFAULT,
+            amplitude_valid: ParamValid::Uninit,
+            dp_samples: 0,
         }
     }
 }
@@ -165,6 +228,14 @@ pub struct SignalGen {
     pub evt: EventGlue,
     /// Telemetry port.
     pub tlm: TlmGlue,
+    /// Parameter ports (`prmGetOut`/`prmSetOut` — wired to `prmDb`).
+    pub prm: PrmGlue,
+    /// `productGetOut` — SYNCHRONOUS data-product buffer request
+    /// (`Fw.DpGet`, wired to `dpMgr.productGetIn`).
+    pub product_get_out: OutputPort<dyn DpGetPort>,
+    /// `productSendOut` — filled data-product container out
+    /// (`Fw.DpSend`, wired to `dpMgr.productSendIn`).
+    pub product_send_out: OutputPort<dyn DpSendPort>,
     /// Throttle for `SampleSkipped` (`throttle 3`).
     sample_skipped_throttle: EventThrottle,
     /// Guarded state (the component mutex).
@@ -173,16 +244,64 @@ pub struct SignalGen {
 
 impl SignalGen {
     /// Construct (topology phase 1). Follow with `set_id_base`, wiring,
-    /// [`init`](Self::init), [`reg_commands`](Self::reg_commands).
+    /// [`init`](Self::init), [`reg_commands`](Self::reg_commands) and
+    /// [`load_parameters`](Self::load_parameters).
     pub fn new(name: &str) -> Arc<Self> {
         Arc::new(Self {
             queued: QueuedBase::new(name),
             cmd: CmdGlue::new(),
             evt: EventGlue::new(),
             tlm: TlmGlue::new(),
+            prm: PrmGlue::new(),
+            product_get_out: OutputPort::new(),
+            product_send_out: OutputPort::new(),
             sample_skipped_throttle: EventThrottle::new(SAMPLE_SKIPPED_THROTTLE),
             state: Mutex::new(SignalGenState::default()),
         })
+    }
+
+    /// C++ autocoded `loadParameters()`: read every declared parameter from
+    /// the parameter database through `prmGetOut`, falling back to the FPP
+    /// default when the database has no (valid) value.
+    ///
+    /// Topology phase 7 — after `prmDb.read_param_file()` and before tasks
+    /// start. Requires `prm.prm_get_out` to be connected (C++ asserts too).
+    pub fn load_parameters(&self) {
+        let mut buffer = ParamBuffer::new();
+        let valid = self
+            .prm
+            .get_param(self.id_base(), PARAMID_AMPLITUDE, &mut buffer);
+        let mut amplitude = AMPLITUDE_DEFAULT;
+        let mut status = valid;
+        if valid == ParamValid::Valid || valid == ParamValid::Default {
+            let mut value = 0f32;
+            if buffer.deserialize_f32_be(&mut value).is_ok() {
+                amplitude = value;
+            } else {
+                // C++ parity: a corrupt stored value falls back to the FPP
+                // default and reports INVALID.
+                status = ParamValid::Invalid;
+            }
+        }
+        let mut state = self.state.lock().unwrap();
+        state.amplitude = amplitude;
+        state.amplitude_param = amplitude;
+        state.amplitude_valid = status;
+    }
+
+    /// The staged `Amplitude` parameter and its validity (introspection,
+    /// equivalent to the autocoded `paramGet_Amplitude`).
+    #[must_use]
+    pub fn amplitude_param(&self) -> (f32, ParamValid) {
+        let state = self.state.lock().unwrap();
+        (state.amplitude_param, state.amplitude_valid)
+    }
+
+    /// `productGetOut` port factory helper: the data-product container id
+    /// this component produces (`id base + DataContainer`).
+    #[must_use]
+    pub fn data_container_id(&self) -> FwDpIdType {
+        self.id_base() + CONTAINER_ID_DATA
     }
 
     fn id_base(&self) -> u32 {
@@ -198,7 +317,14 @@ impl SignalGen {
     pub fn reg_commands(&self) {
         self.cmd.reg_commands(
             self.id_base(),
-            &[OPCODE_SETTINGS, OPCODE_TOGGLE, OPCODE_SKIP],
+            &[
+                OPCODE_SETTINGS,
+                OPCODE_TOGGLE,
+                OPCODE_SKIP,
+                OPCODE_DP,
+                OPCODE_AMPLITUDE_PARAM_SET,
+                OPCODE_AMPLITUDE_PARAM_SAVE,
+            ],
         );
     }
 
@@ -393,6 +519,152 @@ impl SignalGen {
         }
         self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
     }
+
+    /// `DP(records: U32)` command handler — the SYNCHRONOUS data-product
+    /// path (C++ `SignalGen::Dp_cmdHandler` with `DpReqType::IMMEDIATE`,
+    /// i.e. the autocoded `dpGet_DataContainer` + `dpSend`).
+    ///
+    /// The asynchronous request kind (`productRequestOut`/`productRecvIn`)
+    /// is deliberately not ported — see the module header.
+    fn dp_cmd_handler(&self, op_code: FwOpcodeType, cmd_seq: u32, args: &mut CmdArgBuffer) {
+        let mut records = 0u32;
+        if !args.deserialize_u32_be(&mut records).is_ok() || args.deserialize_size_left() != 0 {
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
+            return;
+        }
+        if records == 0 || records > DP_MAX_RECORDS {
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
+            return;
+        }
+
+        // Autocoded `dpGet_DataContainer(dataSize, container)`: ask for the
+        // PACKET size that holds `dataSize` bytes of records.
+        let container_id = self.data_container_id();
+        let data_size = RECORD_SIZE_DATA * FwSizeType::from(records);
+        let packet_size = DpContainer::packet_size_for_data_size(data_size);
+        let mut buffer = Buffer::empty();
+        let status = {
+            let p = self.product_get_out.get();
+            p.target
+                .invoke(p.port_num, container_id, packet_size, &mut buffer)
+        };
+        if status != Success::Success {
+            self.evt.log_event(
+                self.id_base(),
+                EVENTID_DP_BUFFER_FAILED,
+                fprime_fw::LogSeverity::WarningHi,
+                &format!("Data product buffer allocation failed for {records} records"),
+                |buf| buf.serialize_u32_be(records),
+            );
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::ExecutionError);
+            return;
+        }
+
+        let mut container = DpContainer::with_buffer(container_id, buffer);
+        container.set_priority(CONTAINER_PRIORITY_DATA);
+        container.set_time_tag(self.evt.time_get());
+        {
+            // One `DataRecord` per requested record: `[id u32][value f32]`,
+            // exactly what the autocoded `DataContainer_serializeRecord`
+            // emits for a single-member record.
+            let mut state = self.state.lock().unwrap();
+            let mut ser = container.data_serializer();
+            for _ in 0..records {
+                let value = Self::sample(&state);
+                state.dp_samples = state.dp_samples.wrapping_add(1);
+                state.ticks = state.ticks.wrapping_add(1);
+                let status = ser.serialize_u32_be(self.id_base() + RECORD_ID_DATA);
+                fw_assert!(status.is_ok(), status as i32);
+                let status = ser.serialize_f32_be(value);
+                fw_assert!(status.is_ok(), status as i32);
+            }
+        }
+        container.set_data_size(data_size);
+        // Autocoded `dpSend`: finalize the header (which re-hashes it) and
+        // hand the buffer to the data-product manager. The DATA hash is
+        // `Svc::DpWriter`'s job (C++ parity).
+        container.serialize_header();
+        let buffer = container.take_buffer();
+        let bytes = buffer.size() as u32;
+        {
+            let p = self.product_send_out.get();
+            p.target.invoke(p.port_num, container_id, buffer);
+        }
+
+        self.evt.log_event(
+            self.id_base(),
+            EVENTID_DP_SENT,
+            fprime_fw::LogSeverity::ActivityLo,
+            &format!("Sent data product with {records} records ({bytes} bytes)"),
+            |buf| {
+                let status = buf.serialize_u32_be(records);
+                if !status.is_ok() {
+                    return status;
+                }
+                buf.serialize_u32_be(bytes)
+            },
+        );
+        self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+    }
+
+    /// `AMPLITUDE_PARAM_SET(val: F32)` — the autocoded parameter-set
+    /// command: stage the value locally, run `parameterUpdated`, answer OK.
+    /// It does NOT write the parameter database (C++ parity — that is what
+    /// the SAVE command does).
+    fn amplitude_param_set_handler(
+        &self,
+        op_code: FwOpcodeType,
+        cmd_seq: u32,
+        args: &mut CmdArgBuffer,
+    ) {
+        let mut value = 0f32;
+        if !args.deserialize_f32_be(&mut value).is_ok() || args.deserialize_size_left() != 0 {
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
+            return;
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            state.amplitude_param = value;
+            state.amplitude_valid = ParamValid::Valid;
+            // `parameterUpdated(Amplitude)`: the live setting follows.
+            state.amplitude = value;
+        }
+        self.evt.log_event(
+            self.id_base(),
+            EVENTID_AMPLITUDE_UPDATED,
+            fprime_fw::LogSeverity::ActivityHi,
+            &format!("Amplitude parameter updated to {value}"),
+            |buf| buf.serialize_f32_be(value),
+        );
+        self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+    }
+
+    /// `AMPLITUDE_PARAM_SAVE` — the autocoded parameter-save command:
+    /// serialize the staged value and push it to the parameter database
+    /// through `prmSetOut`.
+    fn amplitude_param_save_handler(
+        &self,
+        op_code: FwOpcodeType,
+        cmd_seq: u32,
+        args: &mut CmdArgBuffer,
+    ) {
+        if args.deserialize_size_left() != 0 {
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
+            return;
+        }
+        let value = self.state.lock().unwrap().amplitude_param;
+        let mut buffer = ParamBuffer::new();
+        let status = buffer.serialize_f32_be(value);
+        fw_assert!(status.is_ok(), status as i32);
+        self.prm
+            .set_param(self.id_base(), PARAMID_AMPLITUDE, &mut buffer);
+        self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+    }
 }
 
 // -- The sync schedIn port, implemented directly on the component -----------
@@ -464,6 +736,13 @@ impl ComponentDispatch for SignalGen {
                     OPCODE_SETTINGS => self.settings_cmd_handler(op_code, cmd_seq, &mut args),
                     OPCODE_TOGGLE => self.toggle_cmd_handler(op_code, cmd_seq, &mut args),
                     OPCODE_SKIP => self.skip_cmd_handler(op_code, cmd_seq, &mut args),
+                    OPCODE_DP => self.dp_cmd_handler(op_code, cmd_seq, &mut args),
+                    OPCODE_AMPLITUDE_PARAM_SET => {
+                        self.amplitude_param_set_handler(op_code, cmd_seq, &mut args)
+                    }
+                    OPCODE_AMPLITUDE_PARAM_SAVE => {
+                        self.amplitude_param_save_handler(op_code, cmd_seq, &mut args)
+                    }
                     _ => self
                         .cmd
                         .cmd_response(op_code, cmd_seq, CmdResponse::InvalidOpcode),
@@ -493,6 +772,37 @@ mod tests {
         responses: Mutex<Vec<(FwOpcodeType, u32, CmdResponse)>>,
         events: Mutex<Vec<(FwEventIdType, LogSeverity, Vec<u8>)>>,
         tlm: Mutex<Vec<(FwChanIdType, Vec<u8>)>>,
+        /// `prmSetOut` traffic: (absolute id, serialized value).
+        prm_sets: Mutex<Vec<(FwPrmIdType, Vec<u8>)>>,
+        /// What `prmGetOut` answers, and with which validity.
+        prm_get: Mutex<Option<(Vec<u8>, ParamValid)>>,
+    }
+
+    impl fprime_comp::PrmGetPort for Ground {
+        fn invoke(
+            &self,
+            _port_num: FwIndexType,
+            _id: FwPrmIdType,
+            val: &mut ParamBuffer,
+        ) -> ParamValid {
+            match &*self.prm_get.lock().unwrap() {
+                Some((bytes, valid)) => {
+                    let status = val.set_buff(bytes);
+                    assert!(status.is_ok());
+                    *valid
+                }
+                None => ParamValid::Invalid,
+            }
+        }
+    }
+
+    impl fprime_comp::PrmSetPort for Ground {
+        fn invoke(&self, _port_num: FwIndexType, id: FwPrmIdType, val: &mut ParamBuffer) {
+            self.prm_sets
+                .lock()
+                .unwrap()
+                .push((id, val.as_slice().to_vec()));
+        }
     }
 
     impl CmdRegPort for Ground {
@@ -567,6 +877,8 @@ mod tests {
         comp.evt.log_out.connect(ground.clone(), 0);
         comp.evt.time_out.connect(Arc::new(TimeStub), 0);
         comp.tlm.tlm_out.connect(ground.clone(), 0);
+        comp.prm.prm_get_out.connect(ground.clone(), 0);
+        comp.prm.prm_set_out.connect(ground.clone(), 0);
         comp.init(10);
         (comp, ground)
     }
@@ -769,7 +1081,7 @@ mod tests {
         assert_eq!(skipped(&ground), 4);
     }
 
-    /// reg_commands registers the three absolute opcodes.
+    /// reg_commands registers every absolute opcode, in declaration order.
     #[test]
     fn registration() {
         let (comp, ground) = build();
@@ -779,7 +1091,89 @@ mod tests {
             vec![
                 ID_BASE + OPCODE_SETTINGS,
                 ID_BASE + OPCODE_TOGGLE,
-                ID_BASE + OPCODE_SKIP
+                ID_BASE + OPCODE_SKIP,
+                ID_BASE + OPCODE_DP,
+                ID_BASE + OPCODE_AMPLITUDE_PARAM_SET,
+                ID_BASE + OPCODE_AMPLITUDE_PARAM_SAVE,
+            ]
+        );
+    }
+    // -- Parameters and data products --------------------------------------
+
+    /// `load_parameters` takes the database value when it is valid.
+    #[test]
+    fn load_parameters_uses_the_stored_value() {
+        let (comp, ground) = build();
+        *ground.prm_get.lock().unwrap() = Some((2.5f32.to_be_bytes().to_vec(), ParamValid::Valid));
+        comp.load_parameters();
+        assert_eq!(comp.amplitude_param(), (2.5, ParamValid::Valid));
+    }
+
+    /// An empty database leaves the FPP default in force (C++ parity: the
+    /// component keeps its declared default and records the validity).
+    #[test]
+    fn load_parameters_falls_back_to_the_default() {
+        let (comp, _ground) = build();
+        comp.load_parameters();
+        assert_eq!(
+            comp.amplitude_param(),
+            (AMPLITUDE_DEFAULT, ParamValid::Invalid)
+        );
+    }
+
+    /// A stored value that cannot be deserialized is reported INVALID and
+    /// the default is used.
+    #[test]
+    fn load_parameters_rejects_a_corrupt_stored_value() {
+        let (comp, ground) = build();
+        *ground.prm_get.lock().unwrap() = Some((vec![0x01], ParamValid::Valid));
+        comp.load_parameters();
+        assert_eq!(
+            comp.amplitude_param(),
+            (AMPLITUDE_DEFAULT, ParamValid::Invalid)
+        );
+    }
+
+    /// PARAM_SET stages the value locally and does NOT touch the database;
+    /// PARAM_SAVE is what writes it, as the absolute parameter id.
+    #[test]
+    fn param_set_stages_and_param_save_writes_the_database() {
+        let (comp, ground) = build();
+        send_cmd(&comp, OPCODE_AMPLITUDE_PARAM_SET, 1, &2.5f32.to_be_bytes());
+        tick(&comp);
+        assert_eq!(comp.amplitude_param(), (2.5, ParamValid::Valid));
+        assert!(ground.prm_sets.lock().unwrap().is_empty());
+
+        send_cmd(&comp, OPCODE_AMPLITUDE_PARAM_SAVE, 2, &[]);
+        tick(&comp);
+        assert_eq!(
+            *ground.prm_sets.lock().unwrap(),
+            vec![(ID_BASE + PARAMID_AMPLITUDE, 2.5f32.to_be_bytes().to_vec())]
+        );
+        assert_eq!(
+            *ground.responses.lock().unwrap(),
+            vec![
+                (ID_BASE + OPCODE_AMPLITUDE_PARAM_SET, 1, CmdResponse::Ok),
+                (ID_BASE + OPCODE_AMPLITUDE_PARAM_SAVE, 2, CmdResponse::Ok),
+            ]
+        );
+    }
+
+    /// `DP` validates its record count before touching the data-product
+    /// ports (which are unconnected here — reaching them would assert).
+    #[test]
+    fn dp_command_validates_the_record_count() {
+        let (comp, ground) = build();
+        send_cmd(&comp, OPCODE_DP, 1, &0u32.to_be_bytes());
+        send_cmd(&comp, OPCODE_DP, 2, &(DP_MAX_RECORDS + 1).to_be_bytes());
+        send_cmd(&comp, OPCODE_DP, 3, &[0x00]);
+        tick(&comp);
+        assert_eq!(
+            *ground.responses.lock().unwrap(),
+            vec![
+                (ID_BASE + OPCODE_DP, 1, CmdResponse::ValidationError),
+                (ID_BASE + OPCODE_DP, 2, CmdResponse::ValidationError),
+                (ID_BASE + OPCODE_DP, 3, CmdResponse::FormatError),
             ]
         );
     }

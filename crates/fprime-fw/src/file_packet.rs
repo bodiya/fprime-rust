@@ -345,16 +345,17 @@ impl<'a> FilePacket<'a> {
     /// `DeserBufferEmpty` when a read starts at the end of the buffer,
     /// `DeserSizeMismatch` when too few bytes remain, and
     /// `DeserSizeMismatch` when a packet that must consume the buffer
-    /// exactly leaves residual bytes. An unknown type byte is
-    /// `DeserFormatError` (the C++ `FW_ASSERT(false)` in the caller's
-    /// dispatch switch — Rust rejects it as a decode error instead of
-    /// crashing on ground-supplied data).
+    /// exactly leaves residual bytes. The type byte follows the C++
+    /// `fromSerialBuffer` switch: `T_NONE` (255) is `DeserTypeMismatch`
+    /// and any other unknown value is `DeserInvalidData` (the `default:`
+    /// arm). These ordinals are ground-visible in `Svc::FileUplink`'s
+    /// `DecodeError` event, so they must match exactly.
     pub fn from_buffer(data: &'a [u8]) -> Result<FilePacket<'a>, SerializeStatus> {
         let mut cursor = Cursor::new(data);
         let raw_type = cursor.read_u8()?;
         let sequence_index = cursor.read_u32()?;
         let packet_type =
-            FilePacketType::try_from(raw_type).map_err(|_| SerializeStatus::DeserFormatError)?;
+            FilePacketType::try_from(raw_type).map_err(|_| SerializeStatus::DeserInvalidData)?;
         let header = Header::new(packet_type, sequence_index);
         match packet_type {
             FilePacketType::Start => {
@@ -397,8 +398,9 @@ impl<'a> FilePacket<'a> {
                 cursor.expect_empty()?;
                 Ok(FilePacket::Cancel(CancelPacket { header }))
             }
-            // T_NONE never appears on the wire.
-            FilePacketType::None => Err(SerializeStatus::DeserFormatError),
+            // T_NONE never appears on the wire; C++ maps it to
+            // FW_DESERIALIZE_TYPE_MISMATCH, not the `default:` arm.
+            FilePacketType::None => Err(SerializeStatus::DeserTypeMismatch),
         }
     }
 }
@@ -627,16 +629,23 @@ mod tests {
     }
 
     #[test]
-    fn unknown_packet_type_is_format_error() {
-        assert_eq!(
-            FilePacket::from_buffer(&[0x09, 0, 0, 0, 0]).unwrap_err(),
-            SerializeStatus::DeserFormatError
-        );
-        // T_NONE (255) is in-memory only and never valid on the wire.
+    fn unknown_packet_type_matches_the_cpp_switch_statuses() {
+        // C++ `fromSerialBuffer` `default:` arm -> FW_DESERIALIZE_INVALID_DATA.
+        for raw in [0x04u8, 0x09, 0x7F, 0xFE] {
+            assert_eq!(
+                FilePacket::from_buffer(&[raw, 0, 0, 0, 0]).unwrap_err(),
+                SerializeStatus::DeserInvalidData
+            );
+        }
+        // T_NONE (255) is in-memory only and never valid on the wire; C++
+        // gives it its own `case T_NONE:` -> FW_DESERIALIZE_TYPE_MISMATCH.
         assert_eq!(
             FilePacket::from_buffer(&[0xFF, 0, 0, 0, 0]).unwrap_err(),
-            SerializeStatus::DeserFormatError
+            SerializeStatus::DeserTypeMismatch
         );
+        // The ordinals are ground-visible in FileUplink's DecodeError event.
+        assert_eq!(SerializeStatus::DeserInvalidData as i32, 8);
+        assert_eq!(SerializeStatus::DeserTypeMismatch as i32, 6);
     }
 
     #[test]

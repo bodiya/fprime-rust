@@ -1371,6 +1371,26 @@ mod tests {
         assert_eq!(ground.last_tlm(FileUplink::CHANID_PACKETS_RECEIVED), None);
     }
 
+    #[test]
+    fn malformed_packet_type_reports_the_cpp_decode_status() {
+        // C++ FilePacket::fromSerialBuffer: `default:` -> INVALID_DATA (8),
+        // `case T_NONE:` -> TYPE_MISMATCH (6). Both are ground-visible in the
+        // DecodeError event argument.
+        for (raw_type, expected) in [
+            (0x04u8, SerializeStatus::DeserInvalidData),
+            (0xFF, SerializeStatus::DeserTypeMismatch),
+        ] {
+            let (comp, ground) = setup(false);
+            let bytes = vec![0x00, 0x03, raw_type, 0x00, 0x00, 0x00, 0x00];
+            deliver(&comp, raw_buffer(&bytes));
+            let events = ground.events_of(FileUplink::EVENTID_DECODE_ERROR);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].1, (expected as i32).to_be_bytes().to_vec());
+            // The buffer still comes back on bufferSendOut (C++ parity).
+            assert_eq!(ground.returned.lock().unwrap().len(), 1);
+        }
+    }
+
     // ---- receive-mode quirks ---------------------------------------------
 
     #[test]

@@ -12,6 +12,10 @@ use fprime_ref::topology::{CMD_DISPATCHER_BASE_ID, RefTopology, TopologyConfig};
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_utils::Hash;
 
+mod common;
+
+use common::scratch_data_dir;
+
 const DEADLINE: Duration = Duration::from_secs(15);
 
 // ---------------------------------------------------------------------------
@@ -118,6 +122,7 @@ fn tcp_no_op_round_trip() {
     let topology = RefTopology::setup(&TopologyConfig {
         hostname: Some("127.0.0.1".to_string()),
         port,
+        data_dir: Some(scratch_data_dir()),
     });
     topology
         .fatal_handler

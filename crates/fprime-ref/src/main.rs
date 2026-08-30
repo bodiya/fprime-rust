@@ -2,7 +2,10 @@
 //!
 //! Rust port of `TestDeploymentsProject/Ref/Main.cpp`: parse `-a hostname
 //! -p port` (both optional — without them the deployment runs standalone
-//! with no comms), set up the topology, run the blocking 1 Hz rate loop,
+//! with no comms) plus `-d data-dir` (this port's addition: the directory
+//! the parameter database, uplinked files, data products and `.com` logs
+//! live in, where C++ hard-codes `"PrmDb.dat"`, `"/tmp/uplink/"` and
+//! `"./DpCat"`), set up the topology, run the blocking 1 Hz rate loop,
 //! tear down, exit 0.
 //!
 //! Divergence from C++ (documented): C++ installs SIGINT/SIGTERM handlers
@@ -18,25 +21,35 @@ use fprime_ref::topology::{RefTopology, TopologyConfig};
 /// Print usage and exit with status 2 (getopt-style error path).
 fn usage_error(program: &str, message: &str) -> ! {
     eprintln!("{message}");
-    eprintln!("Usage: {program} [-a <hostname>] [-p <port>]");
+    eprintln!("Usage: {program} [-a <hostname>] [-p <port>] [-d <data-dir>]");
+    eprintln!("  -a, --address    GDS hostname (dotted-quad IPv4)");
+    eprintln!("  -p, --port       GDS TCP port; comms need BOTH -a and -p");
+    eprintln!("  -d, --data-dir   directory for the parameter database, uplinked");
+    eprintln!("                   files, data products and .com logs");
+    eprintln!("                   (default: <temp>/fprime-ref-<pid>)");
     std::process::exit(2);
 }
 
-/// Manual getopt-style parse of `-a <hostname> -p <port>`.
+/// Manual getopt-style parse of `-a <hostname> -p <port> -d <data-dir>`.
 fn parse_args() -> TopologyConfig {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_else(|| "fprime-ref".to_string());
     let mut config = TopologyConfig::default();
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "-a" => match args.next() {
+            "-a" | "--address" => match args.next() {
                 Some(hostname) => config.hostname = Some(hostname),
                 None => usage_error(&program, "-a requires a hostname argument"),
             },
-            "-p" => match args.next().map(|v| v.parse::<u16>()) {
+            "-p" | "--port" => match args.next().map(|v| v.parse::<u16>()) {
                 Some(Ok(port)) if port != 0 => config.port = port,
                 _ => usage_error(&program, "-p requires a port argument in [1, 65535]"),
             },
+            "-d" | "--data-dir" => match args.next() {
+                Some(dir) if !dir.is_empty() => config.data_dir = Some(dir),
+                _ => usage_error(&program, "-d requires a non-empty directory argument"),
+            },
+            "-h" | "--help" => usage_error(&program, "fprime-ref reference deployment"),
             other => usage_error(&program, &format!("unknown option: {other}")),
         }
     }
@@ -58,6 +71,10 @@ fn main() {
         }
         _ => fw_log!("Ref deployment starting (no comms configured)\n"),
     }
+    fw_log!(
+        "Ref deployment data directory: {}\n",
+        config.resolved_data_dir()
+    );
 
     let topology = RefTopology::setup(&config);
 

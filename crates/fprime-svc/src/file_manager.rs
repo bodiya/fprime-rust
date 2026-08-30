@@ -50,8 +50,9 @@ use fprime_comp::{
     OutputPort, PingPort, PortRef, QueueFullPolicy, SchedPort, TlmGlue, msg,
 };
 use fprime_config::{
-    FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIdType,
-    FwIndexType, FwOpcodeType, FwQueuePriorityType, FwSizeType,
+    FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FwChanIdType,
+    FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
+    FwSizeType,
 };
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, CmdStringArg, Endianness, FileNameString, FwDefaultString,
@@ -147,8 +148,15 @@ pub const QUEUE_MSG_SIZE: FwSizeType =
 
 const PORT_PRIORITY: FwQueuePriorityType = 1;
 
-/// Event string arguments are `string size FileNameStringSize` = 240.
-const EVENT_STRING_SIZE: usize = 240;
+/// Event string arguments are `string size FileNameStringSize` (240), but
+/// the generated `log_*` methods serialize through `Fw::LogStringArg`
+/// (`StringTemplate<FW_LOG_STRING_MAX_SIZE>`), so the effective on-wire cap
+/// is `min(declared size, FW_LOG_STRING_MAX_SIZE)` = 200.
+const EVENT_STRING_SIZE: usize = if FILE_NAME_STRING_SIZE < FW_LOG_STRING_MAX_SIZE {
+    FILE_NAME_STRING_SIZE
+} else {
+    FW_LOG_STRING_MAX_SIZE
+};
 
 type MsgBuffer = LinearBuffer<{ QUEUE_MSG_SIZE as usize }>;
 
@@ -1831,6 +1839,47 @@ mod tests {
     }
 
     // ---- ListDirectory ----------------------------------------------------
+
+    #[test]
+    fn a_listed_entry_name_is_clipped_to_the_log_string_cap() {
+        // C++ parity: the event args are declared `string size
+        // FileNameStringSize` (240) but the generated `log_*` method carries
+        // them as `Fw::LogStringArg` = `StringTemplate<FW_LOG_STRING_MAX_SIZE>`,
+        // so anything past 200 bytes never reaches the wire.
+        assert_eq!(EVENT_STRING_SIZE, FW_LOG_STRING_MAX_SIZE);
+        const { assert!(EVENT_STRING_SIZE < FILE_NAME_STRING_SIZE) };
+
+        let (comp, ground) = setup();
+        let dir = temp_dir();
+        let long_name = format!("{}.bin", "z".repeat(216));
+        assert_eq!(long_name.len(), 220);
+        std::fs::write(dir.join(&long_name), b"12345").unwrap();
+
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_LIST_DIRECTORY,
+            9,
+            one_string(&path_str(&dir)),
+        );
+        sched_tick(&comp);
+
+        let listed = ground.events_of(FileManager::EVENTID_DIRECTORY_LISTING);
+        assert_eq!(listed.len(), 1);
+        let args = &listed[0].1;
+        // dir: 2-byte length then bytes; the entry name follows.
+        let dir_len = u16::from_be_bytes([args[0], args[1]]) as usize;
+        let file_off = 2 + dir_len;
+        assert_eq!(
+            &args[file_off..file_off + 2],
+            &(FW_LOG_STRING_MAX_SIZE as u16).to_be_bytes()
+        );
+        assert_eq!(
+            &args[file_off + 2..file_off + 2 + FW_LOG_STRING_MAX_SIZE],
+            &long_name.as_bytes()[..FW_LOG_STRING_MAX_SIZE]
+        );
+        // ... then the u64 size and nothing more.
+        assert_eq!(args.len(), file_off + 2 + FW_LOG_STRING_MAX_SIZE + 8);
+    }
 
     #[test]
     fn list_directory_is_paced_one_entry_per_tick() {

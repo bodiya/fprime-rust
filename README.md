@@ -24,8 +24,11 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
   init, recycle after), status enums with the C++ discriminants, `fw_assert`
   for invariants.
 - **A runnable reference deployment** (`fprime-ref`) mirroring the C++ `Ref`
-  topology: rate groups driving a demo component, full C&DH stack, and a
-  TCP-based comms chain a ground system can connect to.
+  topology: rate groups driving a demo component, the full C&DH stack,
+  parameters, file uplink/downlink, a command sequencer, data products, and a
+  TCP-based comms chain a ground system can connect to. Its integration tests
+  drive real framed bytes through the port graph — uplinking a file, running a
+  sequence, saving and reloading parameters, writing a data product.
 
 ## Workspace layout
 
@@ -59,6 +62,10 @@ cargo run -p fprime-ref
 
 # Run it against a TCP ground system (e.g. fprime-gds in TCP mode)
 cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000
+
+# Choose where the deployment keeps its parameter file, data products,
+# uplinked files and com logs (default: a per-process temp directory)
+cargo run -p fprime-ref -- --data-dir ./run-data
 ```
 
 Requires stable Rust (edition 2024). No external crates.
@@ -69,25 +76,50 @@ Requires stable Rust (edition 2024). No external crates.
 
 | Area | Components / features |
 | --- | --- |
-| Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `PolyType`, assert hooks, `Fw::Logger` |
+| Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
+| Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!` (component/port scaffolding) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, raw time + interval timer |
-| C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer` |
+| C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
-| Comms stack | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager` |
-| Drivers | `TcpClient`, `TcpServer` (byte-stream driver model) |
+| Sequencing | `CmdSequencer` with the `FPrimeSequence` binary sequence-file format |
+| Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
+| File services | `FileUplink`, `FileDownlink`, `FileManager`, CFDP checksum |
+| Data products | `DpManager`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
+| Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`, `ComLogger` |
+| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer` |
+| Drivers | `TcpClient`, `TcpServer` (byte-stream model); `LinuxGpioDriver`, `LinuxUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker, circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
-### Not yet ported
+### Hardware drivers: what works without `unsafe`
 
-`CmdSequencer`, `FpySequencer`, file services (`FileUplink`, `FileDownlink`,
-`FileManager`), parameter database (`PrmDb`), data products (`Dp*`),
-`TlmPacketizer`, `ComLogger`, the CCSDS stack (`SpacePacket`/`TmTc`/SDLS),
-`GenericHub`, state-machine autocoding (`Fw/Sm`), `SystemResources`,
-UART/I2C/SPI/GPIO drivers, and the FPP autocoder itself (components are
-hand-written against a documented pattern; a derive-macro layer is future
-work). `no_std` targets are a design goal of the OSAL seam but not yet
-implemented.
+Linux GPIO (character device), I²C (`I2C_SLAVE`/`I2C_RDWR`), SPI full duplex
+and UART termios configuration all require `ioctl(2)`, which safe
+zero-dependency `std` Rust cannot issue. Each driver is therefore ported as
+the complete component surface — ports, statuses, events, telemetry — over a
+**backend trait**, so a downstream crate that permits `libc` or an FFI shim
+can supply real hardware access without forking the component:
+
+- **GPIO** ships a sysfs backend (`/sys/class/gpio`, pure file I/O) with
+  faithful input/output, and *level-sampled* pseudo-interrupts (`poll(2)` is
+  unavailable) — documented on the public API as sampling, not kernel edge
+  interrupts.
+- **UART** ships device-file I/O over an already-configured port, with an
+  opt-in helper that applies settings via `stty`. Requesting a
+  configuration without it fails the open with `ConfigError` rather than
+  silently running at the wrong baud.
+- **I²C and SPI** ship stub backends only; the required ioctls are named in
+  the rustdoc.
+
+### Not ported
+
+The FPP *compiler* (there is no `.fpp` parser or build-time generator — the
+macro codegen layer covers the mechanical output instead), `FpySequencer`,
+`GenericHub`, state-machine autocoding (`Fw/Sm`), `ActiveTextLogger`'s file
+logging, the SDLS security layer, and zlib data-product compression
+(`DpZLibCompressor`/`DpCompressProc`, which would need a third-party
+dependency — `ProcType::ZlibDeflate` is kept for wire parity). `no_std`
+targets remain a design goal of the OSAL seam rather than a current feature.
 
 ## How the port maps C++ to Rust
 

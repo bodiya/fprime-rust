@@ -39,9 +39,9 @@ use fprime_comp::{
     MsgDispatchStatus, OutputPort, PingPort, PortRef, QueueFullPolicy, TlmGlue, msg,
 };
 use fprime_config::{
-    FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwDpIdType, FwDpPriorityType,
-    FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
-    FwSizeType,
+    FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FwChanIdType,
+    FwDpIdType, FwDpPriorityType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
+    FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::dp::{DpContainer, DpState};
 use fprime_fw::{
@@ -262,8 +262,15 @@ pub const QUEUE_MSG_SIZE: FwSizeType =
 /// FPP declares no `priority` qualifier on any async input.
 const PORT_PRIORITY: FwQueuePriorityType = 1;
 
-/// Event string arguments are `string size FileNameStringSize` (240).
-const EVENT_STRING_SIZE: usize = FILE_NAME_STRING_SIZE;
+/// Event string arguments are `string size FileNameStringSize` (240), but
+/// the generated `log_*` methods serialize through `Fw::LogStringArg`
+/// (`StringTemplate<FW_LOG_STRING_MAX_SIZE>`), so the effective on-wire cap
+/// is `min(declared size, FW_LOG_STRING_MAX_SIZE)` = 200.
+const EVENT_STRING_SIZE: usize = if FILE_NAME_STRING_SIZE < FW_LOG_STRING_MAX_SIZE {
+    FILE_NAME_STRING_SIZE
+} else {
+    FW_LOG_STRING_MAX_SIZE
+};
 
 /// One state-file record: `sizeof(FwIndexType)` + `DpRecord::SERIALIZED_SIZE`
 /// = 31 bytes with the default config, derived from the config alias so an
@@ -2274,6 +2281,35 @@ mod tests {
         fn requests(&self) -> Vec<String> {
             self.downlink.requests.lock().unwrap().clone()
         }
+    }
+
+    #[test]
+    fn an_event_directory_name_is_clipped_to_the_log_string_cap() {
+        // C++ parity: the arg is declared `string size FileNameStringSize`
+        // (240) but the generated `log_*` method carries it as
+        // `Fw::LogStringArg` = `StringTemplate<FW_LOG_STRING_MAX_SIZE>`, so
+        // anything past 200 bytes never reaches the wire.
+        let base = temp_dir("longdir");
+        let pad = 210usize.saturating_sub(base.to_str().unwrap().len() + 1);
+        assert!(pad > 0);
+        let dir = base.join("d".repeat(pad));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = dir.to_str().unwrap().to_string();
+        assert!(full.len() > FW_LOG_STRING_MAX_SIZE);
+        assert!(full.len() <= FILE_NAME_STRING_SIZE);
+
+        let state_file = base.join("dp_state.dat");
+        let h = Harness::build(&[dir], &state_file, DP_MAX_FILES as FwSizeType, true);
+        h.build_catalog();
+
+        let args = h.events_with_id(DpCatalog::EVENTID_PROCESSING_DIRECTORY);
+        assert_eq!(args.len(), 1);
+        assert_eq!(
+            &args[0][..2],
+            &(FW_LOG_STRING_MAX_SIZE as u16).to_be_bytes()
+        );
+        assert_eq!(args[0].len(), 2 + FW_LOG_STRING_MAX_SIZE);
+        assert_eq!(&args[0][2..], &full.as_bytes()[..FW_LOG_STRING_MAX_SIZE]);
     }
 
     // -- Wire formats ------------------------------------------------------
