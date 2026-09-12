@@ -38,10 +38,13 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   macro cannot express faithfully stays hand-written — the macros never
   half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
-- Not ported yet (see the status matrix in README.md): CmdSequencer,
-  FileUplink/FileDownlink/FileManager, data products (Dp*), TlmPacketizer,
-  CCSDS stack, GenericHub, ComLogger, state-machine autocoding, UART/I2C/SPI/GPIO
-  drivers.
+- Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
+  FpySequencer, GenericHub, state-machine autocoding (`Fw/Sm`),
+  ActiveTextLogger file logging, the SDLS/AOS CCSDS siblings and zlib
+  data-product compression. Everything listed as a phase-1 gap in earlier
+  revisions of this document (CmdSequencer, file services, data products,
+  TlmPacketizer, the CCSDS stack, ComLogger, the Linux drivers) has since
+  been ported.
 
 ## Workspace layout
 
@@ -578,7 +581,8 @@ config constants, and quirks listed there:
 - `PosixTime`-equivalent time source (`SystemTimeSource`, TB_WORKSTATION_TIME)
 - Timer cycle source (`IntervalTimerDriver`: blocking loop → CycleOut)
 - Comms: `ComQueue` (active), `ComStub`, `FprimeFramer`, `FprimeDeframer`,
-  `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `BufferManager`
+  `FrameAccumulator` + `FprimeFrameDetector` / `CcsdsTcFrameDetector`,
+  `FprimeRouter`, `BufferManager`
 - `fprime-drv`: `ByteStreamStatus { OpOk=0, SendRetry=1, RecvNoData=2,
   OtherError=3 }` + ports, `TcpClient`, `TcpServer` (std::net; read thread +
   reconnect thread; status mapping per the analysis)

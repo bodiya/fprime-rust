@@ -761,7 +761,7 @@ Topology order: PrmDb::new -> set_id_base -> connect (cmd.cmd_reg_out, cmd.cmd_r
 Deviations / decisions (each documented in the source):
 1. Two owned stores + `std::mem::swap` under the component lock replace the C++ `PrmDbStore*` pair; the swap is inside the same lock the guarded getPrm takes, so getPrm never observes a half-swapped pair. Backing Vecs are `with_capacity(25)` at construction and never grow.
 2. `getPrm` drops the state lock before emitting PrmIdNotFound (C++ holds the guarded mutex across the log call). CONVENTIONS.md requires output-port invocations outside the state lock; behavior is otherwise identical. The save loop DOES hold the lock across the whole file write, matching the C++ lock()/unLock() bracket, and emits nothing while holding it.
-3. `Os::SandboxedFile` / `Os::FilePathUtils` are not ported in fprime-os, so the sandbox is implemented inline in this module: `resolve_path`/`resolve_from_cwd` (lexical `.`/`..`/`//` resolution against the cwd, MAX_PATH_LENGTH = FILE_NAME_STRING_SIZE = 240) plus `checkContainment` semantics, mapping a violation onto `file::Status::OutsideSandbox` reported as PrmFileReadError(Open, 0, 12). Unit-tested against the C++ algorithm's cases. If fprime-os later gains SandboxedFile, these two helpers should be deleted in favor of it.
+3. **[Superseded in phase 2 — see "Phase 2" below; the helpers now live in `fprime-os`.]** `Os::SandboxedFile` / `Os::FilePathUtils` were not ported in fprime-os, so the sandbox was implemented inline in this module: `resolve_path`/`resolve_from_cwd` (lexical `.`/`..`/`//` resolution against the cwd, MAX_PATH_LENGTH = FILE_NAME_STRING_SIZE = 240) plus `checkContainment` semantics, mapping a violation onto `file::Status::OutsideSandbox` reported as PrmFileReadError(Open, 0, 12). Unit-tested against the C++ algorithm's cases. If fprime-os later gains SandboxedFile, these two helpers should be deleted in favor of it.
 4. C++ parity quirks kept deliberately (each has a test): (a) `OPEN_WRITE` does not truncate, so a shorter image over a longer file leaves residue and the next load fails the CRC (the CRC covers everything to EOF); (b) `PRM_LOAD_FILE`'s file name is a `Fw::CmdStringArg` (40 bytes) even though the FPP model declares `string size FileNameStringSize` (240) — a longer name is a FormatError, exactly as the C++ generated handler behaves (verified against PrmDbImpl.hpp and CmdSequencer's identical shape); (c) records past the 25th are silently ignored; (d) a dropped record fails the load only after the remaining records are processed.
 5. U32 fields are read/written with `to_be_bytes`/`from_be_bytes` rather than through a `WorkingBuffer` — identical encoding to the Fw serialize layer, locked down by the literal-byte file test.
 6. Events with `string` args serialize via `LogStringArg::serialize_to_truncated(.., 80, ..)` (FPP default string size).
@@ -878,7 +878,7 @@ DEVIATIONS (each documented in the code)
 
 1. `FilePacket::from_buffer` returns `Result<FilePacket<'_>, SerializeStatus>` instead of the C++ in-place `SerializeStatus fromBuffer(&Buffer)`. The task's enum has no `T_NONE` variant, so there is nothing to fill in place; the `Err` carries the exact C++ status that `FileUplink` logs as `DecodeError`. An unknown/`T_NONE` type byte is `DeserFormatError` (the C++ `FW_ASSERT(false)` in the caller's dispatch switch would crash on ground-supplied data).
 
-2. `Os::SandboxedFile` and `Os::FilePathUtils` are NOT in fprime-os (that crate's notes list SandboxedFile as "not ported" and it is owned by an earlier wave, so I may not edit it). I ported them into `file_uplink.rs` as public items (`SandboxedFile`, `PathStatus`, `resolve_path`, `resolve_from_cwd`, `check_containment`, `MAX_PATH_LENGTH`) and `file_downlink.rs` imports `SandboxedFile` from there. They should move to `fprime-os` when that crate is next touched. Semantics are exact: fail-open default (`/`, configured), purely textual resolution (no `canonicalize`, no symlink following), and the resolved path is what gets opened.
+2. **[Superseded in phase 2 — see "Phase 2" below.]** `Os::SandboxedFile` and `Os::FilePathUtils` were NOT in fprime-os (that crate's notes list SandboxedFile as "not ported" and it is owned by an earlier wave, so I may not edit it). I ported them into `file_uplink.rs` as public items (`SandboxedFile`, `PathStatus`, `resolve_path`, `resolve_from_cwd`, `check_containment`, `MAX_PATH_LENGTH`) and `file_downlink.rs` imports `SandboxedFile` from there. They should move to `fprime-os` when that crate is next touched. Semantics are exact: fail-open default (`/`, configured), purely textual resolution (no `canonicalize`, no symlink following), and the resolved path is what gets opened.
 
 3. `Fw.StringFormatStatus` is declared in `file_manager.rs` for the same reason (fprime-fw's `enums` module is not mine to edit). Move it to `fprime_fw::enums` later.
 
@@ -894,7 +894,7 @@ DEVIATIONS (each documented in the code)
 
 NOT PORTED (deliberate)
 
-- FileManager `GenerateDp` (0x09) chunking: `Fw/Dp`, `DpContainer` and the `Fw.DataProductSync` ports do not exist yet (`fprime-fw/src/dp.rs`, `dp_manager.rs`, `dp_writer.rs` are still one-line placeholders being written by another wave). The handler validates its arguments (`FormatError` / `ValidationError` on the `GenerateDpMode` enum) and then takes the exact path the C++ takes when `productGetOut`/`productSendOut` are unconnected: `GenerateDpBufferFailed` + `cmdResponse OK`. The `GenerateDpStage`/`GenerateDpMode` enums and the event ids are in place; the paced chunk loop, `FileChunkHeader` record and the DP-pacing half of `run_internalInterfaceHandler` are the only work left, and `run_internal_handler` has the hook comment marking where it goes.
+- **[Superseded in phase 2 — see "Phase 2" below; the chunking loop is ported.]** FileManager `GenerateDp` (0x09) chunking: `Fw/Dp`, `DpContainer` and the `Fw.DataProductSync` ports do not exist yet (`fprime-fw/src/dp.rs`, `dp_manager.rs`, `dp_writer.rs` are still one-line placeholders being written by another wave). The handler validates its arguments (`FormatError` / `ValidationError` on the `GenerateDpMode` enum) and then takes the exact path the C++ takes when `productGetOut`/`productSendOut` are unconnected: `GenerateDpBufferFailed` + `cmdResponse OK`. The `GenerateDpStage`/`GenerateDpMode` enums and the event ids are in place; the paced chunk loop, `FileChunkHeader` record and the DP-pacing half of `run_internalInterfaceHandler` are the only work left, and `run_internal_handler` has the hook comment marking where it goes.
 - No shell/exec command: opcode 0x04 is a deliberate upstream gap (the historic `ShellCommand` was removed). The task text said "ShellCommand if present"; it is not present in `Svc/FileManager/Commands.fppi`, and the analysis says explicitly not to add one. A test asserts 0x04 answers `InvalidOpcode`.
 - FileDownlink `FilenameSourceOverflow`/`FilenameDestinationOverflow` are implemented but unreachable in the stock configuration (both C++ and Rust): command strings are `Fw::CmdStringArg` (40 bytes) and port strings are 100 bytes, both below the 240-byte `FileNameString` capacity they are compared against. Kept for control-flow parity.
 - `FileUplink::File::open`'s `BAD_SIZE`-on-long-path branch is likewise unreachable (a `PathName` length is a `U8` <= 255 and the C++ buffer is 256), kept for parity.
@@ -1304,7 +1304,7 @@ Deviations (all documented in the module doc comments):
 6. ComCfg CCSDS constants (SPACECRAFT_ID, TM_FRAME_FIXED_SIZE, AOS_MAX_FRAME_FIXED_SIZE, AGGREGATION_SIZE) live in `ccsds::types` because I may not edit fprime-config; AGGREGATION_SIZE is derived from the others, not hardcoded. If config-forking is wanted later they should move to `fprime-config` (a mechanical move; nothing outside ccsds/ references them today).
 7. The CCSDS port traits (ApidSequenceCountPort, ErrorNotifyPort) are declared in `ccsds::types` following the com_stub precedent for crate-local port traits.
 8. `TM_FRAME_FIXED_SIZE` is a plain const, not a const generic — the C++ is equally static (`ComCfg::TmFrameFixedSize`); const-parameterizing TmFramer was judged unnecessary complexity for phase 1 (noted as ccsds.md porting note 9's "ideally").
-9. Deliberately NOT ported (outside my file list / out of scope per the analysis): CcsdsTcFrameDetector (belongs in `frame_accumulator.rs`, which I do not own — nothing in the workspace implements it yet, so the CCSDS uplink has no frame synchronizer; it would be ~40 lines over `Crc16` + `TCHeader::build_flags_and_sc_id(true,false,SPACECRAFT_ID)==0x2044` and the existing `FrameDetector` trait), ComAggregator, and the AOS/SDLS/CFDP siblings. AOSHeader/AOSTrailer/MPduHeader/SaMapEntry/SdlsStatus/Tfvn are declared for Types.fpp parity but nothing consumes them yet.
+9. Deliberately NOT ported (outside my file list / out of scope per the analysis): CcsdsTcFrameDetector **[ported in phase 2 — see "Phase 2" below]** (belongs in `frame_accumulator.rs`, which I do not own — nothing in the workspace implements it yet, so the CCSDS uplink has no frame synchronizer; it would be ~40 lines over `Crc16` + `TCHeader::build_flags_and_sc_id(true,false,SPACECRAFT_ID)==0x2044` and the existing `FrameDetector` trait), ComAggregator, and the AOS/SDLS/CFDP siblings. AOSHeader/AOSTrailer/MPduHeader/SaMapEntry/SdlsStatus/Tfvn are declared for Types.fpp parity but nothing consumes them yet.
 10. No async ports exist anywhere in this subsystem (all five components are passive with sync/guarded inputs), so the queue-message sizing rule does not apply here.
 No sibling breakage observed: `cargo build --workspace`, `cargo clippy -p fprime-svc --all-targets -- -D warnings`, `cargo fmt -p fprime-svc` clean; `cargo test -p fprime-svc` green (558 passed, 85 of them in ccsds) and a full `cargo test --workspace` run was green (22 test binaries, 0 failures). `cargo doc -p fprime-svc --no-deps` is warning-free for these files. Nothing committed or pushed; only files under crates/fprime-svc/src/ccsds/ were modified (mod.rs untouched).
 
@@ -1521,3 +1521,82 @@ VERIFICATION: 83 new unit tests (gpio 30, uart 20, i2c 13, spi 20); fprime-drv t
 
 OPEN QUESTION (non-blocking): the sysfs chip-index-by-base mapping cannot be verified without real hardware; a deployment that knows its global line numbers may prefer a backend that takes them directly.
 
+
+# Phase 2 API notes
+
+Ordered backlog: `docs/ROADMAP.md`. Each item below records what changed and
+the deviations, in the same spirit as the phase-1 notes above.
+
+## fprime-os: `file_path_utils` + `sandboxed_file`
+
+`Os::FilePathUtils` (`MAX_PATH_LENGTH`, `PathStatus { Valid=0,
+OutsideSandbox=1, InvalidPath=2, TooLong=3 }`, `resolve_path`,
+`resolve_from_cwd`, `check_containment`) and `Os::SandboxedFile`
+(re-exported as `fprime_os::SandboxedFile`) moved verbatim out of
+`fprime-svc::file_uplink`. `FileUplink`, `FileDownlink` and `PrmDb` now share
+the one implementation; `PrmDb`'s private `Option<String>`-returning copy is
+deleted and its two call sites (`configure_load_sandbox`,
+`read_param_file_impl`) use the `PathStatus`/`FileNameString` API. Semantics
+are unchanged: purely lexical resolution, fail-open default sandbox (`/`),
+every resolution or containment failure reported as
+`file::Status::OutsideSandbox`. The `file_uplink` re-exports were NOT kept —
+the crate is pre-1.0 and the only in-tree consumer (`file_downlink`) was
+repointed.
+
+## fprime-svc: `CcsdsTcFrameDetector`
+
+`Svc::FrameDetectors::CcsdsTcFrameDetector` lives next to
+`FprimeFrameDetector` in `frame_accumulator.rs` (the C++ directory layout),
+using `ccsds::types::{TCHeader, TCTrailer, tc_subfields}` and
+`ccsds::crc16::Crc16`. `new()` matches `(1 << BypassFlagOffset) |
+ComCfg::SpacecraftId` = `0x2044`; `for_spacecraft(id)` is an addition for
+deployments with a different ID (C++ hard-codes the config constant).
+Deviations: none in behavior. Unlike the Rust `FprimeFrameDetector` there is
+deliberately no ring-capacity check (C++ parity) — an oversized announcement
+is `MoreDataNeeded`, and `FrameAccumulator` answers with
+`FrameDetectionSizeError` and a one-byte slide (tested). A lookalike token
+in garbage stalls the accumulator until the announced length has arrived
+and only then fails the CRC and resyncs (tested; this is the C++ behavior
+too, since a TC frame has no start word).
+
+## fprime-svc: `FileManager::GenerateDp`
+
+The command is now fully ported from `FileManager.cpp` (`GenerateDp_cmdHandler`,
+`processDpChunks`, `finishDpGeneration`, the `run_internalInterfaceHandler`
+DP-pacing half). New public surface: `product_get_out: OutputPort<dyn
+DpGetPort>`, `product_send_out: OutputPort<dyn DpSendPort>`,
+`CONTAINER_ID_FILE_DP = 0`, `RECORD_ID_FILE_CHUNK_HEADER = 0`,
+`RECORD_ID_FILE_CHUNK_DATA = 1`, `SIZE_OF_FILE_CHUNK_HEADER_RECORD` (= 4 +
+254), `size_of_file_chunk_data_record(n)` (= 6 + n), and the `fpp_struct!`
+`FileChunkHeader { file_name: FileNameString, offset: u64, data_size: u32 }`.
+
+Wire format per container (matching the autocoded
+`serializeRecord_FileChunkHeaderRecord` / `..DataRecord`): the data region is
+`[base+0 u32][u16 len][name][u64 offset][u32 dataSize][base+1 u32][u16 n][n
+bytes]`; record ids are absolute (base id + record id), the container id is
+`base + 0`, the priority is the command's or `DEFAULT_DP_PRIORITY` (10) for
+zero, the time tag comes from the time port, and the data hash is left to
+`DpWriter` (C++ parity). The buffer requested from `productGetOut` is
+`DpContainer::packet_size_for_data_size(SIZE_OF_FILE_CHUNK_HEADER_RECORD +
+size_of_file_chunk_data_record(readSize))` — i.e. sized for the string at
+full capacity, as the autocoder's `SIZE_OF_..._RECORD` constant is — while
+`dataSize` in the header is the bytes actually written.
+
+Ported quirks (all tested): every failure path (BUSY, unconnected ports,
+open/size/seek/read/serialize failures, buffer failure, invalid range)
+emits its WARNING_HI event and still answers `OK`; `PACED` mode defers the
+response to `finishDpGeneration` (one chunk per `schedIn` tick via the
+`run` internal port, before the listing tick); `chunkSize` 0 or above
+`GENERATE_DP_MAX_CHUNK_SIZE` clamps to the maximum; `endOffset` 0 or past
+the end means end-of-file; an empty file (or empty range) reports
+`Started(0)` + `Complete(0)` with no containers; `CommandsExecuted`/`Errors`
+are untouched. Deviation: the newer upstream `resolveInSandbox` step is not
+ported (this `FileManager` has no sandbox — ROADMAP item 2), so the command
+opens the path as given.
+
+`Ref` topology: `fileManager.productGetOut/productSendOut -> dpMgr[1]`, and
+`dpMgr.bufferGetOut[1]`/`productSendOut[1]` are wired to the same
+`dpBufferManager`/`dpWriter` inputs as index 0 (upstream FPP auto-numbers
+the second producer the same way). `tests/subsystems_test.rs` drives a
+framed `GenerateDp` of a 100-byte file at chunk 40 and checks three `.fdp`
+files with byte-exact records.

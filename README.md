@@ -44,7 +44,8 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
 | `fprime-ref` | `Ref` — reference deployment binary + end-to-end integration tests |
 
 Design docs: [`ARCHITECTURE.md`](ARCHITECTURE.md) (binding design contract),
-[`CONVENTIONS.md`](CONVENTIONS.md) (coding rules),
+[`CONVENTIONS.md`](CONVENTIONS.md) (coding rules), [`docs/ROADMAP.md`](docs/ROADMAP.md)
+(what is next, in order),
 [`docs/cpp-analysis/`](docs/cpp-analysis/) (per-subsystem analyses of the C++
 implementation — wire formats, exact enum values, threading, gotchas — that
 ground the port), [`docs/api-notes.md`](docs/api-notes.md) (implementer notes
@@ -79,15 +80,15 @@ Requires stable Rust (edition 2024). No external crates.
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
 | Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!` (component/port scaffolding) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
-| OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, raw time + interval timer |
+| OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` binary sequence-file format |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
-| File services | `FileUplink`, `FileDownlink`, `FileManager`, CFDP checksum |
+| File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking), CFDP checksum |
 | Data products | `DpManager`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`, `ComLogger` |
-| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer` |
+| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `LinuxGpioDriver`, `LinuxUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker, circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
@@ -120,6 +121,7 @@ logging, the SDLS security layer, and zlib data-product compression
 (`DpZLibCompressor`/`DpCompressProc`, which would need a third-party
 dependency — `ProcType::ZlibDeflate` is kept for wire parity). `no_std`
 targets remain a design goal of the OSAL seam rather than a current feature.
+The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## How the port maps C++ to Rust
 
