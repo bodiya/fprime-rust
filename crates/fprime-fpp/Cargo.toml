@@ -1,0 +1,17 @@
+[package]
+name = "fprime-fpp"
+description = "F Prime Rust port: FPP (F Prime Prime) front end and Rust code generator (fpp-to-rust)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[[bin]]
+name = "fpp-to-rust"
+path = "src/bin/fpp_to_rust.rs"

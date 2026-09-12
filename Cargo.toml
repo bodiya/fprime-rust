@@ -9,6 +9,7 @@ members = [
     "crates/fprime-svc",
     "crates/fprime-drv",
     "crates/fprime-ref",
+    "crates/fprime-fpp",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ fprime-utils = { path = "crates/fprime-utils" }
 fprime-comp = { path = "crates/fprime-comp" }
 fprime-svc = { path = "crates/fprime-svc" }
 fprime-drv = { path = "crates/fprime-drv" }
+fprime-fpp = { path = "crates/fprime-fpp" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

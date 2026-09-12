@@ -26,6 +26,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fprime-fpp"
+version = "0.1.0"
+
+[[package]]
 name = "fprime-fw"
 version = "0.1.0"
 dependencies = [
