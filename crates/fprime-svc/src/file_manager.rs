@@ -34,16 +34,22 @@
 //! - the listing formats the full path as `"%s/%s"` even when the directory
 //!   name already ends in `/`, producing a double slash.
 //!
-//! ## Gap: data products
+//! ## Data products
 //!
-//! `GenerateDp` (0x09) needs `Fw/Dp` and the `Fw.DataProductSync` ports,
-//! which are not ported yet (`fprime-fw::dp` and `Svc::DpManager` belong to
-//! another wave). The command is implemented up to the point the C++ itself
-//! reaches when the DP ports are unconnected: arguments are validated, then
-//! `GenerateDpBufferFailed` is emitted and the command answers `OK` — a
-//! behavior the C++ produces verbatim in that configuration. The paced
-//! chunking loop is deliberately not stubbed; wire it up when data products
-//! land.
+//! `GenerateDp` (0x09) packages a byte range of a file into
+//! `FileDpContainer` data products through the `Fw.DataProductSync`
+//! ports (`productGetOut` / `productSendOut`). Each container holds one
+//! chunk: a `FileChunkHeaderRecord` (`[id][FileChunkHeader]`) followed by a
+//! `FileChunkDataRecord` (`[id][count][bytes]`), so ground tools can
+//! reassemble the file from any number of containers. `IMMEDIATE` mode
+//! emits the whole range inside the command handler; `PACED` mode emits
+//! `CHUNKS_PER_RATE_TICK` chunks per `schedIn` tick and defers the command
+//! response until the range is exhausted or a failure ends the run. With
+//! the DP ports unconnected the command takes the C++ path verbatim:
+//! `GenerateDpBufferFailed` and `OK`.
+//!
+//! Not ported: the newer upstream `resolveInSandbox` step (this port's
+//! `FileManager` has no sandbox yet; see `docs/ROADMAP.md`).
 
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComponentDispatch, EventGlue, MsgDispatchStatus,
@@ -51,15 +57,17 @@ use fprime_comp::{
 };
 use fprime_config::{
     FILE_NAME_STRING_SIZE, FW_CMD_ARG_BUFFER_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FwChanIdType,
-    FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
-    FwSizeType,
+    FwDpIdType, FwDpPriorityType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
+    FwOpcodeType, FwQueuePriorityType, FwSignedSizeType, FwSizeStoreType, FwSizeType,
 };
+use fprime_fw::dp::{DpContainer, DpGetPort, DpSendPort};
 use fprime_fw::{
-    CmdArgBuffer, CmdResponse, CmdStringArg, Endianness, FileNameString, FwDefaultString,
-    LinearBuffer, LogSeverity, LogStringArg, SerBuf, SerBufAny, fpp_enum, fw_assert, fw_try,
+    Buffer, CmdArgBuffer, CmdResponse, CmdStringArg, Endianness, ExtBuf, FileNameString,
+    FwDefaultString, LengthMode, LinearBuffer, LogSeverity, LogStringArg, SerBuf, SerBufAny,
+    Serialize, SerializeStatus, Success, fpp_enum, fpp_struct, fw_assert, fw_try,
 };
 use fprime_os::directory::{OpenMode, Status as DirStatus};
-use fprime_os::file::{Mode as FileMode, Status as FileStatus};
+use fprime_os::file::{Mode as FileMode, SeekType, Status as FileStatus, WaitType};
 use fprime_os::{Directory, File, filesystem};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -75,8 +83,48 @@ pub const FILES_PER_RATE_TICK: u32 = 1;
 pub const GENERATE_DP_MAX_CHUNK_SIZE: u32 = 1024;
 /// `FileManagerConfig::CHUNKS_PER_RATE_TICK`.
 pub const CHUNKS_PER_RATE_TICK: u32 = 1;
-/// `FileManagerCfg::DEFAULT_DP_PRIORITY`.
-pub const DEFAULT_DP_PRIORITY: u32 = 10;
+/// `FileManagerCfg::DEFAULT_DP_PRIORITY` — the container priority used when
+/// a `GenerateDp` command passes `priority = 0`.
+pub const DEFAULT_DP_PRIORITY: FwDpPriorityType = 10;
+
+// ---------------------------------------------------------------------------
+// Data products (FileManager.fpp `product container` / `product record`)
+// ---------------------------------------------------------------------------
+
+/// `product container FileDpContainer id 0` (relative to the base id).
+pub const CONTAINER_ID_FILE_DP: FwDpIdType = 0;
+/// `product record FileChunkHeaderRecord: FileChunkHeader id 0` (relative to
+/// the base id).
+pub const RECORD_ID_FILE_CHUNK_HEADER: FwDpIdType = 0;
+/// `product record FileChunkDataRecord: U8 array id 1` (relative to the base
+/// id).
+pub const RECORD_ID_FILE_CHUNK_DATA: FwDpIdType = 1;
+/// Autocoded `SIZE_OF_FileChunkHeaderRecord_RECORD`: the record id plus the
+/// MAXIMUM serialized [`FileChunkHeader`] (the string at full capacity).
+pub const SIZE_OF_FILE_CHUNK_HEADER_RECORD: FwSizeType =
+    (size_of::<FwDpIdType>() + FileChunkHeader::SERIALIZED_SIZE) as FwSizeType;
+
+/// Autocoded `SIZE_OF_FileChunkDataRecord_RECORD(n)`: the record id, the
+/// element count (`FwSizeStoreType`) and `n` bytes.
+#[must_use]
+pub const fn size_of_file_chunk_data_record(elements: FwSizeType) -> FwSizeType {
+    (size_of::<FwDpIdType>() + size_of::<FwSizeStoreType>()) as FwSizeType + elements
+}
+
+fpp_struct! {
+    /// `Svc.FileManager.FileChunkHeader` — metadata for one chunk of a file
+    /// data product. Each instance is followed by a `FileChunkDataRecord`
+    /// carrying the chunk's bytes.
+    #[derive(Clone)]
+    pub struct FileChunkHeader {
+        /// The name of the source file (`string size FileNameStringSize`).
+        file_name: FileNameString,
+        /// The offset of this chunk within the source file.
+        offset: u64,
+        /// The number of data bytes in this chunk.
+        data_size: u32,
+    }
+}
 
 fpp_enum! {
     /// `Svc.FileManager.GenerateDpStage` — where a data-product generation
@@ -167,6 +215,15 @@ enum ListDirectoryState {
     ListingInProgress,
 }
 
+/// `FileManager::GenerateDpState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GenerateDpState {
+    /// Not currently generating a data product.
+    Idle,
+    /// A `GenerateDp` range is being emitted (paced or immediate).
+    InProgress,
+}
+
 /// Mutable component state.
 struct ManagerState {
     command_count: u32,
@@ -177,6 +234,21 @@ struct ManagerState {
     total_entries: u32,
     current_op_code: FwOpcodeType,
     current_cmd_seq: u32,
+    // -- GenerateDp (C++ m_dp*) --------------------------------------------
+    dp_state: GenerateDpState,
+    dp_file: File,
+    dp_file_name: FileNameString,
+    dp_file_size: FwSizeType,
+    dp_offset: u64,
+    dp_chunk_size: u32,
+    dp_end_offset: u64,
+    dp_priority: FwDpPriorityType,
+    dp_chunk_count: u32,
+    dp_op_code: FwOpcodeType,
+    dp_cmd_seq: u32,
+    /// C++ `m_dpBuffer[GENERATE_DP_MAX_CHUNK_SIZE]` — allocated once at
+    /// construction, reused for every chunk.
+    dp_buffer: Box<[u8]>,
 }
 
 impl ManagerState {
@@ -190,6 +262,18 @@ impl ManagerState {
             total_entries: 0,
             current_op_code: 0,
             current_cmd_seq: 0,
+            dp_state: GenerateDpState::Idle,
+            dp_file: File::new(),
+            dp_file_name: FileNameString::new(),
+            dp_file_size: 0,
+            dp_offset: 0,
+            dp_chunk_size: 0,
+            dp_end_offset: 0,
+            dp_priority: DEFAULT_DP_PRIORITY,
+            dp_chunk_count: 0,
+            dp_op_code: 0,
+            dp_cmd_seq: 0,
+            dp_buffer: vec![0u8; GENERATE_DP_MAX_CHUNK_SIZE as usize].into_boxed_slice(),
         }
     }
 }
@@ -206,6 +290,11 @@ pub struct FileManager {
     pub tlm: TlmGlue,
     /// `pingOut` — echoes the ping key.
     pub ping_out: OutputPort<dyn PingPort>,
+    /// `productGetOut` — SYNC `Fw.DpGet`: request a `FileDpContainer` buffer.
+    pub product_get_out: OutputPort<dyn DpGetPort>,
+    /// `productSendOut` — `Fw.DpSend`: hand a filled container to the
+    /// data-product manager.
+    pub product_send_out: OutputPort<dyn DpSendPort>,
     /// C++ `std::atomic<bool> m_runQueued`: the gate that keeps a lagging
     /// component thread from being flooded with rate ticks.
     run_queued: AtomicBool,
@@ -327,6 +416,8 @@ impl FileManager {
             evt: EventGlue::new(),
             tlm: TlmGlue::new(),
             ping_out: OutputPort::new(),
+            product_get_out: OutputPort::new(),
+            product_send_out: OutputPort::new(),
             run_queued: AtomicBool::new(false),
             state: Mutex::new(ManagerState::new()),
         })
@@ -416,7 +507,13 @@ impl FileManager {
     fn run_internal_handler(&self) {
         fw_assert!(self.run_queued.load(Ordering::SeqCst));
         self.run_queued.store(false, Ordering::SeqCst);
-        // Data-product pacing would run here; see the module header gap note.
+        // Data product generation is paced the same way as directory listing.
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.dp_state == GenerateDpState::InProgress {
+                self.process_dp_chunks(&mut state, CHUNKS_PER_RATE_TICK);
+            }
+        }
         self.process_listing_tick();
     }
 
@@ -838,8 +935,12 @@ impl FileManager {
         file.close();
     }
 
-    /// `GenerateDp` — see the module header: the DP ports do not exist yet,
-    /// so this takes the C++ "productGetOut not connected" path.
+    /// `GenerateDp(fileName, chunkSize, beginOffset, endOffset, priority,
+    /// mode)` — package `[beginOffset, endOffset)` of a file into
+    /// `FileDpContainer` data products, one chunk per container. Every
+    /// failure emits a WARNING_HI event and still answers `OK` (C++ parity:
+    /// a bad file name or a transient resource problem must not stop a
+    /// whole sequence).
     fn generate_dp_cmd_handler(
         &self,
         op_code: FwOpcodeType,
@@ -864,20 +965,250 @@ impl FileManager {
                 .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
             return;
         }
-        if GenerateDpMode::try_from(mode_repr).is_err() {
+        let Ok(mode) = GenerateDpMode::try_from(mode_repr) else {
             self.cmd
                 .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
             return;
-        }
+        };
         let log_name = to_log_string(&file_name);
-        self.log_one_name(
-            Self::EVENTID_GENERATE_DP_BUFFER_FAILED,
-            LogSeverity::WarningHi,
-            &log_name,
-            "Could not get a data product buffer for file",
-        );
-        // GenerateDp always responds OK, including for every failure path.
-        self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+        let mut state = self.state.lock().unwrap();
+
+        // Reject a second request while one is already running.
+        if state.dp_state != GenerateDpState::Idle {
+            self.log_generate_dp_failed(&log_name, GenerateDpStage::Busy, 0);
+            self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+            return;
+        }
+
+        // Data products must be available.
+        if !self.product_get_out.is_connected() || !self.product_send_out.is_connected() {
+            self.log_generate_dp_buffer_failed(&log_name);
+            self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+            return;
+        }
+
+        // Clamp the requested chunk size to the configured read buffer.
+        let effective_chunk_size = if chunk_size == 0 || chunk_size > GENERATE_DP_MAX_CHUNK_SIZE {
+            GENERATE_DP_MAX_CHUNK_SIZE
+        } else {
+            chunk_size
+        };
+
+        let path = file_name.as_str().unwrap_or_default();
+        let status = state.dp_file.open(path, FileMode::OpenRead);
+        if status != FileStatus::OpOk {
+            self.log_generate_dp_failed(&log_name, GenerateDpStage::Open, status as u32);
+            self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+            return;
+        }
+
+        let mut file_size: FwSizeType = 0;
+        let status = state.dp_file.size(&mut file_size);
+        if status != FileStatus::OpOk {
+            state.dp_file.close();
+            self.log_generate_dp_failed(&log_name, GenerateDpStage::Size, status as u32);
+            self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+            return;
+        }
+
+        // An end offset of zero, or one past the end of the file, means the
+        // end of the file. Ranges let an operator retransmit part of a file
+        // or spread the downlink over several commands.
+        let mut effective_end = end_offset;
+        if effective_end == 0 || effective_end > file_size {
+            effective_end = file_size;
+        }
+
+        let empty_file = file_size == 0;
+        let bad_range = begin_offset > file_size || (!empty_file && begin_offset >= effective_end);
+        if bad_range {
+            state.dp_file.close();
+            self.log_generate_dp_invalid_range(&log_name, begin_offset, end_offset, file_size);
+            self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+            return;
+        }
+
+        // Position the file at the start of the requested range.
+        if begin_offset > 0 {
+            let status = state
+                .dp_file
+                .seek(begin_offset as FwSignedSizeType, SeekType::Absolute);
+            if status != FileStatus::OpOk {
+                state.dp_file.close();
+                self.log_generate_dp_failed(&log_name, GenerateDpStage::Seek, status as u32);
+                self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
+                return;
+            }
+        }
+
+        state.dp_file_name.set(path);
+        state.dp_file_size = file_size;
+        state.dp_offset = begin_offset;
+        state.dp_end_offset = effective_end;
+        state.dp_chunk_size = effective_chunk_size;
+        state.dp_chunk_count = 0;
+        state.dp_op_code = op_code;
+        state.dp_cmd_seq = cmd_seq;
+        // A priority of zero reverts to the configured default.
+        state.dp_priority = if priority == 0 {
+            DEFAULT_DP_PRIORITY
+        } else {
+            priority
+        };
+        state.dp_state = GenerateDpState::InProgress;
+
+        // Report the number of bytes that will be written: the requested
+        // range rather than the size of the whole file.
+        self.log_generate_dp_started(&log_name, state.dp_end_offset - state.dp_offset);
+
+        // An empty range produces no chunks, so complete immediately.
+        if state.dp_offset >= state.dp_end_offset {
+            self.log_generate_dp_complete(&log_name, state.dp_chunk_count);
+            self.finish_dp_generation(&mut state);
+            return;
+        }
+
+        // In immediate mode the whole range is emitted here, so a project
+        // that wants the file out quickly is not limited by the rate group.
+        // In paced mode the rate group meters the work out and the response
+        // is deferred.
+        if mode == GenerateDpMode::Immediate {
+            self.process_dp_chunks(&mut state, 0);
+        }
+    }
+
+    /// C++ `processDpChunks(chunkLimit)`: emit up to `chunk_limit` chunks
+    /// (0 = the whole remaining range), one container per chunk.
+    fn process_dp_chunks(&self, state: &mut ManagerState, chunk_limit: u32) {
+        let log_name = log_string_of(&state.dp_file_name);
+        // A limit of zero means emit the whole remaining range in this call.
+        let paced = chunk_limit > 0;
+        let mut chunk = 0u32;
+        while !paced || chunk < chunk_limit {
+            // Bytes remaining in the requested range. The loop returns as
+            // soon as the range is exhausted, so this is always non-zero.
+            let remaining = state.dp_end_offset - state.dp_offset;
+            let requested_size = remaining.min(u64::from(state.dp_chunk_size)) as usize;
+
+            // The file size is known, so a short read means the file changed
+            // underneath us.
+            let mut read_size = requested_size as FwSizeType;
+            let status = state.dp_file.read(
+                &mut state.dp_buffer[..requested_size],
+                &mut read_size,
+                WaitType::Wait,
+            );
+            if status != FileStatus::OpOk || read_size as usize != requested_size {
+                self.log_generate_dp_failed(&log_name, GenerateDpStage::Read, status as u32);
+                self.finish_dp_generation(state);
+                return;
+            }
+
+            // Request a container large enough for this chunk's header and
+            // data (autocoded `dpGet_FileDpContainer`: the PACKET size that
+            // holds `dp_size` bytes of records).
+            let dp_size =
+                SIZE_OF_FILE_CHUNK_HEADER_RECORD + size_of_file_chunk_data_record(read_size);
+            let container_id = self.id_base() + CONTAINER_ID_FILE_DP;
+            let mut buffer = Buffer::empty();
+            let dp_status = {
+                let p = self.product_get_out.get();
+                p.target.invoke(
+                    p.port_num,
+                    container_id,
+                    DpContainer::packet_size_for_data_size(dp_size),
+                    &mut buffer,
+                )
+            };
+            if dp_status != Success::Success {
+                self.log_generate_dp_buffer_failed(&log_name);
+                self.finish_dp_generation(state);
+                return;
+            }
+            let mut container = DpContainer::with_buffer(container_id, buffer);
+            container.set_priority(state.dp_priority);
+            container.set_time_tag(self.evt.time_get());
+
+            // Each chunk is a metadata record followed by a data record, so
+            // that ground tools can reassemble the file from any number of
+            // containers.
+            let header = FileChunkHeader::new(
+                state.dp_file_name.clone(),
+                state.dp_offset,
+                read_size as u32,
+            );
+            let (serialize_status, written) = {
+                let mut ser = container.data_serializer();
+                let status = Self::serialize_chunk_records(
+                    &mut ser,
+                    self.id_base(),
+                    &header,
+                    &state.dp_buffer[..requested_size],
+                );
+                (status, ser.ser_loc())
+            };
+            if !serialize_status.is_ok() {
+                self.log_generate_dp_failed(
+                    &log_name,
+                    GenerateDpStage::Serialize,
+                    serialize_status as u32,
+                );
+                self.finish_dp_generation(state);
+                return;
+            }
+            container.set_data_size(written as FwSizeType);
+
+            // Autocoded `dpSend`: finalize the header (which re-hashes it)
+            // and hand the buffer to the data-product manager. The DATA hash
+            // is `Svc::DpWriter`'s job (C++ parity).
+            container.serialize_header();
+            let buffer = container.take_buffer();
+            {
+                let p = self.product_send_out.get();
+                p.target.invoke(p.port_num, container_id, buffer);
+            }
+
+            state.dp_offset += read_size;
+            state.dp_chunk_count += 1;
+
+            // Last chunk of the requested range.
+            if state.dp_offset >= state.dp_end_offset {
+                self.log_generate_dp_complete(&log_name, state.dp_chunk_count);
+                self.finish_dp_generation(state);
+                return;
+            }
+            chunk += 1;
+        }
+    }
+
+    /// Autocoded `serializeRecord_FileChunkHeaderRecord` followed by
+    /// `serializeRecord_FileChunkDataRecord`: `[id u32][FileChunkHeader]`
+    /// then `[id u32][count FwSizeStoreType][bytes]`, ids absolute (base id
+    /// + record id).
+    fn serialize_chunk_records(
+        ser: &mut ExtBuf<'_>,
+        id_base: FwIdType,
+        header: &FileChunkHeader,
+        data: &[u8],
+    ) -> SerializeStatus {
+        fw_try!(ser.serialize_u32_be(id_base + RECORD_ID_FILE_CHUNK_HEADER));
+        fw_try!(header.serialize_to(ser, Endianness::Big));
+        fw_try!(ser.serialize_u32_be(id_base + RECORD_ID_FILE_CHUNK_DATA));
+        fw_try!(ser.serialize_size(data.len() as FwSizeType, Endianness::Big));
+        ser.serialize_bytes(data, LengthMode::OmitLength, Endianness::Big)
+    }
+
+    /// C++ `finishDpGeneration`: close the file, go idle and answer the
+    /// (possibly deferred) command — always `OK`, since failures were
+    /// already reported by their warning event.
+    fn finish_dp_generation(&self, state: &mut ManagerState) {
+        state.dp_file.close();
+        state.dp_state = GenerateDpState::Idle;
+        state.dp_offset = 0;
+        state.dp_end_offset = 0;
+        state.dp_file_size = 0;
+        self.cmd
+            .cmd_response(state.dp_op_code, state.dp_cmd_seq, CmdResponse::Ok);
     }
 
     // -- Argument helpers ---------------------------------------------------
@@ -1075,6 +1406,88 @@ impl FileManager {
         );
     }
 
+    /// `GenerateDpStarted(fileName, bytesToWrite: U64)` — ACTIVITY_HI.
+    fn log_generate_dp_started(&self, name: &LogStringArg, bytes_to_write: u64) {
+        self.evt.log_event(
+            self.id_base(),
+            Self::EVENTID_GENERATE_DP_STARTED,
+            LogSeverity::ActivityHi,
+            &format!("Generating data products for file {name}: {bytes_to_write} bytes"),
+            |buf| {
+                fw_try!(name.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big));
+                buf.serialize_u64_be(bytes_to_write)
+            },
+        );
+    }
+
+    /// `GenerateDpComplete(fileName, chunks: U32)` — ACTIVITY_HI.
+    fn log_generate_dp_complete(&self, name: &LogStringArg, chunks: u32) {
+        self.evt.log_event(
+            self.id_base(),
+            Self::EVENTID_GENERATE_DP_COMPLETE,
+            LogSeverity::ActivityHi,
+            &format!("Generated {chunks} data product chunks for file {name}"),
+            |buf| {
+                fw_try!(name.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big));
+                buf.serialize_u32_be(chunks)
+            },
+        );
+    }
+
+    /// `GenerateDpFailed(fileName, stage: GenerateDpStage, status: U32)` —
+    /// WARNING_HI.
+    fn log_generate_dp_failed(&self, name: &LogStringArg, stage: GenerateDpStage, status: u32) {
+        self.evt.log_event(
+            self.id_base(),
+            Self::EVENTID_GENERATE_DP_FAILED,
+            LogSeverity::WarningHi,
+            &format!(
+                "Data product generation for file {name} failed at stage {}: status {status}",
+                stage.as_repr()
+            ),
+            |buf| {
+                fw_try!(name.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big));
+                fw_try!(stage.serialize_to(buf, Endianness::Big));
+                buf.serialize_u32_be(status)
+            },
+        );
+    }
+
+    /// `GenerateDpBufferFailed(fileName)` — WARNING_HI.
+    fn log_generate_dp_buffer_failed(&self, name: &LogStringArg) {
+        self.log_one_name(
+            Self::EVENTID_GENERATE_DP_BUFFER_FAILED,
+            LogSeverity::WarningHi,
+            name,
+            "Could not get a data product buffer for file",
+        );
+    }
+
+    /// `GenerateDpInvalidRange(fileName, beginOffset: U64, endOffset: U64,
+    /// fileSize: U64)` — WARNING_HI.
+    fn log_generate_dp_invalid_range(
+        &self,
+        name: &LogStringArg,
+        begin_offset: u64,
+        end_offset: u64,
+        file_size: u64,
+    ) {
+        self.evt.log_event(
+            self.id_base(),
+            Self::EVENTID_GENERATE_DP_INVALID_RANGE,
+            LogSeverity::WarningHi,
+            &format!(
+                "Invalid range [{begin_offset}, {end_offset}) for file {name} of size {file_size}"
+            ),
+            |buf| {
+                fw_try!(name.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big));
+                fw_try!(buf.serialize_u64_be(begin_offset));
+                fw_try!(buf.serialize_u64_be(end_offset));
+                buf.serialize_u64_be(file_size)
+            },
+        );
+    }
+
     fn log_directory_listing(
         &self,
         dir_name: &CmdStringArg,
@@ -1129,6 +1542,14 @@ impl FileManager {
 
 /// C++ constructs a `Fw::LogStringArg` from the command string.
 fn to_log_string(value: &CmdStringArg) -> LogStringArg {
+    let mut out = LogStringArg::new();
+    out.set_bytes(value.as_bytes());
+    out
+}
+
+/// C++ constructs a `Fw::LogStringArg` from the stored `Fw::String` file
+/// name (`GenerateDp` events after the command handler returned).
+fn log_string_of(value: &FileNameString) -> LogStringArg {
     let mut out = LogStringArg::new();
     out.set_bytes(value.as_bytes());
     out
@@ -1330,6 +1751,13 @@ mod tests {
         responses: Mutex<Vec<(FwOpcodeType, u32, CmdResponse)>>,
         regs: Mutex<Vec<FwOpcodeType>>,
         pings: Mutex<Vec<u32>>,
+        /// `(id, packet bytes)` of every container sent on `productSendOut`.
+        dp_sent: Mutex<Vec<(FwDpIdType, Vec<u8>)>>,
+        /// `(id, requested packet size)` of every `productGetOut` call.
+        dp_gets: Mutex<Vec<(FwDpIdType, FwSizeType)>>,
+        /// Number of `productGetOut` calls to satisfy before failing
+        /// (`None` = never fail).
+        dp_fail_after: Mutex<Option<usize>>,
     }
 
     impl Ground {
@@ -1418,6 +1846,38 @@ mod tests {
         }
     }
 
+    impl DpGetPort for Ground {
+        fn invoke(
+            &self,
+            _port_num: FwIndexType,
+            id: FwDpIdType,
+            data_size: FwSizeType,
+            buffer: &mut Buffer,
+        ) -> Success {
+            let mut gets = self.dp_gets.lock().unwrap();
+            gets.push((id, data_size));
+            if self
+                .dp_fail_after
+                .lock()
+                .unwrap()
+                .is_some_and(|limit| gets.len() > limit)
+            {
+                return Success::Failure;
+            }
+            *buffer = Buffer::allocate(data_size as usize);
+            Success::Success
+        }
+    }
+
+    impl DpSendPort for Ground {
+        fn invoke(&self, _port_num: FwIndexType, id: FwDpIdType, buffer: Buffer) {
+            self.dp_sent
+                .lock()
+                .unwrap()
+                .push((id, buffer.data().to_vec()));
+        }
+    }
+
     fn setup() -> (Arc<FileManager>, Arc<Ground>) {
         let comp = FileManager::new("fileManager");
         let ground = Arc::new(Ground::default());
@@ -1428,6 +1888,14 @@ mod tests {
         comp.cmd.cmd_reg_out.connect(ground.clone(), 0);
         comp.ping_out.connect(ground.clone(), 0);
         comp.init(64);
+        (comp, ground)
+    }
+
+    /// `setup()` plus the two data-product ports wired to the ground stub.
+    fn setup_with_dp() -> (Arc<FileManager>, Arc<Ground>) {
+        let (comp, ground) = setup();
+        comp.product_get_out.connect(ground.clone(), 0);
+        comp.product_send_out.connect(ground.clone(), 0);
         (comp, ground)
     }
 
@@ -2052,7 +2520,7 @@ mod tests {
     // ---- GenerateDp -------------------------------------------------------
 
     #[test]
-    fn generate_dp_reports_a_buffer_failure_and_always_answers_ok() {
+    fn generate_dp_reports_a_buffer_failure_when_the_dp_ports_are_unconnected() {
         let (comp, ground) = setup();
         send_cmd(&comp, FileManager::OPCODE_GENERATE_DP, 1, |args| {
             let s = CmdStringArg::from("/tmp/x.bin");
@@ -2070,6 +2538,388 @@ mod tests {
         assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
         assert_eq!(ground.last_tlm(FileManager::CHANID_COMMANDS_EXECUTED), None);
         assert_eq!(ground.last_tlm(FileManager::CHANID_ERRORS), None);
+    }
+
+    // ---- GenerateDp: data products ------------------------------------------
+
+    /// 100 bytes of deterministic content (the upstream unit test's file).
+    fn dp_source_file(dir: &std::path::Path) -> (String, Vec<u8>) {
+        let content: Vec<u8> = b"0123456789".repeat(10);
+        let path = dir.join("dp.bin");
+        std::fs::write(&path, &content).unwrap();
+        (path_str(&path), content)
+    }
+
+    /// Send `GenerateDp(path, chunk_size, range.0, range.1, priority, mode)`.
+    fn generate_dp(
+        comp: &Arc<FileManager>,
+        cmd_seq: u32,
+        path: &str,
+        chunk_size: u32,
+        range: (u64, u64),
+        priority: u32,
+        mode: GenerateDpMode,
+    ) {
+        let (begin, end) = range;
+        send_cmd(comp, FileManager::OPCODE_GENERATE_DP, cmd_seq, |args| {
+            let s = CmdStringArg::from(path);
+            assert_eq!(s.serialize_to(args, Endianness::Big), SerializeStatus::Ok);
+            assert!(args.serialize_u32_be(chunk_size).is_ok());
+            assert!(args.serialize_u64_be(begin).is_ok());
+            assert!(args.serialize_u64_be(end).is_ok());
+            assert!(args.serialize_u32_be(priority).is_ok());
+            assert!(args.serialize_i32_be(mode.as_repr()).is_ok());
+        });
+    }
+
+    /// The exact record bytes one chunk container must carry:
+    /// `[hdr id][u16 len][name][u64 offset][u32 size][data id][u16 n][bytes]`.
+    fn expected_chunk_records(path: &str, offset: u64, data: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&(ID_BASE + RECORD_ID_FILE_CHUNK_HEADER).to_be_bytes());
+        v.extend_from_slice(&(path.len() as u16).to_be_bytes());
+        v.extend_from_slice(path.as_bytes());
+        v.extend_from_slice(&offset.to_be_bytes());
+        v.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        v.extend_from_slice(&(ID_BASE + RECORD_ID_FILE_CHUNK_DATA).to_be_bytes());
+        v.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        v.extend_from_slice(data);
+        v
+    }
+
+    /// Parse a sent packet back into a container (header + valid data).
+    fn container_of(packet: &[u8]) -> DpContainer {
+        let buffer = Buffer::from_storage(packet.to_vec().into_boxed_slice(), 0);
+        let mut container = DpContainer::with_buffer(0, buffer);
+        assert_eq!(container.deserialize_header(), SerializeStatus::Ok);
+        container
+    }
+
+    fn name_arg(name: &str) -> Vec<u8> {
+        let mut v = (name.len() as u16).to_be_bytes().to_vec();
+        v.extend_from_slice(name.as_bytes());
+        v
+    }
+
+    #[test]
+    fn generate_dp_immediate_emits_one_container_per_chunk_with_byte_exact_records() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, content) = dp_source_file(&dir);
+
+        generate_dp(&comp, 7, &path, 40, (0, 0), 3, GenerateDpMode::Immediate);
+
+        // Three chunks: 40 + 40 + 20.
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 3);
+        for (i, (id, packet)) in sent.iter().enumerate() {
+            assert_eq!(*id, ID_BASE + CONTAINER_ID_FILE_DP);
+            let container = container_of(packet);
+            assert_eq!(container.id(), ID_BASE + CONTAINER_ID_FILE_DP);
+            assert_eq!(container.priority(), 3);
+            let offset = (i * 40) as u64;
+            let end = ((i + 1) * 40).min(content.len());
+            assert_eq!(
+                container.data(),
+                &expected_chunk_records(&path, offset, &content[i * 40..end])[..],
+                "chunk {i}"
+            );
+        }
+        // Every buffer request asked for the packet holding the MAXIMUM
+        // header record plus this chunk's data record (autocoder sizing).
+        let gets = ground.dp_gets.lock().unwrap().clone();
+        assert_eq!(gets.len(), 3);
+        assert_eq!(
+            gets[0].1,
+            DpContainer::packet_size_for_data_size(
+                SIZE_OF_FILE_CHUNK_HEADER_RECORD + size_of_file_chunk_data_record(40)
+            )
+        );
+        assert_eq!(
+            gets[2].1,
+            DpContainer::packet_size_for_data_size(
+                SIZE_OF_FILE_CHUNK_HEADER_RECORD + size_of_file_chunk_data_record(20)
+            )
+        );
+
+        // Started(name, 100) then Complete(name, 3); one OK response; the
+        // command counters are untouched.
+        assert_eq!(
+            ground.event_ids(),
+            vec![
+                FileManager::EVENTID_GENERATE_DP_STARTED,
+                FileManager::EVENTID_GENERATE_DP_COMPLETE
+            ]
+        );
+        let started = ground.events_of(FileManager::EVENTID_GENERATE_DP_STARTED);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&100u64.to_be_bytes());
+        assert_eq!(started[0], (LogSeverity::ActivityHi, expected));
+        let complete = ground.events_of(FileManager::EVENTID_GENERATE_DP_COMPLETE);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&3u32.to_be_bytes());
+        assert_eq!(complete[0], (LogSeverity::ActivityHi, expected));
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 7, CmdResponse::Ok)]);
+        assert_eq!(ground.last_tlm(FileManager::CHANID_COMMANDS_EXECUTED), None);
+        assert_eq!(ground.last_tlm(FileManager::CHANID_ERRORS), None);
+    }
+
+    #[test]
+    fn generate_dp_paced_emits_one_chunk_per_tick_and_defers_the_response() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, content) = dp_source_file(&dir);
+
+        generate_dp(&comp, 1, &path, 40, (0, 0), 0, GenerateDpMode::Paced);
+        // Nothing emitted yet, and no response.
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_GENERATE_DP_STARTED]
+        );
+        assert!(ground.dp_sent.lock().unwrap().is_empty());
+        assert!(ground.responses().is_empty());
+
+        sched_tick(&comp);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 1);
+        assert!(ground.responses().is_empty());
+        sched_tick(&comp);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 2);
+        assert!(ground.responses().is_empty());
+        sched_tick(&comp);
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(
+            container_of(&sent[2].1).data(),
+            &expected_chunk_records(&path, 80, &content[80..])[..]
+        );
+        assert_eq!(
+            ground.event_ids(),
+            vec![
+                FileManager::EVENTID_GENERATE_DP_STARTED,
+                FileManager::EVENTID_GENERATE_DP_COMPLETE
+            ]
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
+
+        // Further ticks do nothing.
+        sched_tick(&comp);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 3);
+        assert_eq!(ground.responses().len(), 1);
+    }
+
+    #[test]
+    fn generate_dp_rejects_a_second_request_while_one_is_in_progress() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, _) = dp_source_file(&dir);
+
+        generate_dp(&comp, 1, &path, 40, (0, 0), 0, GenerateDpMode::Paced);
+        generate_dp(&comp, 2, &path, 40, (0, 0), 0, GenerateDpMode::Immediate);
+
+        // The second answers OK immediately with Failed(BUSY, 0)...
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 2, CmdResponse::Ok)]);
+        let failed = ground.events_of(FileManager::EVENTID_GENERATE_DP_FAILED);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&GenerateDpStage::Busy.as_repr().to_be_bytes());
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(failed, vec![(LogSeverity::WarningHi, expected)]);
+        // ...and the first keeps going.
+        sched_tick(&comp);
+        sched_tick(&comp);
+        sched_tick(&comp);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 3);
+        assert_eq!(
+            ground.responses(),
+            vec![
+                (ID_BASE + 9, 2, CmdResponse::Ok),
+                (ID_BASE + 9, 1, CmdResponse::Ok)
+            ]
+        );
+    }
+
+    #[test]
+    fn generate_dp_clamps_the_chunk_size_and_treats_end_zero_as_end_of_file() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, content) = dp_source_file(&dir);
+
+        // chunkSize 0 -> GENERATE_DP_MAX_CHUNK_SIZE (1024): one chunk.
+        generate_dp(&comp, 1, &path, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            container_of(&sent[0].1).data(),
+            &expected_chunk_records(&path, 0, &content)[..]
+        );
+
+        // chunkSize above the maximum is clamped the same way; an end offset
+        // past the file is the end of the file.
+        generate_dp(
+            &comp,
+            2,
+            &path,
+            5000,
+            (0, 999),
+            0,
+            GenerateDpMode::Immediate,
+        );
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            container_of(&sent[1].1).data(),
+            &expected_chunk_records(&path, 0, &content)[..]
+        );
+    }
+
+    #[test]
+    fn generate_dp_honors_a_partial_range() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, content) = dp_source_file(&dir);
+
+        generate_dp(&comp, 1, &path, 100, (10, 50), 0, GenerateDpMode::Immediate);
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            container_of(&sent[0].1).data(),
+            &expected_chunk_records(&path, 10, &content[10..50])[..]
+        );
+        // Started reports the RANGE, not the file size.
+        let started = ground.events_of(FileManager::EVENTID_GENERATE_DP_STARTED);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&40u64.to_be_bytes());
+        assert_eq!(started[0].1, expected);
+    }
+
+    #[test]
+    fn generate_dp_reports_an_invalid_range() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, _) = dp_source_file(&dir);
+
+        // begin past the end of the file.
+        generate_dp(&comp, 1, &path, 0, (200, 0), 0, GenerateDpMode::Immediate);
+        // begin == end (an empty range in a non-empty file).
+        generate_dp(&comp, 2, &path, 0, (50, 50), 0, GenerateDpMode::Immediate);
+        // begin > end.
+        generate_dp(&comp, 3, &path, 0, (60, 50), 0, GenerateDpMode::Immediate);
+
+        let invalid = ground.events_of(FileManager::EVENTID_GENERATE_DP_INVALID_RANGE);
+        assert_eq!(invalid.len(), 3);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&200u64.to_be_bytes());
+        expected.extend_from_slice(&0u64.to_be_bytes());
+        expected.extend_from_slice(&100u64.to_be_bytes());
+        assert_eq!(invalid[0], (LogSeverity::WarningHi, expected));
+        assert!(ground.dp_sent.lock().unwrap().is_empty());
+        assert!(ground.dp_gets.lock().unwrap().is_empty());
+        assert_eq!(
+            ground.responses(),
+            vec![
+                (ID_BASE + 9, 1, CmdResponse::Ok),
+                (ID_BASE + 9, 2, CmdResponse::Ok),
+                (ID_BASE + 9, 3, CmdResponse::Ok)
+            ]
+        );
+        // The component is idle again: a valid request works.
+        generate_dp(&comp, 4, &path, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn generate_dp_reports_an_open_failure_with_the_stage() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let missing = path_str(&dir.join("missing.bin"));
+
+        generate_dp(&comp, 1, &missing, 0, (0, 0), 0, GenerateDpMode::Immediate);
+
+        let failed = ground.events_of(FileManager::EVENTID_GENERATE_DP_FAILED);
+        assert_eq!(failed.len(), 1);
+        let mut expected = name_arg(&missing);
+        expected.extend_from_slice(&GenerateDpStage::Open.as_repr().to_be_bytes());
+        expected.extend_from_slice(&(FileStatus::DoesntExist as u32).to_be_bytes());
+        assert_eq!(failed[0], (LogSeverity::WarningHi, expected));
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
+        assert!(ground.dp_gets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn generate_dp_buffer_failure_mid_transfer_still_answers_ok_and_goes_idle() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, _) = dp_source_file(&dir);
+        *ground.dp_fail_after.lock().unwrap() = Some(1);
+
+        generate_dp(&comp, 1, &path, 40, (0, 0), 0, GenerateDpMode::Immediate);
+
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 1);
+        assert_eq!(
+            ground.event_ids(),
+            vec![
+                FileManager::EVENTID_GENERATE_DP_STARTED,
+                FileManager::EVENTID_GENERATE_DP_BUFFER_FAILED
+            ]
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
+
+        // Idle again: the next request is not BUSY.
+        *ground.dp_fail_after.lock().unwrap() = None;
+        generate_dp(&comp, 2, &path, 40, (0, 0), 0, GenerateDpMode::Immediate);
+        assert_eq!(ground.dp_sent.lock().unwrap().len(), 4);
+        assert!(
+            ground
+                .events_of(FileManager::EVENTID_GENERATE_DP_FAILED)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn generate_dp_priority_zero_uses_the_configured_default() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let (path, _) = dp_source_file(&dir);
+
+        generate_dp(&comp, 1, &path, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        generate_dp(&comp, 2, &path, 0, (0, 0), 42, GenerateDpMode::Immediate);
+
+        let sent = ground.dp_sent.lock().unwrap().clone();
+        assert_eq!(container_of(&sent[0].1).priority(), DEFAULT_DP_PRIORITY);
+        assert_eq!(container_of(&sent[1].1).priority(), 42);
+    }
+
+    #[test]
+    fn generate_dp_of_an_empty_file_completes_with_zero_chunks() {
+        let (comp, ground) = setup_with_dp();
+        let dir = temp_dir();
+        let path = path_str(&dir.join("empty.bin"));
+        std::fs::write(&path, b"").unwrap();
+
+        generate_dp(&comp, 1, &path, 0, (0, 0), 0, GenerateDpMode::Paced);
+
+        assert_eq!(
+            ground.event_ids(),
+            vec![
+                FileManager::EVENTID_GENERATE_DP_STARTED,
+                FileManager::EVENTID_GENERATE_DP_COMPLETE
+            ]
+        );
+        let complete = ground.events_of(FileManager::EVENTID_GENERATE_DP_COMPLETE);
+        let mut expected = name_arg(&path);
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        assert_eq!(complete[0].1, expected);
+        assert!(ground.dp_sent.lock().unwrap().is_empty());
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
+    }
+
+    #[test]
+    fn generate_dp_record_size_constants_match_the_autocoder() {
+        // id (4) + string (2 + 240) + offset (8) + dataSize (4).
+        assert_eq!(FileChunkHeader::SERIALIZED_SIZE, 2 + 240 + 8 + 4);
+        assert_eq!(SIZE_OF_FILE_CHUNK_HEADER_RECORD, 4 + 254);
+        // id (4) + count (2) + n.
+        assert_eq!(size_of_file_chunk_data_record(0), 6);
+        assert_eq!(size_of_file_chunk_data_record(1024), 1030);
     }
 
     #[test]

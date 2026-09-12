@@ -28,7 +28,7 @@ use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_svc::cmd_sequencer::CmdSequencer;
 use fprime_svc::dp_catalog::DpCatalog;
 use fprime_svc::dp_writer::DpWriter;
-use fprime_svc::file_manager::FileManager;
+use fprime_svc::file_manager::{self, FileManager};
 use fprime_svc::file_uplink::FileUplink;
 use fprime_svc::prm_db::PrmDb;
 use fprime_utils::Hash;
@@ -118,6 +118,103 @@ fn file_manager_reports_command_errors_on_the_downlink() {
     );
     assert!(harness.saw_event(FILE_MANAGER_BASE_ID + FileManager::EVENTID_DIRECTORY_REMOVE_ERROR));
     assert!(!completed(&harness, remove));
+
+    harness.topology.teardown();
+}
+
+/// Uplink a framed `FileManager.GenerateDp` for a file in the data directory
+/// and assert the whole data-product chain ran for it: three chunk
+/// containers through `fileManager.productGetOut -> dpMgr[1] ->
+/// dpBufferManager`, three `.fdp` files written by `dpWriter`, each carrying
+/// the byte-exact `FileChunkHeaderRecord` + `FileChunkDataRecord` pair, and
+/// `GenerateDpComplete(3)` on the downlink.
+#[test]
+fn file_manager_generate_dp_writes_chunk_containers_end_to_end() {
+    let harness = Harness::up();
+    let build = opcode(DP_CATALOG_BASE_ID, DpCatalog::OPCODE_BUILD_CATALOG);
+    run_command(&harness, build, &[]);
+
+    let path = format!("{}/dp.bin", harness.data_dir());
+    let content: Vec<u8> = b"0123456789".repeat(10);
+    std::fs::write(&path, &content).expect("source file");
+
+    // GenerateDp(fileName, chunkSize=40, beginOffset=0, endOffset=0,
+    // priority=0 (default), mode=IMMEDIATE).
+    let mut args = cmd_string_arg(&path);
+    args.extend_from_slice(&40u32.to_be_bytes());
+    args.extend_from_slice(&0u64.to_be_bytes());
+    args.extend_from_slice(&0u64.to_be_bytes());
+    args.extend_from_slice(&0u32.to_be_bytes());
+    args.extend_from_slice(
+        &file_manager::GenerateDpMode::Immediate
+            .as_repr()
+            .to_be_bytes(),
+    );
+    let generate = opcode(FILE_MANAGER_BASE_ID, FileManager::OPCODE_GENERATE_DP);
+    run_command(&harness, generate, &args);
+
+    let complete = harness
+        .event_args(FILE_MANAGER_BASE_ID + FileManager::EVENTID_GENERATE_DP_COMPLETE)
+        .expect("GenerateDpComplete args");
+    assert_eq!(&complete[complete.len() - 4..], &3u32.to_be_bytes());
+    assert!(!harness.saw_event(FILE_MANAGER_BASE_ID + FileManager::EVENTID_GENERATE_DP_FAILED));
+    assert!(
+        !harness.saw_event(FILE_MANAGER_BASE_ID + FileManager::EVENTID_GENERATE_DP_BUFFER_FAILED)
+    );
+
+    assert!(
+        harness.tick_until(|| dp_files(&harness).len() == 3),
+        "expected three .fdp files, got {:?}; events {:?}",
+        dp_files(&harness),
+        harness.log_events()
+    );
+
+    // Each packet: [descriptor][id][priority][time]... header, header hash,
+    // records, data hash. Collect the record bytes of every file and match
+    // them against the three expected chunks regardless of file order.
+    let mut seen: Vec<Vec<u8>> = dp_files(&harness)
+        .iter()
+        .map(|name| {
+            let packet = std::fs::read(format!("{}/DpCat/{name}", harness.data_dir()))
+                .expect("data product file");
+            assert_eq!(&packet[0..2], &0x0005_u16.to_be_bytes());
+            assert_eq!(
+                &packet[2..6],
+                &(FILE_MANAGER_BASE_ID + file_manager::CONTAINER_ID_FILE_DP).to_be_bytes()
+            );
+            assert_eq!(
+                &packet[6..10],
+                &file_manager::DEFAULT_DP_PRIORITY.to_be_bytes()
+            );
+            let size_at = fprime_fw::dp::Header::DATA_SIZE_OFFSET;
+            let data_size = usize::from(u16::from_be_bytes([packet[size_at], packet[size_at + 1]]));
+            let start = fprime_fw::dp::DpContainer::DATA_OFFSET;
+            packet[start..start + data_size].to_vec()
+        })
+        .collect();
+    seen.sort();
+    let mut expected: Vec<Vec<u8>> = (0..3)
+        .map(|i| {
+            let offset = i * 40;
+            let end = (offset + 40).min(content.len());
+            let mut v = Vec::new();
+            v.extend_from_slice(
+                &(FILE_MANAGER_BASE_ID + file_manager::RECORD_ID_FILE_CHUNK_HEADER).to_be_bytes(),
+            );
+            v.extend_from_slice(&(path.len() as u16).to_be_bytes());
+            v.extend_from_slice(path.as_bytes());
+            v.extend_from_slice(&(offset as u64).to_be_bytes());
+            v.extend_from_slice(&((end - offset) as u32).to_be_bytes());
+            v.extend_from_slice(
+                &(FILE_MANAGER_BASE_ID + file_manager::RECORD_ID_FILE_CHUNK_DATA).to_be_bytes(),
+            );
+            v.extend_from_slice(&((end - offset) as u16).to_be_bytes());
+            v.extend_from_slice(&content[offset..end]);
+            v
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(seen, expected);
 
     harness.topology.teardown();
 }
