@@ -17,6 +17,9 @@
 //!   un-complemented file CRC.
 //! - [`filesystem`] / [`directory`] — `Os::FileSystem` composites and
 //!   `Os::Directory`.
+//! - [`file_path_utils`] / [`sandboxed_file`] — `Os::FilePathUtils` lexical
+//!   path resolution and `Os::SandboxedFile`, a file restricted to a
+//!   directory subtree.
 //! - [`console`] — `Os::Console`, an [`fprime_fw::FwLogger`] backend.
 //! - [`rawtime`] / [`interval_timer`] — `Os::RawTime` (CLOCK_REALTIME
 //!   semantics, 8-byte wire format) and `Os::IntervalTimer`.
@@ -25,11 +28,13 @@ pub mod condition;
 pub mod console;
 pub mod directory;
 pub mod file;
+pub mod file_path_utils;
 pub mod filesystem;
 pub mod interval_timer;
 pub mod mutex;
 pub mod queue;
 pub mod rawtime;
+pub mod sandboxed_file;
 pub mod task;
 
 pub use condition::ConditionVariable;
@@ -40,6 +45,7 @@ pub use interval_timer::IntervalTimer;
 pub use mutex::{OsMutex, ScopeLock};
 pub use queue::{BlockingType, Queue};
 pub use rawtime::RawTime;
+pub use sandboxed_file::SandboxedFile;
 pub use task::Task;
 
 /// Port of `Os::init()` (Os/Os.cpp). The C++ version force-initializes the

@@ -58,17 +58,17 @@ use fprime_comp::{
     async_input_port_adapter, component_msg_types, input_port_adapter, msg,
 };
 use fprime_config::{
-    FILE_NAME_STRING_SIZE, FW_PARAM_BUFFER_MAX_SIZE, FwEnumStoreType, FwEventIdType, FwIdType,
-    FwIndexType, FwOpcodeType, FwPrmIdType, FwQueuePriorityType, FwSizeType,
+    FW_PARAM_BUFFER_MAX_SIZE, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType,
+    FwPrmIdType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::{
-    CmdArgBuffer, CmdResponse, CmdStringArg, Endianness, FwDefaultString, LogSeverity,
-    LogStringArg, ParamBuffer, ParamValid, SerBuf, SerBufAny, Serialize, SerializeStatus, fpp_enum,
-    fw_assert,
+    CmdArgBuffer, CmdResponse, CmdStringArg, Endianness, FileNameString, FwDefaultString,
+    LogSeverity, LogStringArg, ParamBuffer, ParamValid, SerBuf, SerBufAny, Serialize,
+    SerializeStatus, fpp_enum, fw_assert,
 };
 use fprime_os::File;
 use fprime_os::file::{Mode, OverwriteType, SeekType, Status as FileStatus, WaitType};
-use fprime_os::filesystem;
+use fprime_os::file_path_utils::{PathStatus, check_containment, resolve_from_cwd};
 use fprime_utils::Hash;
 use std::sync::{Arc, Mutex};
 
@@ -101,10 +101,6 @@ const QUEUE_PRIORITY: FwQueuePriorityType = 1;
 /// FPP default string size, the max length the autocoder passes when
 /// serializing an unsized `string` event argument.
 const EVENT_STRING_SIZE: usize = 80;
-
-/// Path buffer bound, mirroring `Os::FilePathUtils::MAX_PATH_LENGTH`
-/// (= `FileNameStringSize`).
-const MAX_PATH_LENGTH: usize = FILE_NAME_STRING_SIZE;
 
 // ---------------------------------------------------------------------------
 // FPP types (PrmDb.fpp / PrmDbCmdDict.fppi / PrmDbEventDict.fppi).
@@ -506,14 +502,19 @@ impl PrmDb {
         // C++ FW_ASSERT(resolveStatus == VALID): an unresolvable directory
         // is a programmer error. Should an assert hook let execution
         // continue, the sandbox is left unchanged rather than widened.
-        let Some(mut resolved) = resolve_from_cwd(directory) else {
+        let mut resolved = FileNameString::new();
+        if resolve_from_cwd(directory, &mut resolved) != PathStatus::Valid {
             fw_assert!(false);
             return;
-        };
-        if !resolved.ends_with('/') {
-            resolved.push('/');
         }
-        self.state.lock().unwrap().sandbox_dir.set(&resolved);
+        if !resolved.as_bytes().ends_with(b"/") {
+            resolved.append("/");
+        }
+        self.state
+            .lock()
+            .unwrap()
+            .sandbox_dir
+            .set(resolved.as_str().unwrap_or_default());
     }
 
     /// C++ `readParamFile()`: the boot-time load of the configured file
@@ -908,14 +909,18 @@ impl PrmDb {
         let mut param_file = File::new();
         // Commanded loads (staging) may carry a ground-supplied path;
         // restrict them to the configured sandbox directory to prevent path
-        // traversal (C++ Os::SandboxedFile, ported inline here — see
-        // `resolve_from_cwd`/`check_containment`).
+        // traversal (the C++ `Os::SandboxedFile` check, using the
+        // `fprime-os` `FilePathUtils` port).
         let open_status = if db_type == PrmDbType::DbStaging && !sandbox_dir.is_empty() {
-            match resolve_from_cwd(file_name) {
-                Some(resolved) if check_containment(&resolved, sandbox_dir) => {
-                    param_file.open(&resolved, Mode::OpenRead)
-                }
-                _ => FileStatus::OutsideSandbox,
+            let mut resolved = FileNameString::new();
+            let contained = resolve_from_cwd(file_name, &mut resolved) == PathStatus::Valid
+                && resolved
+                    .as_str()
+                    .is_some_and(|r| check_containment(r, sandbox_dir) == PathStatus::Valid);
+            if contained {
+                param_file.open(resolved.as_str().unwrap_or_default(), Mode::OpenRead)
+            } else {
+                FileStatus::OutsideSandbox
             }
         } else {
             param_file.open(file_name, Mode::OpenRead)
@@ -1314,81 +1319,6 @@ fn write_field(
         return Err((size_stage, record, write_size as i32));
     }
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Path sandboxing (port of Os::FilePathUtils + Os::SandboxedFile).
-// ---------------------------------------------------------------------------
-
-/// Port of `Os::FilePathUtils::resolvePath`: build an absolute path
-/// (relative paths against `base_dir`, which must itself be absolute) and
-/// resolve `.`, `..` and `//` lexically. `None` mirrors the C++
-/// `INVALID_PATH` / `TOO_LONG` statuses.
-fn resolve_path(path: &str, base_dir: &str) -> Option<String> {
-    if path.is_empty() {
-        return None;
-    }
-    let absolute = if path.starts_with('/') {
-        if path.len() + 1 > MAX_PATH_LENGTH {
-            return None;
-        }
-        path.to_string()
-    } else {
-        if base_dir.is_empty() || !base_dir.starts_with('/') {
-            return None;
-        }
-        let needs_slash = !base_dir.ends_with('/');
-        if base_dir.len() + usize::from(needs_slash) + path.len() + 1 > MAX_PATH_LENGTH {
-            return None;
-        }
-        if needs_slash {
-            format!("{base_dir}/{path}")
-        } else {
-            format!("{base_dir}{path}")
-        }
-    };
-
-    // Resolve segments: empty and "." are dropped, ".." pops.
-    let mut segments: Vec<&str> = Vec::new();
-    for segment in absolute.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                segments.pop();
-            }
-            other => segments.push(other),
-        }
-    }
-    Some(format!("/{}", segments.join("/")))
-}
-
-/// Port of `Os::FilePathUtils::resolveFromCwd`.
-fn resolve_from_cwd(path: &str) -> Option<String> {
-    if path.starts_with('/') {
-        return resolve_path(path, "/");
-    }
-    let mut cwd = fprime_fw::FileNameString::new();
-    if filesystem::get_working_directory(&mut cwd) != filesystem::Status::OpOk {
-        return None;
-    }
-    resolve_path(path, cwd.as_str()?)
-}
-
-/// Port of `Os::FilePathUtils::checkContainment`: `resolved` must sit inside
-/// `allowed_directory` (which carries a trailing '/'), or be that directory
-/// itself.
-fn check_containment(resolved: &str, allowed_directory: &str) -> bool {
-    if allowed_directory.is_empty() || resolved.is_empty() {
-        return false;
-    }
-    if !allowed_directory.ends_with('/') {
-        return false;
-    }
-    // The path may equal the allowed directory without its trailing '/'.
-    if resolved.len() + 1 == allowed_directory.len() && allowed_directory.starts_with(resolved) {
-        return true;
-    }
-    resolved.starts_with(allowed_directory)
 }
 
 // ---------------------------------------------------------------------------
@@ -2530,23 +2460,6 @@ mod tests {
         comp.configure_load_sandbox(&dir.dir());
         comp.read_param_file();
         assert_eq!(get_prm(&comp, 1), (ParamValid::Valid, vec![0x01]));
-    }
-
-    #[test]
-    fn path_resolution_matches_file_path_utils() {
-        assert_eq!(resolve_path("/a/b/../c", "/"), Some("/a/c".to_string()));
-        assert_eq!(resolve_path("/a//./b/", "/"), Some("/a/b".to_string()));
-        assert_eq!(resolve_path("b.dat", "/base"), Some("/base/b.dat".into()));
-        assert_eq!(resolve_path("b.dat", "/base/"), Some("/base/b.dat".into()));
-        assert_eq!(resolve_path("../../x", "/"), Some("/x".to_string()));
-        assert_eq!(resolve_path("", "/"), None);
-        assert_eq!(resolve_path("rel", "not-absolute"), None);
-
-        assert!(check_containment("/data/f.dat", "/data/"));
-        assert!(check_containment("/data", "/data/")); // the directory itself
-        assert!(!check_containment("/database/f.dat", "/data/"));
-        assert!(!check_containment("/other/f.dat", "/data/"));
-        assert!(!check_containment("/data/f.dat", "/data")); // no trailing '/'
     }
 
     // -- Queue / dispatch --------------------------------------------------
