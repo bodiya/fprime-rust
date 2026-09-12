@@ -57,6 +57,19 @@ pub struct TypeBinding {
     pub path: String,
     /// Passing mode.
     pub kind: ArgKind,
+    /// A Rust constant expression for the maximum serialized size, when
+    /// the type does not implement `FppSized` (buffers: `2 + capacity`).
+    pub size_expr: Option<String>,
+}
+
+/// A bound Rust port trait.
+#[derive(Debug, Clone)]
+pub struct PortBinding {
+    /// Absolute Rust path of the trait.
+    pub path: String,
+    /// Per-parameter passing modes (`val`, `ref`, `mut`, `buf`, `owned`)
+    /// when the hand-written trait deviates from the default rules.
+    pub modes: Option<Vec<String>>,
 }
 
 /// The mapping from FPP framework definitions to existing Rust items.
@@ -64,8 +77,8 @@ pub struct TypeBinding {
 pub struct Bindings {
     /// FPP qualified type name -> Rust type.
     pub types: HashMap<String, TypeBinding>,
-    /// FPP qualified port name -> Rust trait path.
-    pub ports: HashMap<String, String>,
+    /// FPP qualified port name -> Rust trait.
+    pub ports: HashMap<String, PortBinding>,
 }
 
 impl Default for Bindings {
@@ -130,14 +143,39 @@ impl Bindings {
         }
         b.bind_type("TimeBase", "::fprime_fw::TimeBase", ArgKind::Copy);
         // Fw abstract types.
-        b.bind_type("Fw.Buffer", "::fprime_fw::Buffer", ArgKind::Owned);
+        b.bind_type_sized("Fw.Buffer", "::fprime_fw::Buffer", ArgKind::Owned, "8");
         b.bind_type("Fw.Time", "::fprime_fw::Time", ArgKind::Ref);
         b.bind_type("Fw.TimeInterval", "::fprime_fw::TimeInterval", ArgKind::Ref);
-        b.bind_type("Fw.CmdArgBuffer", "::fprime_fw::CmdArgBuffer", ArgKind::Buf);
-        b.bind_type("Fw.LogBuffer", "::fprime_fw::LogBuffer", ArgKind::Buf);
-        b.bind_type("Fw.TlmBuffer", "::fprime_fw::TlmBuffer", ArgKind::Buf);
-        b.bind_type("Fw.ParamBuffer", "::fprime_fw::ParamBuffer", ArgKind::Buf);
-        b.bind_type("Fw.ComBuffer", "::fprime_fw::ComBuffer", ArgKind::Buf);
+        b.bind_type_sized(
+            "Fw.CmdArgBuffer",
+            "::fprime_fw::CmdArgBuffer",
+            ArgKind::Buf,
+            "2 + ::fprime_config::FW_CMD_ARG_BUFFER_MAX_SIZE",
+        );
+        b.bind_type_sized(
+            "Fw.LogBuffer",
+            "::fprime_fw::LogBuffer",
+            ArgKind::Buf,
+            "2 + ::fprime_config::FW_LOG_BUFFER_MAX_SIZE",
+        );
+        b.bind_type_sized(
+            "Fw.TlmBuffer",
+            "::fprime_fw::TlmBuffer",
+            ArgKind::Buf,
+            "2 + ::fprime_config::FW_TLM_BUFFER_MAX_SIZE",
+        );
+        b.bind_type_sized(
+            "Fw.ParamBuffer",
+            "::fprime_fw::ParamBuffer",
+            ArgKind::Buf,
+            "2 + ::fprime_config::FW_PARAM_BUFFER_MAX_SIZE",
+        );
+        b.bind_type_sized(
+            "Fw.ComBuffer",
+            "::fprime_fw::ComBuffer",
+            ArgKind::Buf,
+            "2 + ::fprime_config::FW_COM_BUFFER_MAX_SIZE",
+        );
         b.bind_type(
             "Fw.TextLogString",
             "::fprime_fw::TextLogString",
@@ -208,6 +246,30 @@ impl Bindings {
         ] {
             b.bind_port(name, rust);
         }
+        // Hand-written traits whose parameter passing deviates from the
+        // default rules (FPP `ref` on an owned `Fw.Buffer` is a move for
+        // sends and an out-parameter for gets).
+        b.bind_port_modes("Fw.BufferSend", "::fprime_comp::BufferSendPort", &["owned"]);
+        b.bind_port_modes(
+            "Fw.DpGet",
+            "::fprime_fw::dp::DpGetPort",
+            &["val", "val", "mut"],
+        );
+        b.bind_port_modes(
+            "Fw.DpSend",
+            "::fprime_fw::dp::DpSendPort",
+            &["val", "owned"],
+        );
+        b.bind_port_modes(
+            "Fw.DpResponse",
+            "::fprime_fw::dp::DpResponsePort",
+            &["val", "owned", "val"],
+        );
+        b.bind_port_modes(
+            "Svc.ComDataWithContext",
+            "::fprime_comp::ComDataWithContextPort",
+            &["owned", "ref"],
+        );
         b
     }
 
@@ -218,13 +280,45 @@ impl Bindings {
             TypeBinding {
                 path: rust.to_string(),
                 kind,
+                size_expr: None,
+            },
+        );
+    }
+
+    /// Bind an FPP type with an explicit maximum serialized size
+    /// expression (for types without `FppSized`).
+    pub fn bind_type_sized(&mut self, fpp: &str, rust: &str, kind: ArgKind, size_expr: &str) {
+        self.types.insert(
+            fpp.to_string(),
+            TypeBinding {
+                path: rust.to_string(),
+                kind,
+                size_expr: Some(size_expr.to_string()),
             },
         );
     }
 
     /// Bind an FPP port to a Rust trait path.
     pub fn bind_port(&mut self, fpp: &str, rust: &str) {
-        self.ports.insert(fpp.to_string(), rust.to_string());
+        self.ports.insert(
+            fpp.to_string(),
+            PortBinding {
+                path: rust.to_string(),
+                modes: None,
+            },
+        );
+    }
+
+    /// Bind an FPP port to a Rust trait path with explicit parameter
+    /// passing modes.
+    pub fn bind_port_modes(&mut self, fpp: &str, rust: &str, modes: &[&str]) {
+        self.ports.insert(
+            fpp.to_string(),
+            PortBinding {
+                path: rust.to_string(),
+                modes: Some(modes.iter().map(|m| m.to_string()).collect()),
+            },
+        );
     }
 }
 
@@ -241,6 +335,12 @@ pub struct Options {
     /// Files whose definitions are generated (everything else is imported
     /// for resolution only). Empty means all files.
     pub targets: Vec<PathBuf>,
+    /// The module path, inside the crate that includes the output, at
+    /// which the output is included (e.g. `generated`). When set, the
+    /// generated `impl_<c>_component!` macros name their traits absolutely
+    /// (`$crate::generated::...`) instead of relying on imports at the
+    /// invocation site.
+    pub include_path: Option<String>,
 }
 
 impl Default for Options {
@@ -249,6 +349,7 @@ impl Default for Options {
             bindings: Bindings::framework(),
             impl_prefix: "crate::".into(),
             targets: Vec::new(),
+            include_path: None,
         }
     }
 }
@@ -450,7 +551,7 @@ impl<'g, 'a> Generator<'g, 'a> {
             // FPP names are kept verbatim (modules and enum constants are
             // not Rust-cased), and generated code is not held to clippy.
             self.line("#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]");
-            self.line("#[allow(clippy::all, dead_code, unused_imports)]");
+            self.line("#[allow(clippy::all, dead_code, unused_imports, unused_macros)]");
             self.line(&format!("pub mod {} {{", names::ident(name)));
             self.indent();
             self.module.push(name.clone());
@@ -533,9 +634,49 @@ impl<'g, 'a> Generator<'g, 'a> {
     pub fn port_path(&self, sym: SymId) -> String {
         let s = self.a.symbols.sym(sym);
         if let Some(b) = self.opts.bindings.ports.get(&s.qualified_name()) {
-            return b.clone();
+            return b.path.clone();
         }
         self.path_to(sym, &format!("{}Port", s.name))
+    }
+
+    /// The passing mode of parameter `idx` of port `port` (bound modes win
+    /// over the default rules). Modes: `val`, `ref`, `mut`, `buf`, `owned`.
+    pub fn mode_in(
+        &self,
+        port: Option<SymId>,
+        idx: usize,
+        p: &crate::analysis::ParamDef,
+    ) -> String {
+        if let Some(port) = port {
+            let q = self.a.symbols.sym(port).qualified_name();
+            if let Some(PortBinding { modes: Some(m), .. }) = self.opts.bindings.ports.get(&q) {
+                if let Some(mode) = m.get(idx) {
+                    return mode.clone();
+                }
+            }
+        }
+        self.default_mode(p).to_string()
+    }
+
+    /// The default passing mode of a parameter.
+    pub fn default_mode(&self, p: &crate::analysis::ParamDef) -> &'static str {
+        match (self.arg_kind(&p.ty), p.kind) {
+            (ArgKind::Owned, _) => "owned",
+            (ArgKind::Buf, _) => "buf",
+            (_, crate::ast::FormalParamKind::Ref) => "mut",
+            (ArgKind::Copy, _) => "val",
+            (ArgKind::Ref, _) => "ref",
+        }
+    }
+
+    /// The Rust parameter type for a parameter passed in `mode`.
+    pub fn type_for_mode(&self, ty: &Type, mode: &str) -> Result<String> {
+        let base = self.rust_type(ty)?;
+        Ok(match mode {
+            "owned" | "val" => base,
+            "buf" | "mut" => format!("&mut {base}"),
+            _ => format!("&{base}"),
+        })
     }
 
     /// Render a type as Rust.
@@ -622,27 +763,31 @@ impl<'g, 'a> Generator<'g, 'a> {
         }
     }
 
-    /// The Rust parameter type for a formal parameter.
+    /// The Rust parameter type for a formal parameter (default rules).
     pub fn param_type(&self, p: &crate::analysis::ParamDef) -> Result<String> {
-        let base = self.rust_type(&p.ty)?;
-        Ok(match (self.arg_kind(&p.ty), p.kind) {
-            (ArgKind::Owned, _) => base,
-            (ArgKind::Buf, _) => format!("&mut {base}"),
-            (_, crate::ast::FormalParamKind::Ref) => format!("&mut {base}"),
-            (ArgKind::Copy, _) => base,
-            (ArgKind::Ref, _) => format!("&{base}"),
-        })
+        self.type_for_mode(&p.ty, self.default_mode(p))
     }
 
-    /// The macro argument mode (`val`/`ref`/`mut`/`buf`) of a parameter.
-    pub fn param_mode(&self, p: &crate::analysis::ParamDef) -> &'static str {
-        match (self.arg_kind(&p.ty), p.kind) {
-            (ArgKind::Owned, _) => "val",
-            (ArgKind::Buf, _) => "buf",
-            (_, crate::ast::FormalParamKind::Ref) => "mut",
-            (ArgKind::Copy, _) => "val",
-            (ArgKind::Ref, _) => "ref",
+    /// A Rust constant expression for the maximum serialized size of a
+    /// type (for queue message sizing).
+    pub fn size_expr(&self, t: &Type) -> Result<String> {
+        if let Type::Abs(s) | Type::Alias(s) | Type::Array(s) | Type::Struct(s) | Type::Enum(s) = t
+        {
+            if let Some(b) = self
+                .opts
+                .bindings
+                .types
+                .get(&self.a.symbols.sym(*s).qualified_name())
+            {
+                if let Some(e) = &b.size_expr {
+                    return Ok(e.clone());
+                }
+            }
         }
+        Ok(format!(
+            "<{} as ::fprime_fw::FppSized>::SERIALIZED_SIZE",
+            self.rust_type(t)?
+        ))
     }
 
     /// Find a symbol by qualified name in a group.

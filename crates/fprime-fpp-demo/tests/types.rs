@@ -20,7 +20,8 @@ fn constants_have_the_evaluated_values_and_types() {
     assert_eq!(Demo::MASK, 0xFF00i64);
     assert_eq!(Demo::SCALE, 1.5f64);
     assert_eq!(Demo::NAME, "demo");
-    assert!(Demo::ENABLED);
+    let enabled: bool = Demo::ENABLED;
+    assert!(enabled);
     assert_eq!(Demo::START_MODE, Demo::Mode::FAULTED);
 }
 
@@ -94,7 +95,7 @@ fn structs_have_their_defaults_and_wire_format() {
 fn aliases_and_ports_are_usable() {
     let s: Demo::Seq = 5;
     let i: Demo::Ident = 6;
-    assert_eq!(u32::from(s) + i, 11);
+    assert_eq!(s + i, 11);
 
     struct Impl;
     impl Demo::MeasurePort for Impl {

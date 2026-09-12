@@ -37,6 +37,7 @@ fn main() {
     };
     let options = fprime_fpp::codegen::Options {
         targets: demo,
+        include_path: Some("generated".into()),
         ..Default::default()
     };
     let code = match fprime_fpp::codegen::generate(&analysis, &options) {

@@ -10,7 +10,18 @@ Items are ordered by value-per-effort for a deployment that talks to the stock
 `fprime-gds`: consolidation and small unblocked gaps first, then the larger
 subsystems, then the strategic changes.
 
-## Done in phase 2 (this branch)
+## Done in phase 2
+
+- **FPP code generation (`fpp-to-rust`).** `crates/fprime-fpp` is a
+  stdlib-only port of the reference compiler's front end (lexer, parser,
+  includes, the semantic analysis with its implicit-id, port-numbering and
+  pattern rules) plus a Rust back end that emits the macro layer for data
+  types, port traits, component bases with handler traits, and topology
+  wiring. `crates/fprime-fpp-demo` builds a model from FPP at build time
+  and tests the generated code end to end; the whole upstream framework
+  model and the Ref deployment analyze. Not generated: state machines
+  (`Fw/Sm`, item 11 below), serial ports, telemetry packet sets, the
+  dictionary. See `crates/fprime-fpp/README.md`.
 
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
@@ -81,5 +92,8 @@ subsystems, then the strategic changes.
     `DpCompressProc`). Needs a policy decision on a first third-party
     dependency (or a vendored deflate); `ProcType::ZlibDeflate` is already on
     the wire.
-15. **An FPP front end.** Out of scope by design; if it ever lands it should
-    emit the existing macro layer rather than replace it.
+15. **FPP back-end gaps.** The front end is complete; the back end still
+    lacks state-machine instances (needs item 11), serial ports, telemetry
+    packet sets, and a `fpp-to-dict`-style JSON dictionary generator (the
+    piece that would let the stock ground system talk to a generated
+    deployment without a C++ build).

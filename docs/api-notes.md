@@ -1600,3 +1600,36 @@ opens the path as given.
 the second producer the same way). `tests/subsystems_test.rs` drives a
 framed `GenerateDp` of a 100-byte file at chunk 40 and checks three `.fdp`
 files with byte-exact records.
+
+## fprime-fpp: `fpp-to-rust`
+
+`crates/fprime-fpp/README.md` is the reference. Notes that matter for the
+rest of the workspace:
+
+- The front end is a production-for-production port of the reference
+  compiler. Deviations are only in error wording. One extra: `--check`
+  reports success counts.
+- The back end emits the *existing* macro layer (`fpp_enum!`,
+  `fpp_struct!`, `fpp_array!`) for data types, so generated and
+  hand-written types are the same kinds of Rust items; a struct member
+  `x: [n] T` becomes a helper `fpp_array!` type `S_x_Array` because the
+  macro layer needs `FppSized` on every member type.
+- Names: FPP modules, types, constants and enum constants are kept
+  verbatim (with lint allows on the generated modules); functions, fields
+  and ports are `snake_case`. Rust keywords are `r#`-escaped. FPP
+  parameters that collide with generated signature names get an `_arg`
+  suffix; generator locals are `fpp_`-prefixed.
+- Generated component bases embed `fprime_comp` glue and cores exactly as
+  the hand-written components do, so a generated component and a
+  hand-written one can be wired together by hand; the generated topology
+  only wires generated components (it needs the generated port names).
+- Bound framework ports may carry per-parameter passing modes because the
+  hand-written traits are not uniform about `ref Fw.Buffer`
+  (`BufferSend` moves it, `DpGet` fills it); see
+  `Bindings::framework()`.
+- `MSG_SIZE` is a `const` expression over `FppSized::SERIALIZED_SIZE` of
+  the argument types (buffers use `2 + capacity`; escrowed buffers 8),
+  evaluated by rustc, so a bound type without `FppSized` fails to compile
+  rather than silently mis-sizing the queue.
+- Not generated: state machine instances (error), serial ports (error),
+  telemetry packet sets (ignored), the dictionary.

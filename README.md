@@ -42,6 +42,11 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
 | `fprime-svc` | `Svc/` — the standard service components (see matrix below) |
 | `fprime-drv` | `Drv/` — byte-stream driver model, TCP client/server |
 | `fprime-ref` | `Ref` — reference deployment binary + end-to-end integration tests |
+| `fprime-fpp` | the FPP compiler front end and `fpp-to-rust` back end (see `crates/fprime-fpp/README.md`) |
+| `fprime-fpp-demo` | an FPP-modeled demo generated at build time, with end-to-end tests of the generated code |
+
+Generate from FPP: `cargo run -p fprime-fpp --bin fpp-to-rust -- --help`
+(see `crates/fprime-fpp/README.md` and the `fprime-fpp-demo` crate's `build.rs`).
 
 Design docs: [`ARCHITECTURE.md`](ARCHITECTURE.md) (binding design contract),
 [`CONVENTIONS.md`](CONVENTIONS.md) (coding rules), [`docs/ROADMAP.md`](docs/ROADMAP.md)
@@ -79,6 +84,7 @@ Requires stable Rust (edition 2024). No external crates.
 | --- | --- |
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
 | Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!` (component/port scaffolding) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
+| FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering), and a Rust back end emitting types, port traits, component bases with handler traits, and topology wiring; verified on the whole upstream framework model and the Ref deployment |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |
@@ -114,8 +120,8 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-The FPP *compiler* (there is no `.fpp` parser or build-time generator — the
-macro codegen layer covers the mechanical output instead), `FpySequencer`,
+State-machine autocoding in `fpp-to-rust` (the front end parses state
+machines; the back end does not generate them yet), `FpySequencer`,
 `GenericHub`, state-machine autocoding (`Fw/Sm`), `ActiveTextLogger`'s file
 logging, the SDLS security layer, and zlib data-product compression
 (`DpZLibCompressor`/`DpCompressProc`, which would need a third-party

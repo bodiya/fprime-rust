@@ -13,6 +13,8 @@
 //!   -o FILE               write generated Rust to FILE (default stdout)
 //!   --impl-prefix PATH    Rust path prefix for instance implementation
 //!                         types (default `crate::`)
+//!   --include-path PATH   module path at which the output is included
+//!                         (lets the impl macros name traits absolutely)
 //!   --bind-type FPP=RUST[:copy|ref|buf|owned]
 //!                         use an existing Rust type for an FPP type
 //!   --bind-port FPP=RUST  use an existing Rust trait for an FPP port
@@ -27,7 +29,8 @@ use std::process::ExitCode;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: fpp-to-rust [--syntax | --check] [-i FILE]... [-o FILE] [--impl-prefix PATH] \
-         [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... [--no-framework-bindings] FILE..."
+         [--include-path PATH] [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... \
+         [--no-framework-bindings] FILE..."
     );
     ExitCode::FAILURE
 }
@@ -61,6 +64,10 @@ fn main() -> ExitCode {
                 None => return usage(),
             },
             "--no-framework-bindings" => options.bindings = Bindings::empty(),
+            "--include-path" => match take(&mut i) {
+                Some(p) => options.include_path = Some(p),
+                None => return usage(),
+            },
             "--bind-type" => {
                 let Some(spec) = take(&mut i) else {
                     return usage();

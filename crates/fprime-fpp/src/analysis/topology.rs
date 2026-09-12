@@ -655,11 +655,7 @@ impl<'a> Analysis<'a> {
     /// Assign port numbers (matched numbering, then general numbering).
     /// Connections are numbered in source order of their `from` endpoint
     /// (the reference sorts by location), so the vector is sorted first.
-    fn number_ports(
-        &self,
-        instances: &[SymId],
-        connections: &mut Vec<ConnectionModel>,
-    ) -> Result<()> {
+    fn number_ports(&self, instances: &[SymId], connections: &mut [ConnectionModel]) -> Result<()> {
         connections.sort_by(|a, b| loc_key(&a.from.loc).cmp(&loc_key(&b.from.loc)));
         // Matched numbering: for each instance with `match p1 with p2`,
         // pair connections at p1 and p2 by their remote instance and give
