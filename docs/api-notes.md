@@ -1633,3 +1633,40 @@ rest of the workspace:
   rather than silently mis-sizing the queue.
 - Not generated: state machine instances (error), serial ports (error),
   telemetry packet sets (ignored), the dictionary.
+
+### JSON dictionary (`codegen::dictionary`)
+
+`generate_dictionaries(&Analysis, &DictOptions) -> Result<Vec<DictFile>>`;
+`DictOptions { project_version, framework_version, library_versions, targets }`
+(defaults `"[no value specified]"`, like the reference); `DictFile { name, json: Json }`
+with `name` = `<Topology>TopologyDictionary.json` / `<Qualified_System>SystemDictionary.json`;
+`DICTIONARY_SPEC_VERSION = "1.0.0"`. `json::Json { Null, Bool, Int(i128), Float, Str, Arr, Obj(Vec<(String, Json)>) }`
+with `obj/push/push_opt/get/as_str/as_arr`, `to_pretty()` and `Json::parse(&str)`.
+Supporting analysis additions: `analysis::uses::Uses { found: BTreeSet<SymId> }` with
+`expr/type_name/params/def/component_specifiers/resolve_deep` (enum constants count
+as uses of their enum); `TopologyModel.packet_sets: Vec<TlmPacketSetModel { name, packets:
+Vec<TlmPacketModel { name, id, group, members: Vec<TlmChannelRef>, loc }>, omitted, loc }>`;
+`EventDef.every: Option<(u64, u32)>` (throttle interval, `useconds <= 999999`, count > 0
+enforced); `Format: Display` (source form, braces re-escaped); enum constants are now
+resolved separately from the enum's default (`ensure_enum_constants`) so a constant
+defined as `E.A` may be `E`'s default. Reference quirks kept: parameter commands are
+named `<PARAM>_PRM_SET`/`_PRM_SAVE` (upper case) and annotated with the parameter's
+annotation; `Integer`-typed constants are typed `U64` (`I64` if negative); anonymous
+array/struct constants are omitted; `bool` is reported as 8 bits; unsized strings use
+`FW_FIXED_LENGTH_STRING_SIZE`.
+
+CLI: `fpp-to-rust --dict DIR [-p VER] [-f VER] [-l LIB,...] -i ... FILE...`. The demo's
+`build.rs` also writes `$OUT_DIR/DemoTopologyDictionary.json` (`tests/dictionary.rs`
+checks it against the generated constants).
+
+`crates/fprime-ref/fpp/{Ref,SignalGen}.fpp` model the Rust Ref's instances (C++ base
+ids) and the Rust SignalGen (which is not the upstream component: commands 0..3 +
+`Amplitude` param set/save 4/5, events 0..5, channels `SignalValue`/`SignalType`,
+`SignalType: U8 { Sine, Triangle }`); `generate-dictionary.sh <fprime checkout>`
+regenerates `crates/fprime-ref/dictionary/RefTopologyDictionary.json` from the upstream
+model (every other Rust component's opcodes/ids match upstream; `systemResources`
+declares fewer CPU channels and `fileManager` lacks `PathOutsideSandbox`, harmless
+supersets). `tools/gds-crosscheck.py` is the live check (fprime-gds 4.3.1: `-n -g none
+--framing-selection fprime`, GDS as TCP server on 50000, Ref with `-a 127.0.0.1 -p 50000`;
+`fprime-cli events`/`channels` in text mode because `-j` crashes on enum arguments in
+4.3.1; command string arguments are capped at `FW_CMD_STRING_MAX_SIZE` = 40 on both sides).

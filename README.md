@@ -48,6 +48,20 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
 Generate from FPP: `cargo run -p fprime-fpp --bin fpp-to-rust -- --help`
 (see `crates/fprime-fpp/README.md` and the `fprime-fpp-demo` crate's `build.rs`).
 
+Talk to the stock ground system: `crates/fprime-ref/dictionary/RefTopologyDictionary.json`
+is the Rust reference deployment's dictionary (regenerate it from an upstream
+checkout with `crates/fprime-ref/fpp/generate-dictionary.sh`), and
+`tools/gds-crosscheck.py` drives the real `fprime-gds` against
+`target/debug/fprime-ref` end to end:
+
+```bash
+python3 -m venv ~/.venvs/fprime-gds && ~/.venvs/fprime-gds/bin/pip install fprime-gds
+cargo build -p fprime-ref
+tools/gds-crosscheck.py --gds-bin ~/.venvs/fprime-gds/bin \
+    --ref-bin target/debug/fprime-ref \
+    --dictionary crates/fprime-ref/dictionary/RefTopologyDictionary.json
+```
+
 Design docs: [`ARCHITECTURE.md`](ARCHITECTURE.md) (binding design contract),
 [`CONVENTIONS.md`](CONVENTIONS.md) (coding rules), [`docs/ROADMAP.md`](docs/ROADMAP.md)
 (what is next, in order),
@@ -84,7 +98,8 @@ Requires stable Rust (edition 2024). No external crates.
 | --- | --- |
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
 | Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!` (component/port scaffolding) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
-| FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering), and a Rust back end emitting types, port traits, component bases with handler traits, and topology wiring; verified on the whole upstream framework model and the Ref deployment |
+| FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits, component bases with handler traits, and topology wiring, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
+| Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary; `tools/gds-crosscheck.py` runs the stock `fprime-gds` against the Rust Ref binary and checks that commands sent through the GDS execute and that the Ref's events and telemetry decode (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |

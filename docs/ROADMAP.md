@@ -12,6 +12,20 @@ subsystems, then the strategic changes.
 
 ## Done in phase 2
 
+- **JSON dictionary and ground-system cross-check.** `fpp-to-rust --dict`
+  writes the `fpp-to-dict` dictionary (spec 1.0.0) for every deployment
+  topology and system: the deep closure of used types and constants, the
+  implied framework uses, `dictionary` definitions, commands (including
+  the implicit `_PRM_SET`/`_PRM_SAVE`), parameters, events, channels,
+  records, containers and telemetry packet sets, keyed by global id. It is
+  checked against the reference compiler's `fpp-to-dict` corpus
+  (`crates/fprime-fpp/tests/dict`). The Rust Ref's dictionary
+  (`crates/fprime-ref/dictionary`) is generated from the upstream model
+  plus an FPP model of the Rust instances and the Rust SignalGen, and
+  `tools/gds-crosscheck.py` proves it live against fprime-gds 4.3.1:
+  commands sent by the GDS execute on the Rust Ref, and its events and
+  telemetry decode with the stock decoders.
+
 - **FPP code generation (`fpp-to-rust`).** `crates/fprime-fpp` is a
   stdlib-only port of the reference compiler's front end (lexer, parser,
   includes, the semantic analysis with its implicit-id, port-numbering and
@@ -92,8 +106,7 @@ subsystems, then the strategic changes.
     `DpCompressProc`). Needs a policy decision on a first third-party
     dependency (or a vendored deflate); `ProcType::ZlibDeflate` is already on
     the wire.
-15. **FPP back-end gaps.** The front end is complete; the back end still
-    lacks state-machine instances (needs item 11), serial ports, telemetry
-    packet sets, and a `fpp-to-dict`-style JSON dictionary generator (the
-    piece that would let the stock ground system talk to a generated
-    deployment without a C++ build).
+15. **FPP back-end gaps.** The front end is complete; the Rust back end
+    still lacks state-machine instances (needs item 11) and serial ports.
+    Telemetry packet sets are analyzed and written to the dictionary but
+    the Rust topology does not yet instantiate a packetizer from them.
