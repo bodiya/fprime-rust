@@ -13,6 +13,7 @@ pub mod format;
 pub mod symbols;
 pub mod topology;
 pub mod types;
+pub mod uses;
 
 use crate::Session;
 use crate::ast::*;
@@ -73,6 +74,10 @@ pub struct Analysis<'a> {
     pub topologies: HashMap<SymId, TopologyModel>,
     /// Cycle detection for on-demand resolution.
     in_progress: HashSet<SymId>,
+    /// Enum representation types and constants, resolved ahead of the
+    /// enum's default (see `ensure_enum_constants`).
+    enum_constants: HashMap<SymId, eval::EnumConstants>,
+    enum_in_progress: HashSet<SymId>,
 }
 
 /// Run the analysis over every file of a session.
@@ -88,6 +93,8 @@ pub fn analyze(session: &Session) -> Result<Analysis<'_>> {
         instances: HashMap::new(),
         topologies: HashMap::new(),
         in_progress: HashSet::new(),
+        enum_constants: HashMap::new(),
+        enum_in_progress: HashSet::new(),
     };
     // Pass 1: enter symbols.
     for f in &session.files {

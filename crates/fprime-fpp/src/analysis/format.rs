@@ -5,6 +5,7 @@
 //! the braces.
 
 use crate::error::{Diagnostic, Loc, Result};
+use std::fmt;
 
 /// A parsed format string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +147,39 @@ impl Format {
     }
 }
 
+impl fmt::Display for Format {
+    /// The source form (braces re-escaped).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn escaped(s: &str) -> String {
+            s.replace('{', "{{").replace('}', "}}")
+        }
+        f.write_str(&escaped(&self.prefix))?;
+        for (field, suffix) in &self.fields {
+            match field {
+                Field::Default => f.write_str("{}")?,
+                Field::Integer(IntField::Character) => f.write_str("{c}")?,
+                Field::Integer(IntField::Decimal) => f.write_str("{d}")?,
+                Field::Integer(IntField::Hexadecimal) => f.write_str("{x}")?,
+                Field::Integer(IntField::Octal) => f.write_str("{o}")?,
+                Field::Rational(p, r) => {
+                    f.write_str("{")?;
+                    if let Some(p) = p {
+                        write!(f, ".{p}")?;
+                    }
+                    f.write_str(match r {
+                        RatField::Exponent => "e",
+                        RatField::Fixed => "f",
+                        RatField::General => "g",
+                    })?;
+                    f.write_str("}")?;
+                }
+            }
+            f.write_str(&escaped(suffix))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +196,7 @@ mod tests {
                 (Field::Rational(Some(3), RatField::Fixed), " d".to_string()),
             ]
         );
+        assert_eq!(f.to_string(), "a {{b}} {} c {x} {.3f} d");
         assert!(Format::parse("{q}", &Loc::none()).is_err());
         assert!(Format::parse("}", &Loc::none()).is_err());
         assert!(Format::parse("{", &Loc::none()).is_err());

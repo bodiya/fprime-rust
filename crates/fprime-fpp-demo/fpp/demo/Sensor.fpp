@@ -119,7 +119,7 @@ module Demo {
   instance ground: Ground base id 0x2000 type "crate::ground::Ground"
 
   @ The demo topology
-  topology Demo {
+  deployment topology Demo {
 
     instance sensor
     instance ground

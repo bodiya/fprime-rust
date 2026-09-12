@@ -29,6 +29,7 @@ pub mod ast;
 pub mod codegen;
 pub mod error;
 pub mod include;
+pub mod json;
 pub mod lexer;
 pub mod parser;
 pub mod transform;

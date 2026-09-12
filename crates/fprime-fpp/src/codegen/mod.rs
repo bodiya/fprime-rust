@@ -26,6 +26,7 @@
 //! crates.
 
 pub mod component;
+pub mod dictionary;
 pub mod names;
 pub mod ports;
 pub mod topology;

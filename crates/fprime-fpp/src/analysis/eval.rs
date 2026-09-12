@@ -14,6 +14,9 @@ use super::types::{DEFAULT_STRING_SIZE, Type, Value, int_range, wider_int};
 use crate::ast::*;
 use crate::error::{Diagnostic, Loc, Result};
 
+/// An enum's representation type and constants (name, value, symbol).
+pub type EnumConstants = (IntKind, Vec<(String, i128, SymId)>);
+
 /// A named type's definition, resolved.
 #[derive(Debug, Clone)]
 pub enum TypeDef {
@@ -149,6 +152,68 @@ impl<'a> Analysis<'a> {
         stack: &[ScopeId],
         node: &'a Node<DefEnum>,
     ) -> Result<TypeDef> {
+        self.ensure_enum_constants(sym, &node.loc)?;
+        let (repr, constants) = self.enum_constants[&sym].clone();
+        // The default is evaluated after the constants (it may name one of
+        // them, directly or through a constant defined elsewhere).
+        let enum_scope = self.symbols.sym(sym).scope.expect("enum owns a scope");
+        let mut inner = stack.to_vec();
+        inner.push(enum_scope);
+        let default = match &node.data.default {
+            None => constants[0].0.clone(),
+            Some(e) => {
+                let v = self.eval(&inner, e)?;
+                match v {
+                    Value::Enum(s, name, _) if s == sym => name,
+                    other => {
+                        return Err(Diagnostic::semantic(
+                            e.loc.clone(),
+                            format!("enum default must be a constant of the enum, not {other}"),
+                        ));
+                    }
+                }
+            }
+        };
+        Ok(TypeDef::Enum {
+            repr,
+            constants,
+            default,
+        })
+    }
+
+    /// Resolve an enum's representation type and constant values (without
+    /// its default, so that a constant elsewhere may be defined as one of
+    /// the enum's constants and still serve as the enum's default).
+    fn ensure_enum_constants(&mut self, sym: SymId, use_loc: &Loc) -> Result<()> {
+        if self.enum_constants.contains_key(&sym) {
+            return Ok(());
+        }
+        let Def::Enum(node) = self.symbols.sym(sym).def else {
+            unreachable!("not an enum")
+        };
+        if !self.enum_in_progress.insert(sym) {
+            return Err(Diagnostic::semantic(
+                use_loc.clone(),
+                format!(
+                    "cyclic definition of enum {}",
+                    self.symbols.sym(sym).qualified_name()
+                ),
+            ));
+        }
+        let stack = self.symbols.sym(sym).def_stack.clone();
+        let result = self.eval_enum_constants(sym, &stack, node);
+        self.enum_in_progress.remove(&sym);
+        let (repr, constants) = result?;
+        self.enum_constants.insert(sym, (repr, constants));
+        Ok(())
+    }
+
+    fn eval_enum_constants(
+        &mut self,
+        sym: SymId,
+        stack: &[ScopeId],
+        node: &'a Node<DefEnum>,
+    ) -> Result<EnumConstants> {
         let repr = match &node.data.type_name {
             None => IntKind::I32,
             Some(tn) => {
@@ -217,26 +282,7 @@ impl<'a> Analysis<'a> {
                 "enum has no constants",
             ));
         }
-        let default = match &node.data.default {
-            None => constants[0].0.clone(),
-            Some(e) => {
-                let v = self.eval(&inner, e)?;
-                match v {
-                    Value::Enum(s, name, _) if s == sym => name,
-                    other => {
-                        return Err(Diagnostic::semantic(
-                            e.loc.clone(),
-                            format!("enum default must be a constant of the enum, not {other}"),
-                        ));
-                    }
-                }
-            }
-        };
-        Ok(TypeDef::Enum {
-            repr,
-            constants,
-            default,
-        })
+        Ok((repr, constants))
     }
 
     fn resolve_array_def(
@@ -823,7 +869,7 @@ impl<'a> Analysis<'a> {
 
     /// If `e` is a chain of dots over identifiers that names a constant
     /// or enum constant through scopes (`M.E.X`), resolve it.
-    fn try_resolve_qualified_value(
+    pub(crate) fn try_resolve_qualified_value(
         &self,
         stack: &[ScopeId],
         e: &Node<Expr>,
@@ -899,7 +945,7 @@ impl<'a> Analysis<'a> {
                 Ok(v)
             }
             Def::EnumConstant(_, enum_sym) => {
-                self.ensure_type_def(enum_sym, use_loc)?;
+                self.ensure_enum_constants(enum_sym, use_loc)?;
                 self.values.get(&sym).cloned().ok_or_else(|| {
                     Diagnostic::semantic(use_loc.clone(), "enum constant has no value")
                 })

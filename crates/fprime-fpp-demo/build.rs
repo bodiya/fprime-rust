@@ -1,7 +1,8 @@
 //! Runs `fpp-to-rust` over `fpp/` at build time. The framework files under
 //! `fpp/framework` are imported for name resolution (they are bound to the
 //! hand-written framework crates); the model under `fpp/demo` is generated
-//! into `$OUT_DIR/generated.rs`, which `src/lib.rs` includes.
+//! into `$OUT_DIR/generated.rs`, which `src/lib.rs` includes, and its
+//! ground dictionary into `$OUT_DIR/DemoTopologyDictionary.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,7 @@ fn main() {
         Err(e) => panic!("{e}"),
     };
     let options = fprime_fpp::codegen::Options {
-        targets: demo,
+        targets: demo.clone(),
         include_path: Some("generated".into()),
         ..Default::default()
     };
@@ -44,6 +45,22 @@ fn main() {
         Ok(c) => c,
         Err(e) => panic!("{e}"),
     };
-    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("generated.rs");
-    std::fs::write(&out, code).expect("write generated.rs");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(out_dir.join("generated.rs"), code).expect("write generated.rs");
+
+    // The ground dictionary of the deployment (what fprime-gds reads).
+    let dict_options = fprime_fpp::codegen::dictionary::DictOptions {
+        project_version: env!("CARGO_PKG_VERSION").into(),
+        framework_version: "fprime-rust".into(),
+        library_versions: Vec::new(),
+        targets: demo,
+    };
+    let dicts =
+        match fprime_fpp::codegen::dictionary::generate_dictionaries(&analysis, &dict_options) {
+            Ok(d) => d,
+            Err(e) => panic!("{e}"),
+        };
+    for d in dicts {
+        std::fs::write(out_dir.join(&d.name), d.json.to_pretty()).expect("write dictionary");
+    }
 }

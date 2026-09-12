@@ -6,11 +6,16 @@
 //! Modes:
 //!   --syntax              parse only
 //!   --check               parse and analyze
+//!   --dict DIR            parse, analyze and write the JSON dictionary of
+//!                         every deployment topology and system to DIR
 //!   (default)             parse, analyze and generate Rust
 //!
 //! Options:
 //!   -i FILE               import FILE for name resolution (not generated)
 //!   -o FILE               write generated Rust to FILE (default stdout)
+//!   -p VERSION            dictionary project version
+//!   -f VERSION            dictionary framework version
+//!   -l LIB,...            dictionary library versions
 //!   --impl-prefix PATH    Rust path prefix for instance implementation
 //!                         types (default `crate::`)
 //!   --include-path PATH   module path at which the output is included
@@ -22,15 +27,17 @@
 //!                         start from an empty binding table
 //! ```
 
+use fprime_fpp::codegen::dictionary::{DictOptions, generate_dictionaries};
 use fprime_fpp::codegen::{self, ArgKind, Bindings, Options};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: fpp-to-rust [--syntax | --check] [-i FILE]... [-o FILE] [--impl-prefix PATH] \
-         [--include-path PATH] [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... \
-         [--no-framework-bindings] FILE..."
+        "usage: fpp-to-rust [--syntax | --check | --dict DIR] [-i FILE]... [-o FILE] \
+         [-p VERSION] [-f VERSION] [-l LIB,...] [--impl-prefix PATH] [--include-path PATH] \
+         [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... [--no-framework-bindings] \
+         FILE..."
     );
     ExitCode::FAILURE
 }
@@ -42,6 +49,8 @@ fn main() -> ExitCode {
     let mut mode = "gen";
     let mut output: Option<PathBuf> = None;
     let mut options = Options::default();
+    let mut dict_dir: Option<PathBuf> = None;
+    let mut dict_options = DictOptions::default();
     let mut i = 0;
     let take = |i: &mut usize| -> Option<String> {
         *i += 1;
@@ -51,6 +60,31 @@ fn main() -> ExitCode {
         match args[i].as_str() {
             "--syntax" => mode = "syntax",
             "--check" => mode = "check",
+            "--dict" => match take(&mut i) {
+                Some(d) => {
+                    mode = "dict";
+                    dict_dir = Some(PathBuf::from(d));
+                }
+                None => return usage(),
+            },
+            "-p" => match take(&mut i) {
+                Some(v) => dict_options.project_version = v,
+                None => return usage(),
+            },
+            "-f" => match take(&mut i) {
+                Some(v) => dict_options.framework_version = v,
+                None => return usage(),
+            },
+            "-l" => match take(&mut i) {
+                Some(v) => {
+                    dict_options.library_versions = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                }
+                None => return usage(),
+            },
             "-i" => match take(&mut i) {
                 Some(f) => imports.push(PathBuf::from(f)),
                 None => return usage(),
@@ -133,6 +167,25 @@ fn main() -> ExitCode {
             analysis.instances.len(),
             analysis.topologies.len()
         );
+        return ExitCode::SUCCESS;
+    }
+    if mode == "dict" {
+        let dir = dict_dir.expect("--dict sets the directory");
+        dict_options.targets = files.clone();
+        let dicts = match generate_dictionaries(&analysis, &dict_options) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        for d in dicts {
+            let path = dir.join(&d.name);
+            if let Err(e) = std::fs::write(&path, d.json.to_pretty()) {
+                eprintln!("cannot write {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+        }
         return ExitCode::SUCCESS;
     }
     options.targets = files.clone();

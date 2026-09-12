@@ -18,3 +18,6 @@ fprime-comp.workspace = true
 
 [build-dependencies]
 fprime-fpp.workspace = true
+
+[dev-dependencies]
+fprime-fpp.workspace = true

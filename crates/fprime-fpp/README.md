@@ -51,6 +51,7 @@ topologies) and the reference compiler's own `fpp-to-cpp` test corpora.
 | `port P` | `pub trait PPort: Send + Sync { fn invoke(&self, port_num, ..) [-> R] }` |
 | `component C` | `CBase`, `CHandlers`, `CComponent`, adapters, `impl_c_component!` (below) |
 | `topology T` | `TTopology { instances }` with `set_id_bases`, `init`, `connect`, `reg_commands`, `load_parameters`, `start_tasks`/`exit_tasks`/`join_tasks` |
+| `deployment topology T` / `system S` | with `--dict`: `TTopologyDictionary.json` / `SSystemDictionary.json` |
 
 **Bindings.** Framework definitions the workspace hand-writes are never
 regenerated: config aliases map to `fprime_config`, `Fw.Time`/`Fw.Buffer`/the
@@ -114,11 +115,40 @@ Each instance becomes an `Arc<Impl>` field, where `Impl` is the instance's
 numbers, so pattern graphs and port arrays behave exactly as in the C++
 topology. Every instance must be of a generated component.
 
+## JSON dictionary (`--dict DIR`)
+
+The second back end writes the ground dictionary the stock F Prime ground
+data system reads: the `fpp-to-dict` format, `dictionarySpecVersion`
+1.0.0, one `<Topology>TopologyDictionary.json` per deployment topology and
+one `<System>SystemDictionary.json` per `system`. Its content follows
+`DictionaryJsonEncoder.scala`:
+
+- `typeDefinitions` and `constants`: the deep closure of the types and
+  constants named by the commands, events, telemetry channels, parameters,
+  records and containers of every instance (`analysis::uses`), plus the
+  implied uses of dictionary generation (`FwOpcodeType`, `Fw.DpState`,
+  `FW_FIXED_LENGTH_STRING_SIZE`, ...; missing ones are errors) and every
+  `dictionary`-marked definition (checked to be displayable);
+- `commands` (with the implicit `<PARAM>_PRM_SET`/`_PRM_SAVE`),
+  `parameters`, `events` (format, throttle, `every`), `telemetryChannels`
+  (limits), `records`, `containers`, keyed by `base id + local id` and
+  sorted; duplicate global ids are errors;
+- `telemetryPacketSets`: the topology's own packet sets with implicit
+  packet ids, and the check that every channel is used or omitted.
+
+`-p`, `-f` and `-l` set the project version, framework version and
+library versions of the metadata. `tests/dictionary.rs` compares the
+output structurally with the reference compiler's `.ref.json` files for
+its whole `fpp-to-dict` test corpus (`tests/dict`, copied from nasa/fpp)
+and checks its error cases. `src/json.rs` is the stdlib-only JSON value,
+printer and parser.
+
 ## Not generated (yet)
 
-State machine instances (`Fw/Sm` autocoding), serial ports, telemetry
-packet sets and the JSON dictionary. Anonymous struct constants and
-abstract-type values are emitted as comments.
+State machine instances (`Fw/Sm` autocoding) and serial ports in the Rust
+back end; telemetry packet sets reach the dictionary but not the Rust
+topology. Anonymous struct constants and abstract-type values are emitted
+as comments.
 
 ## Using it
 
@@ -132,6 +162,7 @@ cargo run -p fprime-fpp --bin fpp-to-rust -- \
     -o src/generated.rs  MyComponent.fpp MyTopology.fpp
 fpp-to-rust --check ...   # analyze only
 fpp-to-rust --syntax ...  # parse only
+fpp-to-rust --dict out/ -p 1.0.0 -f 4.0.0 -i ... MyTopology.fpp   # JSON dictionaries
 ```
 
 From a build script (see `crates/fprime-fpp-demo/build.rs`): parse with
@@ -147,7 +178,11 @@ src/parser.rs       recursive descent (mirrors Parser.scala)
 src/include.rs      include splicing
 src/transform.rs    implicit state enums
 src/analysis/       symbols, types/values, eval, format strings, components, topologies
+src/analysis/uses.rs  deep used-symbol closure (dictionary contents)
 src/codegen/        bindings + driver, names, types, ports, component, topology
+src/codegen/dictionary.rs  the JSON dictionary back end
+src/json.rs         JSON value, printer, parser
 src/bin/fpp_to_rust.rs
 tests/analysis.rs   reference-rule tests on inline models
+tests/dictionary.rs the reference fpp-to-dict corpus (tests/dict)
 ```

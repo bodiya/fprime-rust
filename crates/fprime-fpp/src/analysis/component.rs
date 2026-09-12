@@ -125,6 +125,8 @@ pub struct EventDef {
     pub format: Format,
     /// Throttle count, if throttled.
     pub throttle: Option<u64>,
+    /// Throttle reset interval `every { seconds, useconds }`, if any.
+    pub every: Option<(u64, u32)>,
     pub docs: Vec<String>,
     pub loc: Loc,
 }
@@ -576,11 +578,23 @@ impl<'a> Analysis<'a> {
                             ));
                         }
                     }
-                    let throttle = match &ed.throttle {
+                    let (throttle, every) = match &ed.throttle {
                         Some(t) => {
-                            Some(self.eval_nonneg_int(&stack, &t.data.count, "throttle count")?)
+                            let count =
+                                self.eval_nonneg_int(&stack, &t.data.count, "throttle count")?;
+                            if count == 0 {
+                                return Err(Diagnostic::semantic(
+                                    t.data.count.loc.clone(),
+                                    "event throttle count must be greater than zero",
+                                ));
+                            }
+                            let every = match &t.data.every {
+                                Some(e) => Some(self.eval_time_interval(&stack, e)?),
+                                None => None,
+                            };
+                            (Some(count), every)
                         }
-                        None => None,
+                        None => (None, None),
                     };
                     if let Some(prev) = events.iter().find(|x| x.id == id) {
                         return Err(Diagnostic::semantic(
@@ -603,6 +617,7 @@ impl<'a> Analysis<'a> {
                         id,
                         format,
                         throttle,
+                        every,
                         docs,
                         loc: e.loc.clone(),
                     });
@@ -961,6 +976,37 @@ impl<'a> Analysis<'a> {
     }
 
     /// Build the model of a component instance.
+    /// Evaluate a throttle interval `{ seconds = s, useconds = u }`
+    /// (`Event.scala`: converted to `{ seconds: U32, useconds: U32 }`,
+    /// useconds at most 999999).
+    fn eval_time_interval(&mut self, stack: &[ScopeId], e: &Node<Expr>) -> Result<(u64, u32)> {
+        let v = self.eval(stack, e)?;
+        let target = Type::AnonStruct(vec![
+            ("seconds".to_string(), Type::Int(IntKind::U32)),
+            ("useconds".to_string(), Type::Int(IntKind::U32)),
+        ]);
+        let v = self.convert(v, &target, &e.loc)?;
+        let Value::Struct(_, members) = v else {
+            unreachable!("converted to a struct")
+        };
+        let get = |name: &str| -> i128 {
+            members
+                .iter()
+                .find(|(n, _)| n == name)
+                .and_then(|(_, v)| v.as_int())
+                .unwrap_or(0)
+        };
+        let seconds = get("seconds");
+        let useconds = get("useconds");
+        if useconds > 999_999 {
+            return Err(Diagnostic::semantic(
+                e.loc.clone(),
+                format!("useconds must be in the range [0, 999999], got {useconds}"),
+            ));
+        }
+        Ok((seconds as u64, useconds as u32))
+    }
+
     pub fn resolve_instance(&mut self, sym: SymId) -> Result<()> {
         let Def::ComponentInstance(node) = self.symbols.sym(sym).def else {
             unreachable!()

@@ -45,6 +45,36 @@ pub struct ConnectionModel {
     pub loc: Loc,
 }
 
+/// A reference to a telemetry channel of an instance (`inst.channel`).
+#[derive(Debug, Clone)]
+pub struct TlmChannelRef {
+    /// The component instance.
+    pub instance: SymId,
+    /// The channel name in the instance's component.
+    pub channel: String,
+    /// Where it is written.
+    pub loc: Loc,
+}
+
+/// A telemetry packet.
+#[derive(Debug, Clone)]
+pub struct TlmPacketModel {
+    pub name: String,
+    pub id: u64,
+    pub group: u64,
+    pub members: Vec<TlmChannelRef>,
+    pub loc: Loc,
+}
+
+/// A telemetry packet set.
+#[derive(Debug, Clone)]
+pub struct TlmPacketSetModel {
+    pub name: String,
+    pub packets: Vec<TlmPacketModel>,
+    pub omitted: Vec<TlmChannelRef>,
+    pub loc: Loc,
+}
+
 /// A resolved topology.
 #[derive(Debug, Clone)]
 pub struct TopologyModel {
@@ -64,6 +94,8 @@ pub struct TopologyModel {
     /// Topology ports (`port p = i.q`), resolved to the underlying
     /// component instance and port instance name.
     pub top_ports: Vec<(String, SymId, String)>,
+    /// The topology's own telemetry packet sets (packet ids assigned).
+    pub packet_sets: Vec<TlmPacketSetModel>,
     /// Annotation lines.
     pub docs: Vec<String>,
 }
@@ -250,6 +282,23 @@ impl<'a> Analysis<'a> {
         self.check_connections(&connections)?;
         self.number_ports(&instances, &mut connections)?;
 
+        // Telemetry packet sets.
+        let mut packet_sets: Vec<TlmPacketSetModel> = Vec::new();
+        for m in &node.data.members {
+            let TopologyMemberNode::SpecTlmPacketSet(set) = &m.node else {
+                continue;
+            };
+            if let Some(prev) = packet_sets.iter().find(|p| p.name == set.data.name) {
+                return Err(Diagnostic::semantic(
+                    set.loc.clone(),
+                    format!("duplicate telemetry packet set {}", set.data.name),
+                )
+                .with_note(prev.loc.clone(), "previous occurrence is here"));
+            }
+            let ps = self.resolve_packet_set(&stack, set, &instances)?;
+            packet_sets.push(ps);
+        }
+
         self.in_progress.remove(&sym);
         self.topologies.insert(
             sym,
@@ -261,10 +310,124 @@ impl<'a> Analysis<'a> {
                 local_connections: local,
                 imports,
                 top_ports,
+                packet_sets,
                 docs,
             },
         );
         Ok(())
+    }
+
+    /// Resolve a telemetry packet set (`TlmPacketSet.scala`): packet ids
+    /// default to the previous id + 1 from 0; names and ids are unique;
+    /// every channel reference names a channel of an instance of the
+    /// topology. Whether every channel is used or omitted is checked
+    /// when the dictionary is built.
+    fn resolve_packet_set(
+        &mut self,
+        stack: &[super::ScopeId],
+        set: &Node<SpecTlmPacketSet>,
+        instances: &[SymId],
+    ) -> Result<TlmPacketSetModel> {
+        let mut packets: Vec<TlmPacketModel> = Vec::new();
+        let mut next_id: u64 = 0;
+        for pm in &set.data.members {
+            let TlmPacketSetMemberNode::SpecTlmPacket(p) = &pm.node else {
+                unreachable!("includes are spliced")
+            };
+            let pd = &p.data;
+            let id = match self.opt_nonneg(stack, &pd.id, "packet id")? {
+                Some(i) => i,
+                None => next_id,
+            };
+            next_id = id + 1;
+            let group = self.eval_nonneg_int(stack, &pd.group, "packet group")?;
+            if let Some(prev) = packets.iter().find(|x| x.id == id) {
+                return Err(Diagnostic::semantic(
+                    p.loc.clone(),
+                    format!("duplicate packet id {id}"),
+                )
+                .with_note(prev.loc.clone(), "previous occurrence is here"));
+            }
+            if let Some(prev) = packets.iter().find(|x| x.name == pd.name) {
+                return Err(Diagnostic::semantic(
+                    p.loc.clone(),
+                    format!("duplicate packet {}", pd.name),
+                )
+                .with_note(prev.loc.clone(), "previous occurrence is here"));
+            }
+            let mut members = Vec::new();
+            for cm in &pd.members {
+                let TlmPacketMember::TlmChannelIdentifier(ci) = cm else {
+                    unreachable!("includes are spliced")
+                };
+                members.push(self.resolve_channel_ref(stack, ci, instances)?);
+            }
+            packets.push(TlmPacketModel {
+                name: pd.name.clone(),
+                id,
+                group,
+                members,
+                loc: p.loc.clone(),
+            });
+        }
+        let mut omitted = Vec::new();
+        for ci in &set.data.omitted {
+            omitted.push(self.resolve_channel_ref(stack, ci, instances)?);
+        }
+        Ok(TlmPacketSetModel {
+            name: set.data.name.clone(),
+            packets,
+            omitted,
+            loc: set.loc.clone(),
+        })
+    }
+
+    /// Resolve `inst.channel` against the instances of a topology.
+    fn resolve_channel_ref(
+        &mut self,
+        stack: &[super::ScopeId],
+        ci: &Node<TlmChannelIdentifier>,
+        instances: &[SymId],
+    ) -> Result<TlmChannelRef> {
+        let inst = self.resolve_use(
+            stack,
+            NameGroup::PortInterfaceInstance,
+            &ci.data.component_instance,
+        )?;
+        if !matches!(self.symbols.sym(inst).def, Def::ComponentInstance(_)) {
+            return Err(Diagnostic::semantic(
+                ci.data.component_instance.loc.clone(),
+                format!(
+                    "{} is not a component instance",
+                    self.symbols.sym(inst).qualified_name()
+                ),
+            ));
+        }
+        if !instances.contains(&inst) {
+            return Err(Diagnostic::semantic(
+                ci.data.component_instance.loc.clone(),
+                format!(
+                    "component instance {} is not in this topology",
+                    self.symbols.sym(inst).qualified_name()
+                ),
+            ));
+        }
+        let name = &ci.data.channel_name.data;
+        let comp = self.component_of_instance(inst);
+        if !comp.tlm_channels.iter().any(|c| c.name == *name) {
+            return Err(Diagnostic::semantic(
+                ci.data.channel_name.loc.clone(),
+                format!(
+                    "{} has no telemetry channel {name}",
+                    self.symbols.sym(comp.sym).qualified_name()
+                ),
+            ));
+        }
+        Ok(TlmChannelRef {
+            instance: inst,
+            channel: name.clone(),
+            loc: ci.loc.clone(),
+        })
     }
 
     /// Resolve `i.p[n]` to a component-instance endpoint. `i` may be an
