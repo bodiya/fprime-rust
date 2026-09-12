@@ -10,6 +10,7 @@ members = [
     "crates/fprime-drv",
     "crates/fprime-ref",
     "crates/fprime-fpp",
+    "crates/fprime-fpp-demo",
 ]
 
 [workspace.package]

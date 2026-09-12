@@ -241,7 +241,7 @@ impl<'a> Analysis<'a> {
 
     fn resolve_array_def(
         &mut self,
-        _sym: SymId,
+        sym: SymId,
         stack: &[ScopeId],
         node: &'a Node<DefArray>,
     ) -> Result<TypeDef> {
@@ -261,6 +261,10 @@ impl<'a> Analysis<'a> {
             }
             None => self.default_value(&anon, &node.loc)?,
         };
+        let default = match default {
+            Value::Array(_, elts) => Value::Array(Some(sym), elts),
+            other => other,
+        };
         let format = node.data.format.as_ref().map(|f| f.data.clone());
         Ok(TypeDef::Array {
             size,
@@ -272,7 +276,7 @@ impl<'a> Analysis<'a> {
 
     fn resolve_struct_def(
         &mut self,
-        _sym: SymId,
+        sym: SymId,
         stack: &[ScopeId],
         node: &'a Node<DefStruct>,
     ) -> Result<TypeDef> {
@@ -309,6 +313,10 @@ impl<'a> Analysis<'a> {
                 self.convert(v, &anon, &e.loc)?
             }
             None => self.default_value(&anon, &node.loc)?,
+        };
+        let default = match default {
+            Value::Struct(_, ms) => Value::Struct(Some(sym), ms),
+            other => other,
         };
         Ok(TypeDef::Struct { members, default })
     }

@@ -30,6 +30,17 @@ name = "fprime-fpp"
 version = "0.1.0"
 
 [[package]]
+name = "fprime-fpp-demo"
+version = "0.1.0"
+dependencies = [
+ "fprime-comp",
+ "fprime-config",
+ "fprime-fpp",
+ "fprime-fw",
+ "fprime-os",
+]
+
+[[package]]
 name = "fprime-fw"
 version = "0.1.0"
 dependencies = [
