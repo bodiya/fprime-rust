@@ -72,7 +72,7 @@ use fprime_utils::cfdp::Checksum;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::file_uplink::SandboxedFile;
+use fprime_os::SandboxedFile;
 
 // ---------------------------------------------------------------------------
 // Config constants (C++ default/config/FileDownlinkCfg.hpp + FppConstants)

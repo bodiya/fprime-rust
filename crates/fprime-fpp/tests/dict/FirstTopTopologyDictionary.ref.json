@@ -1,0 +1,1273 @@
+{
+  "metadata" : {
+    "deploymentName" : "Module1.FirstTop",
+    "projectVersion" : "1.0.0",
+    "frameworkVersion" : "3.4.3",
+    "libraryVersions" : [
+      "lib1-1.0.0",
+      "lib2-2.0.0"
+    ],
+    "dictionarySpecVersion" : "1.0.0"
+  },
+  "typeDefinitions" : [
+    {
+      "kind" : "alias",
+      "qualifiedName" : "BaseIdType",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTimeContextStoreType",
+      "type" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "annotation" : "The type used to serialize a time context value"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "Module1.AliasT1",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "Alias of type U32"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "Module1.AliasT2",
+      "type" : {
+        "name" : "Module1.AliasT1",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "Alias of type AliasT1 (with underlying type U32)"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.DpCfg.ProcType",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "PROC_TYPE_ZERO",
+          "value" : 1,
+          "annotation" : "Processing type 0"
+        },
+        {
+          "name" : "PROC_TYPE_ONE",
+          "value" : 2,
+          "annotation" : "Processing type 1"
+        },
+        {
+          "name" : "PROC_TYPE_TWO",
+          "value" : 4,
+          "annotation" : "Processing type 2"
+        }
+      ],
+      "default" : "Fw.DpCfg.ProcType.PROC_TYPE_ZERO",
+      "annotation" : "A bit mask for selecting the type of processing to perform on\na container before writing it to disk."
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Module1.StringArray",
+      "size" : 2,
+      "elementType" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 256
+      },
+      "default" : [
+        "A",
+        "B"
+      ],
+      "annotation" : "An array of 2 String values"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwDpIdType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwChanIdType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwOpcodeType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Module1.E3",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "YES",
+          "value" : 0
+        },
+        {
+          "name" : "NO",
+          "value" : 1
+        },
+        {
+          "name" : "MAYBE",
+          "value" : 2
+        }
+      ],
+      "default" : "Module1.E3.YES"
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Module1.EnumArray",
+      "size" : 3,
+      "elementType" : {
+        "name" : "Module1.E3",
+        "kind" : "qualifiedIdentifier"
+      },
+      "default" : [
+        "Module1.E3.YES",
+        "Module1.E3.YES",
+        "Module1.E3.YES"
+      ],
+      "annotation" : "An array of 3 enum values"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTlmPacketizeIdType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Module1.S2",
+      "members" : {
+        "x" : {
+          "type" : {
+            "name" : "Module1.E2",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 0
+        },
+        "y" : {
+          "type" : {
+            "name" : "Module1.EnumArray",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 1
+        }
+      },
+      "default" : {
+        "x" : "Module1.E2.PASS",
+        "y" : [
+          "Module1.E3.YES",
+          "Module1.E3.YES",
+          "Module1.E3.YES"
+        ]
+      }
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.DpState",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "UNTRANSMITTED",
+          "value" : 0,
+          "annotation" : "The untransmitted state"
+        },
+        {
+          "name" : "PARTIAL",
+          "value" : 1,
+          "annotation" : "The partially transmitted state\nA data product is in this state from the start of transmission\nuntil transmission is complete."
+        },
+        {
+          "name" : "TRANSMITTED",
+          "value" : 2,
+          "annotation" : "The transmitted state"
+        }
+      ],
+      "default" : "Fw.DpState.UNTRANSMITTED"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Module1.E2",
+      "representationType" : {
+        "name" : "I32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : true
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "PASS",
+          "value" : 0
+        },
+        {
+          "name" : "FAIL",
+          "value" : 1
+        }
+      ],
+      "default" : "Module1.E2.PASS"
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Module1.F64x4",
+      "size" : 4,
+      "elementType" : {
+        "name" : "F64",
+        "kind" : "float",
+        "size" : 64
+      },
+      "default" : [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "annotation" : "An array of 4 F64 values"
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Module1.U32x4",
+      "size" : 4,
+      "elementType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "default" : [
+        1,
+        2,
+        3,
+        4
+      ],
+      "annotation" : "An array of 4 U32 values"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwEventIdType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Module1.ScalarStruct",
+      "members" : {
+        "u32" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 6
+        },
+        "f64" : {
+          "type" : {
+            "name" : "F64",
+            "kind" : "float",
+            "size" : 64
+          },
+          "index" : 9
+        },
+        "f32" : {
+          "type" : {
+            "name" : "F32",
+            "kind" : "float",
+            "size" : 32
+          },
+          "index" : 8
+        },
+        "i8" : {
+          "type" : {
+            "name" : "I8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : true
+          },
+          "index" : 0
+        },
+        "i16" : {
+          "type" : {
+            "name" : "I16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : true
+          },
+          "index" : 1
+        },
+        "u8" : {
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "index" : 4
+        },
+        "u64" : {
+          "type" : {
+            "name" : "U64",
+            "kind" : "integer",
+            "size" : 64,
+            "signed" : false
+          },
+          "index" : 7
+        },
+        "i64" : {
+          "type" : {
+            "name" : "I64",
+            "kind" : "integer",
+            "size" : 64,
+            "signed" : true
+          },
+          "index" : 3
+        },
+        "i32" : {
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "index" : 2
+        },
+        "u16" : {
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "index" : 5
+        }
+      },
+      "default" : {
+        "u32" : 0,
+        "f64" : 0.0,
+        "f32" : 0.0,
+        "i8" : 0,
+        "i16" : 0,
+        "u8" : 0,
+        "u64" : 0,
+        "i64" : 0,
+        "i32" : 0,
+        "u16" : 0
+      }
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Module1.S1",
+      "members" : {
+        "x" : {
+          "type" : {
+            "name" : "U64",
+            "kind" : "integer",
+            "size" : 64,
+            "signed" : false
+          },
+          "index" : 0,
+          "format" : "The value of x is {}"
+        },
+        "y" : {
+          "type" : {
+            "name" : "F32",
+            "kind" : "float",
+            "size" : 32
+          },
+          "index" : 1,
+          "format" : "The value of y is {.2f}"
+        }
+      },
+      "default" : {
+        "x" : 1,
+        "y" : 1.5
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwSizeStoreType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "Module1.AliasT3",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 20
+      },
+      "underlyingType" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 20
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwPacketDescriptorType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwDpPriorityType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwSizeType",
+      "type" : {
+        "name" : "BaseIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      }
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Module1.E1",
+      "representationType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "X",
+          "value" : 0
+        },
+        {
+          "name" : "Y",
+          "value" : 1
+        },
+        {
+          "name" : "Z",
+          "value" : 2
+        }
+      ],
+      "default" : "Module1.E1.X"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTimeBaseStoreType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "annotation" : "The type used to serialize a time base value"
+    }
+  ],
+  "constants" : [
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_FIXED_LENGTH_STRING_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 256
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Fw.DpCfg.CONTAINER_USER_DATA_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 32,
+      "annotation" : "The container user data size"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_SERIALIZE_TRUE_VALUE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 255
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_SERIALIZE_FALSE_VALUE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 0
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "STRING_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 256
+    }
+  ],
+  "commands" : [
+    {
+      "name" : "Module1.myFirstC1.Command1",
+      "commandKind" : "async",
+      "opcode" : 768,
+      "formalParams" : [
+        {
+          "name" : "a",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "description for argument a"
+        }
+      ],
+      "priority" : 10,
+      "queueFullBehavior" : "drop",
+      "annotation" : "Command with I32 arg"
+    },
+    {
+      "name" : "Module1.myFirstC1.Command2",
+      "commandKind" : "sync",
+      "opcode" : 769,
+      "formalParams" : [
+        {
+          "name" : "a",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 16
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Command with string arg"
+    },
+    {
+      "name" : "Module1.myFirstC1.Command3",
+      "commandKind" : "sync",
+      "opcode" : 770,
+      "formalParams" : [
+        {
+          "name" : "a",
+          "type" : {
+            "name" : "Module1.StringArray",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "description for argument a"
+        },
+        {
+          "name" : "b",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "description for argument b"
+        }
+      ],
+      "annotation" : "Command with 2 args (array of strings and U32)"
+    },
+    {
+      "name" : "Module1.myFirstC1.Command4",
+      "commandKind" : "sync",
+      "opcode" : 771,
+      "formalParams" : [
+      ],
+      "annotation" : "Command with no args"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM1_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 772,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Module1.S1",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter (struct)"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM1_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 773,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter (struct)"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM2_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 898,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Module1.U32x4",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter of type array (with 4 U32 values)"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM2_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 899,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter of type array (with 4 U32 values)"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM3_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 900,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Module1.AliasT3",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter of type string"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM3_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 901,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter of type string"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM4_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 902,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "F32",
+            "kind" : "float",
+            "size" : 32
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter of type F32"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM4_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 903,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter of type F32"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM5_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 904,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Module1.E1",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter of type enum"
+    },
+    {
+      "name" : "Module1.myFirstC1.PARAM5_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 905,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter of type enum"
+    },
+    {
+      "name" : "Module1.myFirstC2.Command1",
+      "commandKind" : "sync",
+      "opcode" : 1024,
+      "formalParams" : [
+        {
+          "name" : "a",
+          "type" : {
+            "name" : "Module1.S2",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Command with 1 arg (of type struct)"
+    },
+    {
+      "name" : "Module1.myFirstC2.Command2",
+      "commandKind" : "sync",
+      "opcode" : 1025,
+      "formalParams" : [
+        {
+          "name" : "a",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 256
+          },
+          "ref" : false
+        },
+        {
+          "name" : "b",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false
+        },
+        {
+          "name" : "c",
+          "type" : {
+            "name" : "bool",
+            "kind" : "bool",
+            "size" : 8
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Command with 3 args (of types string, I32, and bool)"
+    },
+    {
+      "name" : "Module1.myFirstC2.SendScalars",
+      "commandKind" : "sync",
+      "opcode" : 1026,
+      "formalParams" : [
+        {
+          "name" : "s",
+          "type" : {
+            "name" : "Module1.ScalarStruct",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Send scalars"
+    }
+  ],
+  "parameters" : [
+    {
+      "name" : "Module1.myFirstC1.Param1",
+      "type" : {
+        "name" : "Module1.S1",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 769,
+      "default" : {
+        "x" : 2,
+        "y" : 1.5
+      },
+      "annotation" : "Parameter (struct)"
+    },
+    {
+      "name" : "Module1.myFirstC1.Param2",
+      "type" : {
+        "name" : "Module1.U32x4",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 770,
+      "annotation" : "Parameter of type array (with 4 U32 values)"
+    },
+    {
+      "name" : "Module1.myFirstC1.Param3",
+      "type" : {
+        "name" : "Module1.AliasT3",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 771,
+      "annotation" : "Parameter of type string"
+    },
+    {
+      "name" : "Module1.myFirstC1.Param4",
+      "type" : {
+        "name" : "F32",
+        "kind" : "float",
+        "size" : 32
+      },
+      "id" : 772,
+      "annotation" : "Parameter of type F32"
+    },
+    {
+      "name" : "Module1.myFirstC1.Param5",
+      "type" : {
+        "name" : "Module1.E1",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 773,
+      "annotation" : "Parameter of type enum"
+    }
+  ],
+  "events" : [
+    {
+      "name" : "Module1.myFirstC1.Event1",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "Module1.F64x4",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 768,
+      "format" : "Arg one is {} and there is no arg 2",
+      "annotation" : "Event with array arg (containing 4 F32 values)"
+    },
+    {
+      "name" : "Module1.myFirstC1.Event2",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "Module1.E3",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 769,
+      "format" : "Arg1 is {}",
+      "annotation" : "Event with enum arg"
+    },
+    {
+      "name" : "Module1.myFirstC1.Event3",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "F64",
+            "kind" : "float",
+            "size" : 64
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 770,
+      "format" : "Arg1 is {f}",
+      "annotation" : "Event with format specifier\nMultiple lines of annotation\nAnd not used on purpose"
+    },
+    {
+      "name" : "Module1.myFirstC1.Event4",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "F64",
+            "kind" : "float",
+            "size" : 64
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 771,
+      "format" : "Arg1 is {}",
+      "annotation" : "Event with throttle",
+      "throttle" : {
+        "count" : 10,
+        "every" : null
+      }
+    },
+    {
+      "name" : "Module1.myFirstC1.Event5",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "F64",
+            "kind" : "float",
+            "size" : 64
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 772,
+      "format" : "Arg1 is {}",
+      "annotation" : "Event with throttle and timeout",
+      "throttle" : {
+        "count" : 10,
+        "every" : {
+          "seconds" : 10,
+          "useconds" : 0
+        }
+      }
+    },
+    {
+      "name" : "Module1.myFirstC2.Event1",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U64",
+            "kind" : "integer",
+            "size" : 64,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "description of arg1 formal param"
+        }
+      ],
+      "id" : 1024,
+      "format" : "Arg one is {}",
+      "annotation" : "Event with a single U64 arg"
+    }
+  ],
+  "telemetryChannels" : [
+    {
+      "name" : "Module1.myFirstC1.TlmChannel1",
+      "type" : {
+        "name" : "F64",
+        "kind" : "float",
+        "size" : 64
+      },
+      "id" : 768,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type F64 with high and low limits",
+      "limits" : {
+        "high" : {
+          "yellow" : 1.1,
+          "orange" : 2.2,
+          "red" : 3.3
+        },
+        "low" : {
+          "yellow" : -1.1,
+          "orange" : -2.2,
+          "red" : -3.3
+        }
+      }
+    },
+    {
+      "name" : "Module1.myFirstC1.TlmChannel2",
+      "type" : {
+        "name" : "F32",
+        "kind" : "float",
+        "size" : 32
+      },
+      "id" : 769,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type F32"
+    },
+    {
+      "name" : "Module1.myFirstC1.TlmChannel3",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "id" : 770,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type U64"
+    },
+    {
+      "name" : "Module1.myFirstC2.TlmChannel1",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 1024,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type U32 with no high/low limits"
+    },
+    {
+      "name" : "Module1.myFirstC2.TlmChannel2",
+      "type" : {
+        "name" : "F64",
+        "kind" : "float",
+        "size" : 64
+      },
+      "id" : 1025,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type F64 with low limits",
+      "limits" : {
+        "low" : {
+          "yellow" : -1.1,
+          "orange" : -2.2,
+          "red" : -3.3
+        }
+      }
+    },
+    {
+      "name" : "Module1.myFirstC2.TlmChannel3",
+      "type" : {
+        "name" : "F64",
+        "kind" : "float",
+        "size" : 64
+      },
+      "id" : 1026,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry channel of type F32 with high limits",
+      "limits" : {
+        "high" : {
+          "yellow" : 1.0,
+          "orange" : 2.0,
+          "red" : 3.0
+        }
+      }
+    }
+  ],
+  "records" : [
+    {
+      "name" : "Module1.myFirstC1.Record1",
+      "type" : {
+        "name" : "Module1.AliasT2",
+        "kind" : "qualifiedIdentifier"
+      },
+      "array" : false,
+      "id" : 768,
+      "annotation" : "Record with single U32 value"
+    },
+    {
+      "name" : "Module1.myFirstC1.Record2",
+      "type" : {
+        "name" : "Module1.F64x4",
+        "kind" : "qualifiedIdentifier"
+      },
+      "array" : false,
+      "id" : 769,
+      "annotation" : "Record with a single F64x4 value"
+    },
+    {
+      "name" : "Module1.myFirstC1.Record3",
+      "type" : {
+        "name" : "F32",
+        "kind" : "float",
+        "size" : 32
+      },
+      "array" : true,
+      "id" : 770,
+      "annotation" : "Record with array of F32 values"
+    }
+  ],
+  "containers" : [
+    {
+      "name" : "Module1.myFirstC1.Container1",
+      "id" : 784,
+      "annotation" : "Description of Container 1"
+    },
+    {
+      "name" : "Module1.myFirstC1.Container2",
+      "id" : 785,
+      "annotation" : "Description Container 2"
+    },
+    {
+      "name" : "Module1.myFirstC1.Container3",
+      "id" : 786,
+      "defaultPriority" : 10,
+      "annotation" : "Description Container 3 with a default priority of 10"
+    }
+  ],
+  "telemetryPacketSets" : [
+    {
+      "name" : "Packets",
+      "members" : [
+        {
+          "name" : "MyTlmPacket1",
+          "id" : 0,
+          "group" : 0,
+          "members" : [
+            "Module1.myFirstC1.TlmChannel1",
+            "Module1.myFirstC1.TlmChannel2"
+          ]
+        },
+        {
+          "name" : "MyTlmPacket2",
+          "id" : 1,
+          "group" : 1,
+          "members" : [
+            "Module1.myFirstC2.TlmChannel1"
+          ]
+        }
+      ],
+      "omitted" : [
+        "Module1.myFirstC1.TlmChannel3",
+        "Module1.myFirstC2.TlmChannel2",
+        "Module1.myFirstC2.TlmChannel3"
+      ]
+    }
+  ]
+}

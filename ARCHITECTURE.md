@@ -29,19 +29,24 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 
 **Non-goals (phase 1)**
 
-- No FPP *compiler*: there is no `.fpp` parser and no build-time code
-  generator. Components declare the contract the C++ autocoder generates in
-  Rust source, with the declarative-macro codegen layer described under
-  "Codegen layer" below (`fpp_enum!`, `fpp_struct!`, `fpp_array!`,
-  `component_msg_types!`, `input_port_adapter!`,
-  `async_input_port_adapter!`) collapsing the mechanical parts. Anything a
-  macro cannot express faithfully stays hand-written — the macros never
-  half-work.
+- Phase 1 had no FPP *compiler*; components declared the contract the C++
+  autocoder generates in Rust source, with the declarative-macro codegen
+  layer described under "Codegen layer" below (`fpp_enum!`, `fpp_struct!`,
+  `fpp_array!`, `component_msg_types!`, `input_port_adapter!`,
+  `async_input_port_adapter!`) collapsing the mechanical parts. Phase 2
+  added `fpp-to-rust` (`crates/fprime-fpp`), which emits that same macro
+  layer for data types and generates port traits, component bases and
+  topology wiring from `.fpp` models; hand-written components and generated
+  ones coexist because both target `fprime-comp`. Anything a macro cannot
+  express faithfully stays hand-written — the macros never half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
-- Not ported yet (see the status matrix in README.md): CmdSequencer,
-  FileUplink/FileDownlink/FileManager, data products (Dp*), TlmPacketizer,
-  CCSDS stack, GenericHub, ComLogger, state-machine autocoding, UART/I2C/SPI/GPIO
-  drivers.
+- Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
+  FpySequencer, GenericHub, state-machine autocoding (`Fw/Sm`),
+  ActiveTextLogger file logging, the SDLS/AOS CCSDS siblings and zlib
+  data-product compression. Everything listed as a phase-1 gap in earlier
+  revisions of this document (CmdSequencer, file services, data products,
+  TlmPacketizer, the CCSDS stack, ComLogger, the Linux drivers) has since
+  been ported.
 
 ## Workspace layout
 
@@ -578,7 +583,8 @@ config constants, and quirks listed there:
 - `PosixTime`-equivalent time source (`SystemTimeSource`, TB_WORKSTATION_TIME)
 - Timer cycle source (`IntervalTimerDriver`: blocking loop → CycleOut)
 - Comms: `ComQueue` (active), `ComStub`, `FprimeFramer`, `FprimeDeframer`,
-  `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `BufferManager`
+  `FrameAccumulator` + `FprimeFrameDetector` / `CcsdsTcFrameDetector`,
+  `FprimeRouter`, `BufferManager`
 - `fprime-drv`: `ByteStreamStatus { OpOk=0, SendRetry=1, RecvNoData=2,
   OtherError=3 }` + ports, `TcpClient`, `TcpServer` (std::net; read thread +
   reconnect thread; status mapping per the analysis)

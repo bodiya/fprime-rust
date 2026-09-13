@@ -1020,16 +1020,29 @@ impl RefTopology {
         // can take from a command.
 
         // -- Data products (DataProducts.fpp `DataProducts` block). --------
+        // Two producers, on consecutive dpMgr port indices (FPP auto-numbers
+        // `X.productGetOut -> DataProducts.Subtopology.productGetIn`):
+        // 0 signalGen, 1 fileManager (`GenerateDp` chunk containers).
         signal_gen
             .product_get_out
             .connect_to(dp_manager.product_get_in(0));
         signal_gen
             .product_send_out
             .connect_to(dp_manager.product_send_in(0));
-        dp_manager.buffer_get_out[0].connect_to(dp_buffer_manager.buffer_get_callee_in(0));
-        // C++ routes this through Svc.BufferAccumulator (not ported); the
-        // ownership cycle is otherwise identical.
-        dp_manager.product_send_out[0].connect_to(dp_writer.buffer_send_in(0));
+        file_manager
+            .product_get_out
+            .connect_to(dp_manager.product_get_in(1));
+        file_manager
+            .product_send_out
+            .connect_to(dp_manager.product_send_in(1));
+        // dpMgr answers on the same index it was asked on, so every producer
+        // index needs its own allocator/writer connection.
+        for i in 0..2 {
+            dp_manager.buffer_get_out[i].connect_to(dp_buffer_manager.buffer_get_callee_in(0));
+            // C++ routes this through Svc.BufferAccumulator (not ported);
+            // the ownership cycle is otherwise identical.
+            dp_manager.product_send_out[i].connect_to(dp_writer.buffer_send_in(0));
+        }
         dp_writer
             .dealloc_buffer_send_out
             .connect_to(dp_buffer_manager.buffer_send_in(0));

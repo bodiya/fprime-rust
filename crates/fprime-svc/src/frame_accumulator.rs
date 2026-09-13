@@ -1,9 +1,12 @@
 //! # FrameAccumulator — port of `Svc::FrameAccumulator` (passive, guarded)
-//! plus the `FrameDetector` trait and `Svc::FrameDetectors::FprimeFrameDetector`.
+//! plus the `FrameDetector` trait and the two stock detectors,
+//! `Svc::FrameDetectors::FprimeFrameDetector` and
+//! `Svc::FrameDetectors::CcsdsTcFrameDetector`.
 //!
 //! C++ sources: `Svc/FrameAccumulator/FrameAccumulator.{cpp,hpp,fpp}`,
 //! `Svc/FrameAccumulator/FrameDetector.hpp`,
-//! `Svc/FrameAccumulator/FrameDetector/FprimeFrameDetector.cpp`.
+//! `Svc/FrameAccumulator/FrameDetector/FprimeFrameDetector.cpp`,
+//! `Svc/FrameAccumulator/FrameDetector/CcsdsTcFrameDetector.cpp`.
 //! Analysis: `docs/cpp-analysis/svc-comms.md` (FrameAccumulator + gotchas).
 //!
 //! Accumulates raw byte-stream chunks into a [`CircularBuffer`] and uses a
@@ -13,13 +16,15 @@
 //! exact C++: rotate one byte on `NoFrameDetected`, drop a whole detected
 //! frame only when allocation fails while the ring is full.
 
+use crate::ccsds::crc16::Crc16;
+use crate::ccsds::types::{SPACECRAFT_ID, TCHeader, TCTrailer, tc_subfields};
 use crate::fprime_framer::{HEADER_SIZE, MIN_FRAME_SIZE, START_WORD};
 use fprime_comp::{
     BufferGetPort, BufferSendPort, ComDataWithContextPort, EventGlue, OutputPort, PassiveBase,
     PortRef,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwSizeType};
-use fprime_fw::{Buffer, FrameContext, LogSeverity, SerBuf, fw_assert};
+use fprime_fw::{Buffer, Endianness, ExtBuf, FrameContext, LogSeverity, SerBuf, fw_assert};
 use fprime_utils::{CircularBuffer, Hash};
 use std::sync::{Arc, Mutex};
 
@@ -119,6 +124,125 @@ impl FrameDetector for FprimeFrameDetector {
             return DetectorStatus::NoFrameDetected;
         }
         DetectorStatus::FrameDetected(expected)
+    }
+}
+
+/// `Svc::FrameDetectors::CcsdsTcFrameDetector` — detects CCSDS TC transfer
+/// frames (`[TCHeader 5 B][data][FECF 2 B]`) addressed to this spacecraft.
+///
+/// A frame is detected when the header's `flagsAndScId` word equals the
+/// expected token (bypass flag set, control-command flag clear, the
+/// configured spacecraft ID — C++ `m_expectedFlagsAndScIdToken`), the whole
+/// frame (`frameLength + 1` octets) has arrived, and the CRC-16 FECF in the
+/// trailer verifies over everything before it. Anything else at the current
+/// ring offset is `NoFrameDetected`, so the accumulator resyncs one byte at
+/// a time — the TC protocol has no start word to search for.
+///
+/// Unlike [`FprimeFrameDetector`] there is no ring-capacity check here (C++
+/// parity): a header claiming more than the ring can hold reports
+/// `MoreDataNeeded`, and [`FrameAccumulator`] answers with
+/// `FrameDetectionSizeError` and a one-byte slide.
+#[derive(Debug, Clone, Copy)]
+pub struct CcsdsTcFrameDetector {
+    /// C++ `m_expectedFlagsAndScIdToken`.
+    expected_flags_and_sc_id: u16,
+}
+
+impl CcsdsTcFrameDetector {
+    /// Smallest possible TC frame: primary header + trailer.
+    pub const MIN_FRAME_SIZE: usize = TCHeader::SERIALIZED_SIZE + TCTrailer::SERIALIZED_SIZE;
+
+    /// A detector for frames addressed to `ComCfg::SpacecraftId`
+    /// ([`SPACECRAFT_ID`]).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::for_spacecraft(SPACECRAFT_ID)
+    }
+
+    /// A detector for frames addressed to `spacecraft_id` (bypass set,
+    /// control-command clear, exactly the C++ token expression
+    /// `(0x1 << BypassFlagOffset) | SpacecraftId`).
+    #[must_use]
+    pub const fn for_spacecraft(spacecraft_id: u16) -> Self {
+        Self {
+            expected_flags_and_sc_id: (0x1 << tc_subfields::BYPASS_FLAG_OFFSET) | spacecraft_id,
+        }
+    }
+
+    /// The `flagsAndScId` word a frame must carry to be detected.
+    #[must_use]
+    pub const fn expected_token(&self) -> u16 {
+        self.expected_flags_and_sc_id
+    }
+}
+
+impl Default for CcsdsTcFrameDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameDetector for CcsdsTcFrameDetector {
+    fn detect(&self, ring: &CircularBuffer) -> DetectorStatus {
+        let available = ring.get_allocated_size();
+        if available < Self::MIN_FRAME_SIZE {
+            return DetectorStatus::MoreDataNeeded(Self::MIN_FRAME_SIZE);
+        }
+
+        // ---------------- Frame header ----------------
+        let mut header_bytes = [0u8; TCHeader::SERIALIZED_SIZE];
+        if !ring.peek_bytes(&mut header_bytes, 0).is_ok() {
+            return DetectorStatus::NoFrameDetected;
+        }
+        let mut header = TCHeader::default();
+        {
+            let mut buf = ExtBuf::with_len(&mut header_bytes, TCHeader::SERIALIZED_SIZE);
+            let status = buf.deserialize(&mut header, Endianness::Big);
+            fw_assert!(status.is_ok(), status as i32);
+        }
+        if header.flags_and_sc_id != self.expected_flags_and_sc_id {
+            // Wrong flags or spacecraft ID: no frame starts here.
+            return DetectorStatus::NoFrameDetected;
+        }
+        // The TC frame length field is the octet count minus one.
+        let expected_frame_length = usize::from(header.total_frame_length());
+        if available < expected_frame_length {
+            return DetectorStatus::MoreDataNeeded(expected_frame_length);
+        }
+        // A length smaller than header + trailer cannot be a frame (and
+        // would underflow the CRC span below).
+        if expected_frame_length < Self::MIN_FRAME_SIZE {
+            return DetectorStatus::NoFrameDetected;
+        }
+        let data_to_crc_length = expected_frame_length - TCTrailer::SERIALIZED_SIZE;
+
+        // ---------------- Frame trailer ----------------
+        // CRC-16 over header + data (byte-by-byte peek, C++ parity).
+        let mut crc = Crc16::new();
+        for i in 0..data_to_crc_length {
+            let mut byte = 0u8;
+            let status = ring.peek_u8(&mut byte, i);
+            fw_assert!(status.is_ok(), status as i32);
+            crc.update(byte);
+        }
+        let computed_fecf = crc.finalize();
+        let mut trailer_bytes = [0u8; TCTrailer::SERIALIZED_SIZE];
+        if !ring
+            .peek_bytes(&mut trailer_bytes, data_to_crc_length)
+            .is_ok()
+        {
+            return DetectorStatus::NoFrameDetected;
+        }
+        let mut trailer = TCTrailer::default();
+        {
+            let mut buf = ExtBuf::with_len(&mut trailer_bytes, TCTrailer::SERIALIZED_SIZE);
+            let status = buf.deserialize(&mut trailer, Endianness::Big);
+            fw_assert!(status.is_ok(), status as i32);
+        }
+        if trailer.fecf != computed_fecf {
+            return DetectorStatus::NoFrameDetected;
+        }
+        DetectorStatus::FrameDetected(expected_frame_length)
     }
 }
 
@@ -746,5 +870,199 @@ mod tests {
             .invoke(din.port_num, Buffer::empty(), &FrameContext::default());
         assert!(rec.frames.lock().unwrap().is_empty());
         assert_eq!(rec.returned.lock().unwrap().len(), 1);
+    }
+
+    // -- CcsdsTcFrameDetector unit tests ------------------------------------
+
+    /// Build a well-formed TC frame around `payload` (bypass set, control
+    /// clear, valid FECF) — the same shape `tc_deframer`'s tests use.
+    fn tc_frame(spacecraft_id: u16, payload: &[u8]) -> Vec<u8> {
+        let total = (CcsdsTcFrameDetector::MIN_FRAME_SIZE + payload.len()) as u16;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(
+            &TCHeader::build_flags_and_sc_id(true, false, spacecraft_id).to_be_bytes(),
+        );
+        frame.extend_from_slice(&TCHeader::build_vc_id_and_length(0, total).to_be_bytes());
+        frame.push(0); // frame sequence number, never checked
+        frame.extend_from_slice(payload);
+        let crc = Crc16::compute(&frame);
+        frame.extend_from_slice(&crc.to_be_bytes());
+        frame
+    }
+
+    #[test]
+    fn ccsds_tc_detector_token_matches_the_cpp_constant() {
+        // (0x1 << BypassFlagOffset) | ComCfg::SpacecraftId = 0x2000 | 0x0044.
+        assert_eq!(CcsdsTcFrameDetector::new().expected_token(), 0x2044);
+        assert_eq!(
+            CcsdsTcFrameDetector::new().expected_token(),
+            TCHeader::build_flags_and_sc_id(true, false, SPACECRAFT_ID)
+        );
+        assert_eq!(CcsdsTcFrameDetector::MIN_FRAME_SIZE, 7);
+    }
+
+    #[test]
+    fn ccsds_tc_detector_needs_header_plus_trailer_first() {
+        let det = CcsdsTcFrameDetector::new();
+        let frame = tc_frame(SPACECRAFT_ID, b"abc");
+        let ring = ring_with(&frame[..6], 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::MoreDataNeeded(7));
+    }
+
+    #[test]
+    fn ccsds_tc_detector_rejects_a_foreign_spacecraft_id() {
+        let det = CcsdsTcFrameDetector::new();
+        let frame = tc_frame(SPACECRAFT_ID + 1, b"abc");
+        let ring = ring_with(&frame, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::NoFrameDetected);
+        // ...but a detector built for that spacecraft accepts it.
+        let other = CcsdsTcFrameDetector::for_spacecraft(SPACECRAFT_ID + 1);
+        assert_eq!(
+            other.detect(&ring),
+            DetectorStatus::FrameDetected(frame.len())
+        );
+    }
+
+    #[test]
+    fn ccsds_tc_detector_rejects_a_control_command_frame() {
+        let det = CcsdsTcFrameDetector::new();
+        let mut frame = tc_frame(SPACECRAFT_ID, b"abc");
+        // Set the control-command flag: the token no longer matches even
+        // though the spacecraft ID does.
+        let flags = TCHeader::build_flags_and_sc_id(true, true, SPACECRAFT_ID);
+        frame[..2].copy_from_slice(&flags.to_be_bytes());
+        let ring = ring_with(&frame, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::NoFrameDetected);
+    }
+
+    #[test]
+    fn ccsds_tc_detector_waits_for_the_whole_frame() {
+        let det = CcsdsTcFrameDetector::new();
+        let frame = tc_frame(SPACECRAFT_ID, b"0123456789");
+        let ring = ring_with(&frame[..frame.len() - 1], 64);
+        assert_eq!(
+            det.detect(&ring),
+            DetectorStatus::MoreDataNeeded(frame.len())
+        );
+    }
+
+    #[test]
+    fn ccsds_tc_detector_rejects_a_bad_fecf() {
+        let det = CcsdsTcFrameDetector::new();
+        let mut frame = tc_frame(SPACECRAFT_ID, b"abc");
+        let last = frame.len() - 1;
+        frame[last] ^= 0x01;
+        let ring = ring_with(&frame, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::NoFrameDetected);
+        // Corrupting the data field is caught by the same check.
+        let mut frame = tc_frame(SPACECRAFT_ID, b"abc");
+        frame[5] ^= 0x80;
+        let ring = ring_with(&frame, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::NoFrameDetected);
+    }
+
+    #[test]
+    fn ccsds_tc_detector_detects_a_valid_frame_with_trailing_bytes() {
+        let det = CcsdsTcFrameDetector::new();
+        let frame = tc_frame(SPACECRAFT_ID, b"abc");
+        let mut bytes = frame.clone();
+        bytes.extend_from_slice(&[0xEE, 0xFF]);
+        let ring = ring_with(&bytes, 64);
+        assert_eq!(
+            det.detect(&ring),
+            DetectorStatus::FrameDetected(frame.len())
+        );
+        // A minimum-size frame (empty data field) is a frame too.
+        let empty = tc_frame(SPACECRAFT_ID, b"");
+        let ring = ring_with(&empty, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::FrameDetected(7));
+    }
+
+    #[test]
+    fn ccsds_tc_detector_rejects_a_length_smaller_than_header_plus_trailer() {
+        let det = CcsdsTcFrameDetector::new();
+        // A header whose length field claims a 3-octet frame, followed by
+        // enough bytes that the "frame" is fully available.
+        let mut bytes = TCHeader::build_flags_and_sc_id(true, false, SPACECRAFT_ID)
+            .to_be_bytes()
+            .to_vec();
+        bytes.extend_from_slice(&TCHeader::build_vc_id_and_length(0, 3).to_be_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        let ring = ring_with(&bytes, 64);
+        assert_eq!(det.detect(&ring), DetectorStatus::NoFrameDetected);
+    }
+
+    fn build_tc(ring_size: usize) -> (Arc<FrameAccumulator>, Arc<Recorder>) {
+        let rec = Arc::new(Recorder::default());
+        let acc = FrameAccumulator::new("accumulator");
+        acc.configure(Box::new(CcsdsTcFrameDetector::new()), ring_size);
+        acc.buffer_allocate.connect(rec.clone(), 0);
+        acc.buffer_deallocate.connect(rec.clone(), 0);
+        acc.data_out.connect(rec.clone(), 0);
+        acc.data_return_out.connect(rec.clone(), 1);
+        acc.evt.log_out.connect(rec.clone(), 0);
+        (acc, rec)
+    }
+
+    /// Through the accumulator: garbage, a frame, a foreign-spacecraft frame
+    /// and a split frame — only the two valid frames come out, in order, and
+    /// the resync slides byte by byte (no start word to search for).
+    #[test]
+    fn ccsds_tc_detector_resyncs_through_the_accumulator() {
+        let (acc, rec) = build_tc(128);
+        let f1 = tc_frame(SPACECRAFT_ID, b"first");
+        let foreign = tc_frame(SPACECRAFT_ID + 1, b"nope");
+        let f2 = tc_frame(SPACECRAFT_ID, b"second");
+        let mut chunk1 = vec![0x01, 0x02, 0x03]; // garbage
+        chunk1.extend_from_slice(&f1);
+        chunk1.extend_from_slice(&foreign);
+        chunk1.extend_from_slice(&f2[..4]); // partial second frame
+        feed(&acc, &chunk1);
+        assert_eq!(*rec.frames.lock().unwrap(), vec![f1.clone()]);
+        feed(&acc, &f2[4..]);
+        assert_eq!(*rec.frames.lock().unwrap(), vec![f1, f2]);
+        assert!(rec.events.lock().unwrap().is_empty());
+        assert_eq!(rec.returned.lock().unwrap().len(), 2);
+    }
+
+    /// Garbage that happens to start with the expected token stalls the
+    /// accumulator until the length it announces has arrived, then fails
+    /// the CRC and resyncs to the real frames behind it (C++ parity: the TC
+    /// detector cannot tell a lookalike from a frame before the trailer).
+    #[test]
+    fn ccsds_tc_detector_lookalike_token_waits_then_resyncs() {
+        let (acc, rec) = build_tc(128);
+        let f1 = tc_frame(SPACECRAFT_ID, b"first");
+        let f2 = tc_frame(SPACECRAFT_ID, b"second");
+        // Token, then a length word announcing 33 octets, then two real
+        // frames (4 + 12 + 13 = 29 bytes: short of the announced 33).
+        let mut bytes = vec![0x20, 0x44, 0x00, 0x20];
+        bytes.extend_from_slice(&f1);
+        bytes.extend_from_slice(&f2);
+        assert_eq!(bytes.len(), 29);
+        feed(&acc, &bytes);
+        assert!(rec.frames.lock().unwrap().is_empty());
+        // Four more bytes complete the announced length: the lookalike
+        // fails its CRC, the ring slides, and both frames come out.
+        feed(&acc, &[0, 0, 0, 0]);
+        assert_eq!(*rec.frames.lock().unwrap(), vec![f1, f2]);
+        assert!(rec.events.lock().unwrap().is_empty());
+    }
+
+    /// A lookalike announcing a frame larger than the ring is a size error
+    /// (the accumulator's business) and a one-byte slide.
+    #[test]
+    fn ccsds_tc_detector_oversized_announcement_is_a_size_error() {
+        let (acc, rec) = build_tc(16);
+        // Length field 0x3FF -> 1024 octets in a 16-byte ring.
+        let mut bytes = vec![0x20, 0x44, 0x03, 0xFF, 0x00, 0x00, 0x00];
+        let f1 = tc_frame(SPACECRAFT_ID, b"");
+        bytes.extend_from_slice(&f1);
+        feed(&acc, &bytes);
+        assert_eq!(
+            *rec.events.lock().unwrap(),
+            vec![EVENTID_FRAME_DETECTION_SIZE_ERROR]
+        );
+        assert_eq!(*rec.frames.lock().unwrap(), vec![f1]);
     }
 }
