@@ -34,8 +34,8 @@ subsystems, then the strategic changes.
   wiring. `crates/fprime-fpp-demo` builds a model from FPP at build time
   and tests the generated code end to end; the whole upstream framework
   model and the Ref deployment analyze. Not generated: state machines
-  (`Fw/Sm`, item 11 below), serial ports, telemetry packet sets, the
-  dictionary. See `crates/fprime-fpp/README.md`.
+  (`Fw/Sm`, item 11 below) and serial ports (item 15). See
+  `crates/fprime-fpp/README.md`.
 
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
@@ -110,3 +110,26 @@ subsystems, then the strategic changes.
     still lacks state-machine instances (needs item 11) and serial ports.
     Telemetry packet sets are analyzed and written to the dictionary but
     the Rust topology does not yet instantiate a packetizer from them.
+
+## Cross-compatibility with the stock ground system
+
+16. **Broaden `tools/gds-crosscheck.py`.** Today it proves commands
+    (no-arg, string, enum, float), events and telemetry channels against
+    fprime-gds 4.3.1. Not yet exercised through the real GDS: parameter
+    `_PRM_SET`/`_PRM_SAVE` round trips (`prmDb`), file uplink and
+    downlink (`fprime-cli file-uplink`, `fileDownlink.SendFile`),
+    data-product downlink and `fprime-dp` decoding of the Rust
+    `DpContainer` bytes, command sequences (`fprime-seqgen` output run
+    by `cmdSeq`), and the CCSDS framing stack (`--framing-selection
+    space-packet-space-data-link` against a `ComCcsds`-style topology).
+    Each is a few more commands and expectations in the script; the
+    script needs a Python environment with fprime-gds installed, so it
+    stays a tool rather than a `cargo test`.
+17. **Pin the upstream model version.** The Ref dictionary is generated
+    from whatever F Prime checkout `generate-dictionary.sh` is given
+    (currently commit 4dee010, 2026-09-11) and records it in
+    `metadata.frameworkVersion`. When the Rust components are next
+    synced with upstream, regenerate the dictionary and rerun the
+    cross-check; the static id comparison in `docs/api-notes.md`
+    (Rust `OPCODE_*`/`EVENTID_*`/`CHANID_*` vs. the dictionary) is the
+    quick way to spot drift.
