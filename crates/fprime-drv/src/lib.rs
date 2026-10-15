@@ -2,7 +2,8 @@
 //!
 //! Port of `Drv/ByteStreamDriverModel`, `Drv/Interfaces`, `Drv/Ip`
 //! (`SocketComponentHelper` + TCP sockets), `Drv/TcpClient` and
-//! `Drv/TcpServer`, `Drv/AsyncByteStreamBufferAdapter` and the hardware
+//! `Drv/TcpServer`, `Drv/ByteStreamBufferAdapter`,
+//! `Drv/AsyncByteStreamBufferAdapter` and the hardware
 //! drivers (`LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`,
 //! `LinuxSpiDriver`). Analysis: `docs/cpp-analysis/svc-comms.md`,
 //! `docs/cpp-analysis/linux-drivers.md`.
@@ -15,6 +16,7 @@
 
 pub mod async_byte_stream_buffer_adapter;
 pub mod byte_stream;
+pub mod byte_stream_buffer_adapter;
 pub mod gpio;
 pub mod i2c;
 pub mod socket_helper;
@@ -27,6 +29,7 @@ pub use async_byte_stream_buffer_adapter::AsyncByteStreamBufferAdapter;
 pub use byte_stream::{
     BufferSendPort, ByteStreamDataPort, ByteStreamReadyPort, ByteStreamSendPort, ByteStreamStatus,
 };
+pub use byte_stream_buffer_adapter::ByteStreamBufferAdapter;
 pub use socket_helper::{
     SOCKET_MAX_ITERATIONS, SocketHelper, SocketIpStatus, SocketWorker, Timing,
     byte_stream_recv_status, byte_stream_send_status,
