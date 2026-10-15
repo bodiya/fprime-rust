@@ -27,7 +27,9 @@
 //! `fprime_os::platform::Platform` clock and delay.
 //!
 //! `std`-only (they need a file system or the host OS): `file_uplink`,
-//! `file_downlink`, `file_manager`, `prm_db`, `dp_writer`, `dp_catalog`,
+//! `file_downlink`, `file_manager`, `file_worker`, `file_dispatcher` (no
+//! file I/O, but its port types come from `file_uplink` and
+//! `cmd_sequencer`), `buffer_logger`, `prm_db`, `dp_writer`, `dp_catalog`,
 //! `com_logger`, `cmd_sequencer`, `fpy_sequencer` (sequence files),
 //! `system_resources` (procfs and file-system usage),
 //! `ccsds::sdls_file_key_manager` and `ccsds::cfdp_manager`. See ARCHITECTURE.md "no_std".
@@ -54,6 +56,8 @@ pub mod active_rate_group;
 pub mod active_text_logger;
 pub mod assert_fatal_adapter;
 pub mod buffer_accumulator;
+#[cfg(feature = "std")]
+pub mod buffer_logger;
 pub mod buffer_manager;
 pub mod buffer_repeater;
 pub mod ccsds;
@@ -79,11 +83,15 @@ pub mod dp_zlib_compressor;
 pub mod event_manager;
 pub mod fatal_handler;
 #[cfg(feature = "std")]
+pub mod file_dispatcher;
+#[cfg(feature = "std")]
 pub mod file_downlink;
 #[cfg(feature = "std")]
 pub mod file_manager;
 #[cfg(feature = "std")]
 pub mod file_uplink;
+#[cfg(feature = "std")]
+pub mod file_worker;
 pub mod fprime_deframer;
 pub mod fprime_framer;
 pub mod fprime_router;

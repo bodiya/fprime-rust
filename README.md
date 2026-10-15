@@ -163,14 +163,14 @@ adds `spin` (lock types only); the optional features work there too.
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
-| File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
+| File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), `FileWorker` (off-thread chunked reads, writes and CRC verification with `.CRC32` sidecars and cancellation), `FileDispatcher` (routes announced files to ports by extension), `BufferLogger` (buffer and com-packet log files with `.CRC32` sidecars), CFDP checksum |
 | CFDP | `Svc::Ccsds::CfdpManager` (CCSDS File Delivery Protocol, class 1 and class 2, send and receive): PDU codecs, the CF-derived engine and state machines with NAK-driven retransmission, directory playback and polling, `fileIn`/`fileDoneOut` |
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `ComRetry` (resend on delivery failure), `BufferManager`, `ComLogger` |
 | Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format), `CmdSplitter` (local/remote command routing by opcode) |
 | Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer` (First Header Pointer from the context), `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`), `ComAggregator` (with optional TM packet spanning); wired as the Ref's `ComCcsds` stack by `fprime-ref --framing ccsds`. AOS: `AosFramer`/`AosDeframer` (M_PDU, SPP/EPP, spanning packets). SDLS: `CcsdsSdlsFramer`/`CcsdsSdlsDeframer`, `SdlsSaRouter`, `SdlsFileKeyManager`, `ClearTextEncryptor`/`ClearTextDecryptor`, and `AesGcmEncryptor`/`AesGcmDecryptor` (RustCrypto `aes-gcm`; only with the off-by-default `aes-gcm` feature of `fprime-svc`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `ByteStreamBufferAdapter` and `AsyncByteStreamBufferAdapter` (sync / async byte-stream driver to passive buffer driver); `LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
-| Support | CRC-32 (`Utils::Hash`, with its file-extension helpers), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
+| Support | CRC-32 (`Utils::Hash`, with its file-extension helpers), CRC sidecar checker, `Os::ValidateFile` and `Os::ValidatedFile` (big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
 ### Hardware drivers: what works without `unsafe`
 
@@ -195,9 +195,8 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-Ten upstream `Svc` components are not ported yet (listed under "Not yet
+Seven upstream `Svc` components are not ported yet (listed under "Not yet
 ported" in [`docs/ROADMAP.md`](docs/ROADMAP.md)): `ActivePhaser`,
-`BufferLogger`, `FileDispatcher`, `FileWorker`,
 `PassThroughRouter`, `PolyDb`, `SeqDispatcher`, `StaticMemory`, `Version`
 and `WasmSequencer`. `CfdpManager` is ported, but upstream's Ref uses `FileHandling` rather than
 `FileHandlingCfdp`, so neither Ref instantiates it (a two-instance

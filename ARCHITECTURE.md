@@ -191,7 +191,9 @@ The pieces:
   Linux target, which has `std`) and the console part of `os::init()`;
   in `fprime-utils`, `crc_checker` and `validate_file`; in `fprime-svc`,
   everything that needs a file system — `FileUplink`, `FileDownlink`,
-  `FileManager`, `PrmDb`, `DpWriter`, `DpCatalog`, `ComLogger`,
+  `FileManager`, `FileWorker`, `BufferLogger`, `PrmDb`, `DpWriter`,
+  `DpCatalog`, `ComLogger`, `FileDispatcher` (no file I/O, but its port
+  types come from `FileUplink` and `CmdSequencer`),
   `CmdSequencer`, `FpySequencer` (both run sequence files; gating the file
   reads out would leave nothing to run), `SystemResources` (procfs and
   file-system usage), `SdlsFileKeyManager`, `ActiveTextLogger`'s log file

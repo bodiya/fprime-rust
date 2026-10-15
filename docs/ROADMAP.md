@@ -362,6 +362,29 @@ subsystems, then the strategic changes.
   the `Svc.Framer`-shaped resend state machine and `BufferRepeater` the
   allocate-copy-fan-out of one buffer. See `docs/api-notes.md`.
 
+- **File services: `BufferLogger`, `FileWorker`, `FileDispatcher`**
+  (from the "Not yet ported" sweep), with `Os::ValidatedFile`
+  (`fprime_utils::validate_file::ValidatedFile`, next to
+  `Os::ValidateFile`). `BufferLogger` logs `Fw::Buffer`s (forwarded on)
+  and com packets with a configurable-width big-endian size field, rolls
+  over to counter-numbered files, and writes each file's `.CRC32` from an
+  incrementally kept hash. `FileWorker` reads, writes (with append and
+  offset) and verifies files off the caller's thread in configurable
+  chunks with cancellation, per-chunk timeouts, `.CRC32` sidecars and the
+  upstream input validation (overlong paths are `INVALID_INPUT`, never
+  `FAILED_FILE_NAME_TOO_LONG`), including the FPP `throttle 2 every
+  {seconds=10}` events. `FileDispatcher` routes announced files to its
+  `fileDispatch` ports by extension from a configured table with
+  `ENABLE_DISPATCH`. All three at the upstream ids, plain `Os::File` access
+  as upstream (no sandbox), `std`-only; the upstream unit tests are ported
+  with per-test directories (`FileWorker`'s mocked-`Os::File` error suite
+  with real faults), plus a threaded test of uplink announce → dispatcher →
+  worker client. One deviation: the owned `Fw::Buffer` of `FileWorker`'s
+  `readIn`/`writeIn` comes back to the client as an extra argument of the
+  `SignalDone` done ports. Neither upstream's Ref nor any subtopology
+  instantiates them, so the Rust Ref does not either; see
+  `docs/api-notes.md`.
+
 ## Not yet ported
 
 A sweep of the pinned upstream `Svc/` tree (every directory with a
@@ -370,8 +393,6 @@ never on this roadmap and are not ported. Sizes are upstream's non-test C++.
 
 - **Small, self-contained** (under ~250 lines each): `PassThroughRouter`,
   `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`.
-- **File services:** `BufferLogger` (with `Os::ValidatedFile`),
-  `FileWorker` and `FileDispatcher`.
 - **`WasmSequencer`** (~2,800 lines). Upstream is itself a C++ shim over
   Rust crates (`fprime_spacewasm`, MSRV 1.87), so a port means taking those
   crates as a dependency and raising this workspace's MSRV from 1.85 (both

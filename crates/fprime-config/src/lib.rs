@@ -296,6 +296,22 @@ pub mod file_manager {
     pub const DEFAULT_DP_PRIORITY: FwDpPriorityType = 10;
 }
 
+/// `Svc::FileDispatcher` configuration (`FileDispatcherCfg.fpp`).
+///
+/// Upstream's `FileDispatcherCfg.FileDispatchPort` enum is a type, so it is
+/// declared next to the component
+/// (`fprime_svc::file_dispatcher::file_dispatcher_cfg::FileDispatchPort`);
+/// a project that adds dispatch ports extends that enum and raises
+/// [`MAX_FILE_DISPATCH_PORTS`](file_dispatcher::MAX_FILE_DISPATCH_PORTS)
+/// with it (the component checks the two agree at compile time).
+pub mod file_dispatcher {
+    /// `FileDispatchPort.MAX_FILE_DISPATCH_PORTS` — the number of
+    /// `fileDispatch` output ports (the enum's sentinel value).
+    pub const MAX_FILE_DISPATCH_PORTS: usize = 3;
+    /// `FILE_DISPATCHER_MAX_TABLE_SIZE` — entries in a dispatch table.
+    pub const FILE_DISPATCHER_MAX_TABLE_SIZE: usize = 10;
+}
+
 /// `Svc::GenericHub` port-array sizes (`GenericHubCfg.fpp`). Both hubs of a
 /// pair must agree: hub A's inputs are hub B's outputs and vice versa.
 pub mod generic_hub {
@@ -564,6 +580,8 @@ mod tests {
         assert_eq!(file_manager::CHUNKS_PER_RATE_TICK, 1);
         assert_eq!(file_manager::DEFAULT_DP_PRIORITY, 10);
         assert_eq!(crc_checker::FILE_READ_BLOCK, 2048);
+        assert_eq!(file_dispatcher::MAX_FILE_DISPATCH_PORTS, 3);
+        assert_eq!(file_dispatcher::FILE_DISPATCHER_MAX_TABLE_SIZE, 10);
         assert_eq!(sdls::MAX_SDLS_KEY_SIZE, 32);
         assert_eq!(sdls::SA_ROUTER_PORT_COUNT, 2);
         assert_eq!(sdls::SA_ROUTER_MAP_ENTRY_COUNT, 2);

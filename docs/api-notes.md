@@ -3503,3 +3503,153 @@ its binary for the same hook reason) asserts in a running Ref and sees
 so not in the Rust Ref; `CmdSplitter` feeds hub A's `cmdDispIn` in
 `tests/generic_hub_pair.rs` (a local command stays on A, B's `NO_OP` goes
 through the hubs and its response comes back through the splitter).
+
+### fprime-svc / fprime-utils: `BufferLogger`, `FileWorker`, `FileDispatcher`, `Os::ValidatedFile` (file services from "Not yet ported")
+
+Upstream: `Svc/BufferLogger`, `Svc/FileWorker` (+ `FileWorkerTypes.hpp`,
+`Svc/Ports/FilePorts/FileWorkerPorts.fpp`), `Svc/FileDispatcher`
+(+ `default/config/FileDispatcherCfg.fpp`), `Os/ValidatedFile.{hpp,cpp}`.
+All three components are `std`-only (`#[cfg(feature = "std")]` modules of
+`fprime-svc`), use plain `Os::File`/`Os::FileSystem` as upstream (no
+sandbox: upstream does not sandbox them), and are instantiated by neither
+upstream's Ref nor any `Svc/Subtopologies` model, so the Rust Ref, its FPP
+model and dictionary are unchanged.
+
+Surface:
+
+```text
+fprime_utils::validate_file::ValidatedFile           (re-exported at the crate root, std)
+  new(file_name: &str) -> Self                         // fw_asserts "<name>.CRC32" fits 256 bytes
+  validate(&mut self) -> Status                        // keeps the stored hash on ValidationOk
+  create_hash_file(&mut self) -> Status
+  create_hash_file_from(&mut self, &HashBuffer) -> Status
+  get_file_name / get_hash_file_name -> &FwDefaultString; get_hash_buffer -> &HashBuffer
+
+fprime_config::file_dispatcher::{MAX_FILE_DISPATCH_PORTS = 3, FILE_DISPATCHER_MAX_TABLE_SIZE = 10}
+
+fprime_svc::file_dispatcher
+  file_dispatcher_cfg::FileDispatchPort (fpp_enum u8: SequenceFilePort, BundleFilePort,
+      UserFilePort, MaxFileDispatchPorts)              // C++ Svc::FileDispatcherCfg::FileDispatchPort
+  FileDispatcherEntry { file_ext: FwDefaultString, port, enabled }
+  FileDispatcherTable { entries: [_; 10], num_entries }  ::new()
+  FileDispatcher::new(name) / init(depth) / configure(&table) / table() / reg_commands()
+    ports: file_announce_recv (async, file_uplink::FileAnnouncePort), ping_in (async, drop),
+           cmd_in (async); file_dispatch: [OutputPort<dyn cmd_sequencer::FileDispatchPort>; 3],
+           ping_out, cmd, evt
+    OPCODE_ENABLE_DISPATCH = 0; EVENTID_FILE_DISPATCH_STATE = 0, _DISPATCHED = 1,
+    _PORT_NOT_CONNECTED = 2 (throttle 5)
+
+fprime_svc::buffer_logger
+  LogState (fpp_enum u8: LoggingOn = 0, LoggingOff = 1)      // C++ BufferLogger_LogState
+  BufferLogger::new(name) / init(depth) / init_log(prefix, suffix, max_file_size, size_of_size: u8)
+    / reg_commands() / file_name() / is_file_open() / log_state()
+    ports: buffer_send_in (async, escrowed), com_in, ping_in (drop), sched_in, cmd_in (async);
+           buffer_send_out, ping_out, cmd, evt, tlm
+    OPCODE_BL_OPENFILE..BL_FLUSHFILE = 0..3; EVENTID_BL_* = 0..7;
+    CHANID_BUFFERLOGGER_NUMLOGGEDBUFFERS = 0
+
+fprime_svc::file_worker
+  port traits: FileReadPort(path: &FileNameString, buffer: Buffer),
+               FileWritePort(path, buffer: Buffer, offset_bytes: FwSizeType, append: bool),
+               SignalDonePort(status: u32, size_bytes: FwSizeType, buffer: Buffer),
+               CancelStatusPort(), VerifyStatusPort(path, crc: u32)
+  FileWorkerState / FileWorkerStatus / FileWorkerReadStatus (#[repr(u32)], C++ values)
+  FileWorker::new(name) / init(depth) / configure(chunk_size: u64) / state() / reg_commands() (no-op)
+    ports: read_in, write_in (async, escrowed), verify_in (async), cancel_in (guarded),
+           cmd_in (sync); read_done_out, write_done_out, verify_done_out, cmd, evt, tlm, prm
+    BLOCK_SIZE_BYTES = 4096, TIMEOUT_MS = 1_000_000 (µs per chunk), MAX_LOOP_ITERATIONS = 32;
+    EVENTID_NOTINIDLE = 0 .. EVENTID_INVALIDINPUT = 0x12, EVENTID_THROTTLE = 2
+```
+
+Deviations:
+
+- `FileWorker` buffer ownership: upstream's async `readIn`/`writeIn` take
+  `ref buffer: Fw.Buffer` (the message carries the pointer, the worker
+  fills the client's memory) and answer on `Svc.SignalDone(status,
+  sizeBytes)`. The Rust `Buffer` owns its storage, so it moves in through
+  the component's `BufferEscrow` (the 8-byte token in the pointer's slot)
+  and moves back as a third argument of `SignalDonePort`; every
+  `readDoneOut`/`writeDoneOut` returns the request's buffer whatever the
+  status, `verifyDoneOut` passes `Buffer::empty()`. Ports, call order and
+  statuses are upstream's.
+- `FileWorker::readFileBytes` writes through the raw buffer pointer with
+  no bound (every caller passes the buffer's own size); the Rust version
+  `fw_assert!`s `size <= buffer.size()` instead of overrunning. Upstream's
+  `testCancel` asks for a 20 MiB read into a 100 KiB buffer; the port uses
+  the buffer size (still 1024 chunks).
+- `FileWorker`'s seven `throttle 2 every {seconds=10}` events are throttled
+  in the component (one time read stamps the event and drives the
+  throttle, as the generated code does): `fprime-comp`'s `EventThrottle`
+  has no time-based reset, and no other ported component uses `every`.
+- `BufferLogger`: a non-UTF-8 log file name (bytes from the `BL_OpenFile`
+  argument) cannot be passed to the `&str` OSAL and reports the open
+  failure of the empty path. `FileDispatcher` and `FileWorker` treat a
+  non-UTF-8 path the same way.
+- Command conventions as elsewhere in the workspace: an undeclared enum
+  argument (`BL_SetLogging`, `ENABLE_DISPATCH`) answers `VALIDATION_ERROR`
+  (the generated C++ answers `FORMAT_ERROR`), an unknown opcode answers
+  `INVALID_OPCODE` (the generated `cmdIn` ignores it). `FileWorker` has
+  no commands; its synchronous `cmdIn` asserts on an opcode below the id
+  base and ignores the rest, as generated.
+- `FileDispatcher` is `std`-only though it does no file I/O: its port
+  traits are declared by the `std`-only `file_uplink`
+  (`FileAnnouncePort`) and `cmd_sequencer` (`FileDispatchPort`) modules;
+  reusing them keeps it directly connectable to `FileUplink` and
+  `CmdSequencer`. `FileDispatcherCfg.FileDispatchPort` (a type) lives in
+  `file_dispatcher::file_dispatcher_cfg`; its sentinel is checked at
+  compile time against `fprime_config::file_dispatcher::MAX_FILE_DISPATCH_PORTS`.
+- `FileDispatcher` copies the table out of its lock before invoking the
+  `fileDispatch` ports, so a synchronous downstream handler may call back
+  in.
+
+Upstream behavior kept on purpose (covered by tests):
+
+- `BufferLogger`: `OPEN_WRITE` without truncation (re-opening a longer
+  log overwrites its head; the sidecar then covers only the new bytes);
+  the size field is `size_of_size` big-endian bytes, and a size that does
+  not fit is `BL_LogFileWriteError(INVALID_ARGUMENT, 0, size)` with the
+  data skipped; a failed size field skips the data; open/write/name/
+  no-init errors are not throttled; `BL_Activated`, `BL_Deactivated` and
+  the `BufferLogger_NumLoggedBuffers` channel are declared but never
+  emitted; `BL_FlushFile` always answers `OK`; `schedIn` is empty; a
+  storage-less buffer while logging asserts (C++ `data != nullptr`);
+  dropping the component writes the hash file without `BL_LogFileClosed`
+  but still reports a hash-file failure.
+- `FileWorker`: overlong paths (`> 234` bytes) are `INVALID_INPUT` before
+  any CRC helper runs, so `FAILED_FILE_NAME_TOO_LONG`
+  (nasa/fprime#5803) is never reported from here; `OPEN_WRITE` without
+  truncation; a zero-length write succeeds without creating the file or
+  touching the sidecar; cancel and timeout are checked after each chunk
+  and the chunk is not counted; `ReadCompleted` follows every read
+  attempt; `verifyIn` with a failed sidecar check computes CRC 0, so an
+  expected 0 raises no `CrcVerificationError`; appending to a sidecar
+  shorter than 4 bytes asserts (`Utils::Hash::setHashValue`); elapsed
+  time is `seconds * 1000000 + useconds` in 32-bit arithmetic and
+  `Fw::Time::sub` asserts if time runs backwards; `NOT_IDLE` is only
+  reachable by changing the state behind the handlers' back (upstream's
+  `testTransfer` checks it against `FW_STATE_IDLE`, the same 0).
+- `FileDispatcher`: every enabled matching row dispatches (duplicates
+  included); the match is a suffix match (`substring_find_last` at the
+  end); the name goes out by reference, so a synchronous handler can
+  rename it for later rows; `ENABLE_DISPATCH` answers `OK` and emits
+  `FileDispatchState` even for a port no row uses (including the
+  sentinel).
+
+Tests: `validate_file` (+5 for `ValidatedFile`), `file_dispatcher` (18:
+upstream's five tests and the max-length name test, plus the gotchas),
+`buffer_logger/tests.rs` (23: every upstream `Logging`, `Errors`, `Health`
+and `LogNoInit` test, each in its own directory — the validation-error
+test skips when permission checks are bypassed, as upstream's does for
+root — plus size-field widths, the oversize record, re-open without
+truncation, name overflow, drop), `file_worker/tests.rs` (34: all of
+`FileWorkerTester.cpp` and `FileWorkerErrTester.cpp`; the latter's mocked
+`Os::File` statuses are produced with real faults — a missing directory,
+a file open in the wrong mode, a directory read as a file, a path under a
+regular file — plus timeouts, throttling, append with offset, the short
+sidecar assert), and `tests/file_services.rs`, which runs `FileWorker`
+and `FileDispatcher` on their own threads: a client writes a file through
+the worker, the announced file is dispatched to the client, which has the
+worker verify it and read it back, and a `BufferLogger` log of the same
+bytes validates through `ValidatedFile`. Upstream's `nominalread.bin`
+fixture is generated (the byte ramp from 0x61; its CRC is upstream's
+committed 0xBC0905F4).
