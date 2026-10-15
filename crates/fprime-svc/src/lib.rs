@@ -21,7 +21,9 @@
 //! components with their features), [`passive_text_logger`] and
 //! [`active_text_logger`] (console output through `Fw::Logger`; the log
 //! file is `std`-only), [`fatal_handler`] (upstream's bare-metal
-//! implementation), and [`posix_time`] / [`linux_timer`] over the
+//! implementation), [`assert_fatal_adapter`], [`cmd_splitter`],
+//! [`com_retry`], [`buffer_repeater`], and [`posix_time`] /
+//! [`chrono_time`] / [`os_time`] / [`linux_timer`] over the
 //! `fprime_os::platform::Platform` clock and delay.
 //!
 //! `std`-only (they need a file system or the host OS): `file_uplink`,
@@ -50,16 +52,21 @@ compile_error!(
 
 pub mod active_rate_group;
 pub mod active_text_logger;
+pub mod assert_fatal_adapter;
 pub mod buffer_accumulator;
 pub mod buffer_manager;
+pub mod buffer_repeater;
 pub mod ccsds;
+pub mod chrono_time;
 pub mod cmd_dispatcher;
 #[cfg(feature = "std")]
 pub mod cmd_sequencer;
+pub mod cmd_splitter;
 pub mod com_aggregator;
 #[cfg(feature = "std")]
 pub mod com_logger;
 pub mod com_queue;
+pub mod com_retry;
 pub mod com_stub;
 #[cfg(feature = "std")]
 pub mod dp_catalog;
@@ -86,6 +93,7 @@ pub mod frame_accumulator;
 pub mod generic_hub;
 pub mod health;
 pub mod linux_timer;
+pub mod os_time;
 pub mod passive_rate_group;
 pub mod passive_text_logger;
 pub mod posix_time;

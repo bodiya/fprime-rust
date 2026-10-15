@@ -134,6 +134,13 @@ pub const FW_INTERNAL_INTERFACE_STRING_MAX_SIZE: usize = 256;
 pub const FW_SM_SIGNAL_BUFFER_MAX_SIZE: usize = 128;
 /// Maximum length of a file-name string (`FileNameStringSize` in AcConstants.fpp).
 pub const FILE_NAME_STRING_SIZE: usize = 240;
+/// Maximum number of nested asserts `Svc::AssertFatalAdapter` reports as
+/// FATAL events before falling back to the C `assert()` (cascading-assert
+/// guard; `FW_ASSERT_COUNT_MAX` in FpConstants.fpp).
+pub const FW_ASSERT_COUNT_MAX: usize = 10;
+/// Size of the leading-truncated file name in an `AssertFatalAdapter` event
+/// (`AssertFatalAdapterEventFileSize` in AcConstants.fpp).
+pub const ASSERT_FATAL_ADAPTER_EVENT_FILE_SIZE: usize = FILE_NAME_STRING_SIZE;
 /// Time-context "don't care" value used by sequences (`FW_CONTEXT_DONT_CARE`).
 pub const FW_CONTEXT_DONT_CARE: u8 = 0xFF;
 /// Capacity of `Fw::StatementArgBuffer`, the argument buffer of one Fpy
@@ -163,6 +170,11 @@ pub const RATE_GROUP_DRIVER_CYCLE_PORTS: usize = 3;
 pub const HEALTH_PING_PORTS: usize = 25;
 /// Number of `FileComplete` output ports on FileDownlink (`FileDownCompletePorts`).
 pub const FILE_DOWN_COMPLETE_PORTS: usize = 1;
+/// Number of `portOut` ports on BufferRepeater (`BufferRepeaterOutputPorts`).
+pub const BUFFER_REPEATER_OUTPUT_PORTS: usize = 10;
+/// Number of command-source port pairs on CmdSplitter (`CmdSplitterPorts`,
+/// defined as `CmdDispatcherSequencePorts`).
+pub const CMD_SPLITTER_PORTS: usize = CMD_DISPATCHER_SEQUENCE_PORTS;
 
 // ---------------------------------------------------------------------------
 // Per-component configuration (default/config/*Cfg.hpp equivalents)

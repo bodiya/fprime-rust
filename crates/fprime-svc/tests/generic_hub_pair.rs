@@ -6,13 +6,20 @@
 //! ```text
 //!   deployment A                                  deployment B
 //!   ------------                                  ------------
-//!   test --cmdDispIn[0]--> hubA ~~wire~~> hubB --cmdDispOut[0]--> CmdDispatcher
-//!   test <-cmdRespOut[0]-- hubA <~~wire~~ hubB <-cmdRespIn[0]---- seqCmdStatus[0]
+//!   test -> CmdSplitter --RemoteCmd[0]--> hubA.cmdDispIn[0] ~~wire~~>
+//!                                  hubB --cmdDispOut[0]--> CmdDispatcher
+//!   test <- CmdSplitter <-cmdRespOut[0]-- hubA <~~wire~~
+//!                                  hubB <-cmdRespIn[0]---- seqCmdStatus[0]
+//!   test <- CmdSplitter.LocalCmd[0] (opcodes below the remote base)
 //!   test <--eventOut------ hubA <~~wire~~ hubB <-eventIn--------- CmdDispatcher events
 //!   pingOut --serialIn[0]> hubA ~~wire~~> hubB --serialOut[0]---> CmdDispatcher.pingIn
 //!   pingIn <-serialOut[0]- hubA <~~wire~~ hubB <-serialIn[0]----- CmdDispatcher.pingOut
 //!   test --bufferIn[0]---> hubA ~~wire~~> hubB --bufferOut[0]---> consumer
 //! ```
+//!
+//! The command source on A is a real `Svc::CmdSplitter`, the hub's usual
+//! feeder (upstream's `GenericHub` sdd): opcodes at or above B's base go
+//! remote, the others stay local, and B's responses come back through it.
 //!
 //! Each side allocates transport buffers from its own `BufferManager`. The
 //! "wire" is a buffer driver stand-in that copies the bytes into a buffer
@@ -21,13 +28,15 @@
 //! outstanding: every move came home.
 
 use fprime_comp::{
-    BufferGetPort, BufferSendPort, CmdResponsePort, LogPort, OutputPort, PingPort, PortRef, TlmPort,
+    BufferGetPort, BufferSendPort, CmdResponsePort, ComPort, LogPort, OutputPort, PingPort,
+    PortRef, TlmPort,
 };
 use fprime_config::{FwChanIdType, FwEventIdType, FwIndexType, FwOpcodeType, FwSizeType};
 use fprime_fw::{Buffer, CmdResponse, ComBuffer, LogBuffer, LogSeverity, SerBuf, Time, TlmBuffer};
 use fprime_os::task::TASK_DEFAULT;
 use fprime_svc::buffer_manager::{BufferBin, BufferManager};
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
+use fprime_svc::cmd_splitter::CmdSplitter;
 use fprime_svc::generic_hub::GenericHub;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -79,6 +88,17 @@ struct Ground {
     events: Mutex<Vec<(FwEventIdType, LogSeverity)>>,
     responses: Mutex<Vec<(FwIndexType, FwOpcodeType, u32, CmdResponse)>>,
     pings: Mutex<Vec<u32>>,
+    /// Commands the splitter kept local: (port, bytes, context).
+    local: Mutex<Vec<(FwIndexType, Vec<u8>, u32)>>,
+}
+
+impl ComPort for Ground {
+    fn invoke(&self, port_num: FwIndexType, data: &mut ComBuffer, context: u32) {
+        self.local
+            .lock()
+            .unwrap()
+            .push((port_num, data.as_slice().to_vec(), context));
+    }
 }
 
 impl LogPort for Ground {
@@ -191,6 +211,7 @@ fn commands_events_serial_calls_and_buffers_cross_the_hub_pair() {
     let (bm_b, curr_b) = manager("bmB", 2);
     let a_to_b = Wire::new();
     let b_to_a = Wire::new();
+    let splitter = CmdSplitter::new("cmdSplitterA");
     let dispatcher = CmdDispatcher::new("cmdDispB");
     dispatcher.active.queued.base.set_id_base(DISP_ID_BASE);
     let ground = Arc::new(Ground::default());
@@ -220,10 +241,15 @@ fn commands_events_serial_calls_and_buffers_cross_the_hub_pair() {
     b_to_a.far_deliver.connect_to(hub_a.from_buffer_driver(0));
 
     // -- Wire the logical connections -----------------------------------------
-    // Commands A -> B and responses B -> A.
+    // Commands A -> B through A's splitter, responses B -> A back
+    // through it; B's opcodes (from its dispatcher's base up) are remote.
+    splitter.configure(DISP_ID_BASE);
+    splitter.remote_cmd[0].connect_to(hub_a.cmd_disp_in(0));
+    splitter.local_cmd[0].connect(ground.clone(), 0);
+    hub_a.cmd_resp_out[0].connect_to(splitter.seq_cmd_status_in(0));
+    splitter.forward_seq_cmd_status[0].connect(ground.clone(), 0);
     hub_b.cmd_disp_out[0].connect_to(dispatcher.seq_cmd_buff_in(0));
     dispatcher.seq_cmd_status[0].connect_to(hub_b.cmd_resp_in(0));
-    hub_a.cmd_resp_out[0].connect(ground.clone(), 0);
     // B's dispatcher runs its own commands and sends its events to A.
     dispatcher
         .cmd
@@ -267,12 +293,21 @@ fn commands_events_serial_calls_and_buffers_cross_the_hub_pair() {
     );
     ground.events.lock().unwrap().clear();
 
-    // -- A remote NO_OP: A's command splitter role is played by the test -------
+    // -- A local command: stays on A, nothing crosses ----------------------------
+    let mut local = ComBuffer::new();
+    assert!(local.serialize_u16_be(0).is_ok()); // FW_PACKET_COMMAND
+    assert!(local.serialize_u32_be(DISP_ID_BASE - 1).is_ok());
+    let local_bytes = local.as_slice().to_vec();
+    let cmd = splitter.cmd_buff_in(0);
+    cmd.target.invoke(cmd.port_num, &mut local, 0x66);
+    assert_eq!(*ground.local.lock().unwrap(), vec![(0, local_bytes, 0x66)]);
+    assert_eq!(*a_to_b.carried.lock().unwrap(), 0);
+
+    // -- A remote NO_OP through A's command splitter ----------------------------
     let op_code = DISP_ID_BASE + CmdDispatcher::OPCODE_CMD_NO_OP;
     let mut packet = ComBuffer::new();
     assert!(packet.serialize_u16_be(0).is_ok()); // FW_PACKET_COMMAND
     assert!(packet.serialize_u32_be(op_code).is_ok());
-    let cmd = hub_a.cmd_disp_in(0);
     cmd.target.invoke(cmd.port_num, &mut packet, 0x77);
     wait_for("the command response", || {
         !ground.responses.lock().unwrap().is_empty()
