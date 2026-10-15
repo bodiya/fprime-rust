@@ -142,7 +142,8 @@
 //!   (every record is written straight through, no buffering).
 //!
 //! The comms chain is always wired internally (as the C++ Ref topology
-//! wires ComFprime); only the TCP driver is optional (`-a`/`-p`). Without a
+//! wires its comms subtopology); only the TCP driver is optional
+//! (`-a`/`-p`). Without a
 //! driver, `comStub`'s driver-side ports stay unconnected — nothing invokes
 //! them because ComQueue starts WAITING and is only primed by a driver
 //! `ready` — and downlink packets accumulate/overflow in ComQueue exactly

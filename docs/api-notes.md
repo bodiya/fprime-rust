@@ -1664,13 +1664,18 @@ checks it against the generated constants).
 `crates/fprime-ref/fpp/{Ref,SignalGen}.fpp` model the Rust Ref's instances (C++ base
 ids) and the Rust SignalGen (which is not the upstream component: commands 0..3 +
 `Amplitude` param set/save 4/5, events 0..5, channels `SignalValue`/`SignalType`,
-`SignalType: U8 { Sine, Triangle }`); `generate-dictionary.sh <fprime checkout>`
-regenerates `crates/fprime-ref/dictionary/RefTopologyDictionary.json` from the upstream
-model (every other Rust component's opcodes/ids match upstream; `systemResources`
-declares fewer CPU channels, a harmless superset). `tools/gds-crosscheck.py` is the live check (fprime-gds 4.3.1: `-n -g none
---framing-selection fprime`, GDS as TCP server on 50000, Ref with `-a 127.0.0.1 -p 50000`;
+`SignalType: U8 { Sine, Triangle }`); `generate-dictionary.sh [--allow-other-commit]
+<fprime checkout>` regenerates `crates/fprime-ref/dictionary/RefTopologyDictionary.json`
+from the upstream model at the commit pinned in `FPRIME_UPSTREAM_COMMIT` (every other
+Rust component's opcodes/ids match upstream; `crates/fprime-ref/tests/upstream_ids.rs`
+checks that, see ROADMAP item 17 below). `tools/gds-crosscheck.py` is the live check
+(fprime-gds 4.3.1: `-n -g none --framing-selection fprime` or
+`space-packet-space-data-link`, GDS as TCP server on `--port` (default 50000; the `ccsds`
+check uses `--port`+1), Ref with `-a 127.0.0.1 -p <port> -f fprime|ccsds`; every session
+gets private `--zmq-transport` ipc endpoints and `--file-storage-directory`;
 `fprime-cli events`/`channels` in text mode because `-j` crashes on enum arguments in
-4.3.1; command string arguments are capped at `FW_CMD_STRING_MAX_SIZE` = 40 on both sides).
+4.3.1; command string arguments are capped at `FW_CMD_STRING_MAX_SIZE` = 40 on both
+sides, so the script keeps on-board paths short). Item 16 below lists the checks.
 
 ## Phase 2 roadmap items (2–7)
 
@@ -2280,3 +2285,70 @@ generated tables entry by entry, against the dictionary's
 emitting byte-exact packets from the generated sensor's telemetry (and
 staying silent on the omitted channels). The Rust Ref model has no packet
 set (it uses `TlmChan`), so its dictionary is unchanged.
+
+### fprime-ref + tools: GDS cross-check, `--framing ccsds`, upstream pin (ROADMAP items 16, 17)
+
+**`tools/gds-crosscheck.py`** (Python stdlib only; still a tool, not a cargo
+test, because it needs fprime-gds). Same required arguments as before;
+`--checks a,b,...` selects from `commands`, `params`, `files`, `dp`, `seq`, `ccsds`
+(default: all), each printed as `[PASS]`/`[FAIL]` with its failures. The F Prime
+framing checks share one GDS + Ref session; `ccsds` starts its own. Events are
+awaited by regex on the `fprime-cli events` text stream (no fixed sleeps for
+command responses); WARNING_HI/FATAL events and `OpCodeError` inside a check fail
+it, as do GDS log lines with ERROR/Traceback or file-packet/sequence WARNINGs.
+What each check proves:
+- `params`: `AMPLITUDE_PRM_SET` (→ `AmplitudeUpdated`), `AMPLITUDE_PRM_SAVE`,
+  `prmDb.PRM_SAVE_FILE`, and `fprime-prm-decode` of `PrmDb.dat` (CRC header and
+  records). Restart on the same `-d`: `PrmFileLoadComplete` reports 1 record, and
+  `AMPLITUDE_PRM_SAVE` + `PRM_SAVE_FILE` writes the value back out unchanged — the
+  component loaded it (a default would overwrite it; `SignalGen` emits nothing on
+  load, like upstream's generated `loadParameters`). Then a `fprime-prm-write dat`
+  file is loaded at boot the same way.
+- `files`: `fprime-cli file-uplink` of a 5037-byte random file and an empty file
+  (the CLI waits for `FileReceived`), `SendFile` back down, `SendPartial(1000,
+  2345)`; byte comparisons. Partial downlink DATA packets carry absolute file
+  offsets in upstream `FileDownlink` too, so the GDS writes the range in place
+  after a 1000-byte hole and logs a gap warning (expected, filtered).
+- `dp`: `signalGen.Dp 6` and `fileManager.GenerateDp` (700 bytes, chunk 256 →
+  three containers), `dpCat.BUILD_CATALOG` + `START_XMIT_CATALOG`; every product
+  downlinked byte-identical (the GDS flattens the on-board path into the file
+  name), `fprime-dp validate` OK (header hash + data checksum), `fprime-dp decode`
+  yields 6 `DataRecord`s and header/data chunk records that reassemble the source.
+- `seq`: an `fprime-seqgen` binary (time base `0xFFFF`) validated (`CS_VALIDATE`)
+  and run with `BLOCK`; a second one built with `-t 2` (the Ref's
+  `TB_WORKSTATION_TIME`) holding an absolute tag 6 s ahead, run `NO_BLOCK`, whose
+  command must execute no earlier than its tag.
+- `ccsds`: `commands` + `files` again over `space-packet-space-data-link`.
+
+**`fprime-ref --framing ccsds`** (`-f`; `TopologyConfig::framing: Framing { Fprime
+(default), Ccsds }`). New `RefTopology` fields `tm_framer`, `space_packet_framer`,
+`apid_manager`, `tc_deframer`, `space_packet_deframer`, `framing`; base ids
+`TM_FRAMER_BASE_ID` 0x02007000, `SPACE_PACKET_FRAMER_BASE_ID` 0x02008000,
+`APID_MANAGER_BASE_ID` 0x02009000 (upstream `ComCcsds` offsets),
+`TC_DEFRAMER_BASE_ID` 0x0200B000 and `SPACE_PACKET_DEFRAMER_BASE_ID` 0x0200C000
+(upstream 0x4000/0x5000 are `framer`/`fprimeRouter` here). All instances of both
+stacks are constructed (so one dictionary serves either); only the framing layer
+and the frame detector change. Deviations from upstream `ComCcsds`: no
+`ComAggregator` (not ported; one space packet per TM frame — the GDS deframer does
+not care), the shared instances keep their `ComFprime` ids, and the comms
+`BufferManager` keeps its single 2048-byte bin (upstream adds a 3000-byte file bin
+the Rust framers never need). The upstream Ref itself uses `ComCcsds`; the Rust Ref
+keeps `ComFprime` as the default. `tests/ccsds_framing_test.rs` drives TC frames up
+and parses TM frames down in process. Found while wiring it: the Rust `TmFramer`
+and `FrameContext` predate 4dee010's `firstHeaderPointer` (packet spanning); this
+only matters once `ComAggregator` lands (ROADMAP item 12).
+
+**Upstream pin.** `FPRIME_UPSTREAM_COMMIT` (repo root; `#` comments + one full
+hash). `generate-dictionary.sh` checks `git rev-parse HEAD` of the checkout against
+it and that tracked files are unmodified, both lifted by `--allow-other-commit`,
+and passes the first seven hex digits of the commit used as `-f`
+(`metadata.frameworkVersion`; it previously used `git describe`, which would have
+written `v4.3.0-51-g4dee010c30`, not the committed `4dee010`).
+`crates/fprime-ref/tests/upstream_ids.rs` (dev-dependency on `fprime-fpp` for its
+JSON parser): `upstream_pin` (dictionary `frameworkVersion` = pin prefix) and
+`rust_ids_match_the_dictionary` (a table of each instance's FPP name, topology base
+id and Rust constants by FPP name, compared both ways against the commands, events,
+channels, parameters, records and containers in the dictionary; `CPU_01..15` are
+`CHANID_CPU_00 + n`, as the component computes them, so the old note that
+`systemResources` declares fewer CPU channels no longer applies). A new instance with
+dictionary entries fails it until it gets a row.

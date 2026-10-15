@@ -53,8 +53,16 @@ Generate from FPP: `cargo run -p fprime-fpp --bin fpp-to-rust -- --help`
 Talk to the stock ground system: `crates/fprime-ref/dictionary/RefTopologyDictionary.json`
 is the Rust reference deployment's dictionary (regenerate it from an upstream
 checkout with `crates/fprime-ref/fpp/generate-dictionary.sh`), and
-`tools/gds-crosscheck.py` drives the real `fprime-gds` against
-`target/debug/fprime-ref` end to end:
+`tools/gds-crosscheck.py` drives the real `fprime-gds` tools against
+`target/debug/fprime-ref` end to end, one pass/fail line per check:
+commands, events and telemetry (`fprime-cli`); parameter save, reload
+across a restart and the parameter-file tools (`fprime-prm-decode`,
+`fprime-prm-write`); file uplink (`fprime-cli file-uplink`) and downlink
+(`SendFile`, `SendPartial`), byte for byte; data products downlinked by
+`dpCat` and decoded with `fprime-dp`; `fprime-seqgen` sequences run by
+`cmdSeq`; and all of that over the GDS's CCSDS framing
+(`space-packet-space-data-link`) against `fprime-ref --framing ccsds`.
+`--checks commands,files,...` runs a subset.
 
 ```bash
 python3 -m venv ~/.venvs/fprime-gds && ~/.venvs/fprime-gds/bin/pip install fprime-gds
@@ -63,6 +71,13 @@ tools/gds-crosscheck.py --gds-bin ~/.venvs/fprime-gds/bin \
     --ref-bin target/debug/fprime-ref \
     --dictionary crates/fprime-ref/dictionary/RefTopologyDictionary.json
 ```
+
+Upstream version: the port tracks one nasa/fprime commit, recorded in
+[`FPRIME_UPSTREAM_COMMIT`](FPRIME_UPSTREAM_COMMIT) (currently `4dee010c30`).
+`generate-dictionary.sh` refuses any other checkout unless given
+`--allow-other-commit`, and `cargo test -p fprime-ref --test upstream_ids`
+fails when the dictionary and the Rust components' id constants drift apart;
+the sync procedure is in [`docs/ROADMAP.md`](docs/ROADMAP.md#syncing-with-upstream).
 
 Design docs: [`ARCHITECTURE.md`](ARCHITECTURE.md) (binding design contract),
 [`CONVENTIONS.md`](CONVENTIONS.md) (coding rules), [`docs/ROADMAP.md`](docs/ROADMAP.md)
@@ -92,6 +107,11 @@ cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000
 # Choose where the deployment keeps its parameter file, data products,
 # uplinked files and com logs (default: a per-process temp directory)
 cargo run -p fprime-ref -- --data-dir ./run-data
+
+# Frame with CCSDS (space packets in TM/TC transfer frames, the
+# ComCcsds stack) instead of F Prime frames; pair with the GDS's
+# --framing-selection space-packet-space-data-link
+cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000 --framing ccsds
 ```
 
 Requires stable Rust (edition 2024). No external crates in the default build;
@@ -106,7 +126,7 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust).
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
 | Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!`, `serializable_port!` (component/port scaffolding and port serialization) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
 | FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits (serializable ones via `serializable_port!`), component bases with handler traits (including `serial` ports), topology wiring (typed ↔ serial connections included), and the `TlmPacketizer` packet tables of telemetry packet sets, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
-| Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary; `tools/gds-crosscheck.py` runs the stock `fprime-gds` against the Rust Ref binary and checks that commands sent through the GDS execute and that the Ref's events and telemetry decode (passes against fprime-gds 4.3.1) |
+| Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary, generated from the pinned upstream commit and checked against the Rust ids by `cargo test`; `tools/gds-crosscheck.py` runs the stock `fprime-gds` tools against the Rust Ref binary: commands, events, telemetry, parameter save/reload and parameter files, file uplink/downlink, data-product downlink and decoding, `fprime-seqgen` sequences, under both F Prime and CCSDS framing (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
@@ -117,7 +137,7 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust).
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format) |
-| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
+| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`); wired as the Ref's `ComCcsds` stack by `fprime-ref --framing ccsds` (without `ComAggregator`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `AsyncByteStreamBufferAdapter` (async byte-stream driver to passive buffer driver); `LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 

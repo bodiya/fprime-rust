@@ -131,6 +131,32 @@ subsystems, then the strategic changes.
   `TlmPacketizer` packetizing the generated sensor's telemetry from the
   generated tables.
 
+- **Broader GDS cross-check** (item 16). `tools/gds-crosscheck.py` runs
+  named checks (`--checks` selects a subset): `commands` (as before),
+  `params` (`_PRM_SET`/`_PRM_SAVE`/`PRM_SAVE_FILE`, `fprime-prm-decode`,
+  the value back in the component after a restart, a `fprime-prm-write`
+  file loaded at boot), `files` (`fprime-cli file-uplink` incl. an empty
+  file, `SendFile`, `SendPartial`), `dp` (both producers' products
+  downlinked by `dpCat`, `fprime-dp validate`/`decode`, the file chunks
+  reassembled), `seq` (`fprime-seqgen` binaries, relative and absolute
+  time tags, run by `cmdSeq`) and `ccsds` (commands, events, telemetry and
+  files over `space-packet-space-data-link`). The last needed a CCSDS Ref:
+  `fprime-ref --framing ccsds` wires upstream's `ComCcsds` chain
+  (`spacePacketFramer -> tmFramer`, `CcsdsTcFrameDetector -> tcDeframer ->
+  spacePacketDeframer`, `apidManager`), minus the unported
+  `ComAggregator`. Every check passed against fprime-gds 4.3.1 without a
+  Rust fix; `SendPartial` lands at its absolute file offsets on the
+  ground, as upstream's does.
+- **Upstream pin** (item 17). `FPRIME_UPSTREAM_COMMIT` names the
+  nasa/fprime commit the port tracks (4dee010c30, 2026-09-11);
+  `generate-dictionary.sh` refuses any other (or a modified) checkout
+  without `--allow-other-commit` and writes `metadata.frameworkVersion`
+  from the commit it used. `crates/fprime-ref/tests/upstream_ids.rs` is the
+  automated id comparison: the dictionary records the pin, and every
+  command, event, channel, parameter, record and container of every Ref
+  instance matches a Rust constant (base id + component id) and vice
+  versa. See "Syncing with upstream" below.
+
 ## Next: small follow-ups
 
 These surfaced while porting the items above. None changes the wire format of
@@ -153,6 +179,12 @@ the Ref deployment.
 12. **CCSDS AOS / `ComAggregator` / SDLS.** `AOSHeader`, `AOSTrailer`,
     `MPduHeader`, `SaMapEntry`, `SdlsStatus` are declared; nothing consumes
     them.
+    `ComAggregator` belongs between `spacePacketFramer` and `tmFramer` in
+    the Ref's `--framing ccsds` chain, as in upstream's `ComCcsds`; it
+    needs the 4dee010 `TmFramer` behaviour the Rust port predates (the
+    First Header Pointer taken from `FrameContext.firstHeaderPointer`,
+    which the Rust `FrameContext` lacks, and a full data field sent
+    without idle fill).
 
 ## Strategic
 
@@ -167,25 +199,25 @@ the Ref deployment.
     topology (so a generated topology could hold the `TlmPacketizer`
     itself).
 
-## Cross-compatibility with the stock ground system
+## Syncing with upstream
 
-16. **Broaden `tools/gds-crosscheck.py`.** Today it proves commands
-    (no-arg, string, enum, float), events and telemetry channels against
-    fprime-gds 4.3.1. Not yet exercised through the real GDS: parameter
-    `_PRM_SET`/`_PRM_SAVE` round trips (`prmDb`), file uplink and
-    downlink (`fprime-cli file-uplink`, `fileDownlink.SendFile`),
-    data-product downlink and `fprime-dp` decoding of the Rust
-    `DpContainer` bytes, command sequences (`fprime-seqgen` output run
-    by `cmdSeq`), and the CCSDS framing stack (`--framing-selection
-    space-packet-space-data-link` against a `ComCcsds`-style topology).
-    Each is a few more commands and expectations in the script; the
-    script needs a Python environment with fprime-gds installed, so it
-    stays a tool rather than a `cargo test`.
-17. **Pin the upstream model version.** The Ref dictionary is generated
-    from whatever F Prime checkout `generate-dictionary.sh` is given
-    (currently commit 4dee010, 2026-09-11) and records it in
-    `metadata.frameworkVersion`. When the Rust components are next
-    synced with upstream, regenerate the dictionary and rerun the
-    cross-check; the static id comparison in `docs/api-notes.md`
-    (Rust `OPCODE_*`/`EVENTID_*`/`CHANID_*` vs. the dictionary) is the
-    quick way to spot drift.
+The port tracks the single nasa/fprime commit in `FPRIME_UPSTREAM_COMMIT`.
+To move it:
+
+1. Check the new commit out in an fprime clone and list what changed in
+   the ported trees: `git diff <pin>..<new> -- Fw Svc Drv Os Utils
+   default/config Ref`.
+2. Port the C++ changes into the Rust components (their `docs/api-notes.md`
+   sections name the upstream files), including new or renumbered
+   `OPCODE_*`/`EVENTID_*`/`CHANID_*`/`PARAMID_*` constants.
+3. Regenerate the dictionary from the new checkout with
+   `crates/fprime-ref/fpp/generate-dictionary.sh --allow-other-commit
+   <checkout>` and run `cargo test -p fprime-ref --test upstream_ids`: it
+   lists every id that differs, and every dictionary entry without a Rust
+   constant (add new ones to the table in that test). Repeat 2-3 until it
+   passes; `upstream_pin` keeps failing until step 4.
+4. Write the new full hash into `FPRIME_UPSTREAM_COMMIT`, regenerate
+   without the override (which records the new `frameworkVersion`), and
+   update the commit named in the docs.
+5. Run `cargo test --workspace` and `tools/gds-crosscheck.py` (with the
+   fprime-gds release matching the new upstream, if it moved).
