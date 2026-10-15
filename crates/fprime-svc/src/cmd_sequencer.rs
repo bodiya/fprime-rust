@@ -10,6 +10,13 @@
 //! emitting `Fw::ComBuffer` command packets on `comCmdOut`, waiting for each
 //! `cmdResponseIn` before advancing.
 //!
+//! The file format is pluggable through the [`Sequence`] trait (C++
+//! `setSequenceFormat`): [`FPrimeSequence`] (the default, what
+//! `fprime-seqgen` emits) and [`AMPCSSequence`] (upstream
+//! `formats/AMPCSSequence`, a record file plus a `.CRC32` sidecar; see
+//! [`ampcs_sequence`]). Both embed a private `SequenceBase`, the members of
+//! the C++ abstract `Sequence` base class.
+//!
 //! Two *orthogonal* state variables:
 //!
 //! - [`RunMode`] `{Stopped = 0, Running = 1}` (`m_runMode`) — is a sequence
@@ -335,9 +342,11 @@ pub enum SequenceLoadEvent {
 
 /// A pluggable sequence file format (C++ `CmdSequencer::Sequence`).
 ///
-/// Only [`FPrimeSequence`] ships; the trait exists so
-/// [`CmdSequencer::set_sequence_format`] stays expressible, exactly like the
-/// C++ `setSequenceFormat`.
+/// [`FPrimeSequence`] is the default; [`AMPCSSequence`] is the upstream
+/// `formats/` alternative. Select one with
+/// [`CmdSequencer::set_sequence_format`] (C++ `setSequenceFormat`) BEFORE
+/// [`CmdSequencer::allocate_buffer`], which allocates into the current
+/// format.
 pub trait Sequence: Send {
     /// Reserve the sequence buffer (C++ `allocateBuffer`, minus the
     /// `MemAllocator`). Panics via `fw_assert!` when `bytes` cannot hold a
@@ -379,19 +388,18 @@ pub trait Sequence: Send {
     fn clear(&mut self);
 }
 
+pub mod ampcs_sequence;
+pub use ampcs_sequence::AMPCSSequence;
+
 // ---------------------------------------------------------------------------
-// FPrimeSequence — the format `fprime-seqgen` emits.
+// SequenceBase — the members of the C++ abstract `Sequence` base class.
 // ---------------------------------------------------------------------------
 
-/// The default binary sequence format (C++ `FPrimeSequence`).
-///
-/// File layout: `[header 11][records fileSize-4][CRC 4]`, all big-endian.
-/// A command record is
-/// `[descriptor u8][seconds u32][useconds u32][recordSize u32][recordSize
-/// bytes]` where the payload is a complete command com packet
-/// (`[u16 0x0000][opcode u32][args]`). An end-of-sequence record is the
-/// single byte `0x02`.
-pub struct FPrimeSequence {
+/// The state and helpers every format inherits from the C++ abstract
+/// `CmdSequencerComponentImpl::Sequence` base class: the sequence buffer
+/// (`m_buffer`), the allocator id, the header and the three file-name
+/// spellings. [`FPrimeSequence`] and [`AMPCSSequence`] both embed one.
+struct SequenceBase {
     /// Owned replacement for the C++ `ExternalSerializeBuffer` over
     /// `MemAllocator` memory. Empty until `allocate_buffer`.
     storage: Box<[u8]>,
@@ -402,47 +410,49 @@ pub struct FPrimeSequence {
     /// Inert API parity with the C++ allocator identifier.
     allocator_id: FwEnumStoreType,
     header: SequenceHeader,
-    crc: Hash,
-    crc_stored: u32,
     file_name: CmdStringArg,
     log_file_name: LogStringArg,
     string_file_name: FwDefaultString,
 }
 
-impl Default for FPrimeSequence {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FPrimeSequence {
-    /// A sequence with no buffer yet (C++ constructor).
-    #[must_use]
-    pub fn new() -> Self {
+impl SequenceBase {
+    /// C++ `Sequence(component)`: no buffer, default header.
+    fn new() -> Self {
         Self {
             storage: Box::new([]),
             ser_loc: 0,
             deser_loc: 0,
             allocator_id: 0,
             header: SequenceHeader::default(),
-            crc: Hash::new(),
-            crc_stored: 0,
             file_name: CmdStringArg::new(),
             log_file_name: LogStringArg::new(),
             string_file_name: FwDefaultString::new(),
         }
     }
 
-    /// The allocator identifier passed to [`Sequence::allocate_buffer`].
-    #[must_use]
-    pub fn allocator_id(&self) -> FwEnumStoreType {
-        self.allocator_id
+    /// C++ `Sequence::allocateBuffer`.
+    fn allocate_buffer(&mut self, identifier: FwEnumStoreType, bytes: usize) {
+        // C++ FW_ASSERT(bytes >= Header::SERIALIZED_SIZE) — the base class
+        // check, so it applies to every format.
+        fw_assert!(bytes >= SEQUENCE_HEADER_SIZE, bytes as i32);
+        self.allocator_id = identifier;
+        self.storage = vec![0u8; bytes].into_boxed_slice();
+        self.ser_loc = 0;
+        self.deser_loc = 0;
     }
 
-    /// The stored (file) CRC of the last load attempt.
-    #[must_use]
-    pub fn stored_crc(&self) -> u32 {
-        self.crc_stored
+    /// C++ `Sequence::deallocateBuffer`.
+    fn deallocate_buffer(&mut self) {
+        self.storage = Box::new([]);
+        self.ser_loc = 0;
+        self.deser_loc = 0;
+    }
+
+    /// C++ `Sequence::setFileName`.
+    fn set_file_name(&mut self, file_name: &CmdStringArg) {
+        self.file_name = file_name.clone();
+        self.log_file_name.set_bytes(file_name.as_bytes());
+        self.string_file_name.set_bytes(file_name.as_bytes());
     }
 
     /// C++ `setBuffLen`: write cursor = `len`, read cursor = 0.
@@ -474,11 +484,102 @@ impl FPrimeSequence {
         self.ser_loc.saturating_sub(self.deser_loc)
     }
 
+    /// C++ `resetDeser()` — the formats' `reset()`.
+    fn reset(&mut self) {
+        self.deser_loc = 0;
+    }
+
+    /// C++ `resetSer()` — the formats' `clear()`.
+    fn clear(&mut self) {
+        self.ser_loc = 0;
+        self.deser_loc = 0;
+    }
+
+    /// C++ `Header::validateTime(component)` — validates AND canonicalizes.
+    fn validate_time(
+        &mut self,
+        current_time: &Time,
+        event: &mut Option<SequenceLoadEvent>,
+    ) -> bool {
+        let valid_time_base = current_time.get_time_base();
+        if self.header.time_base != valid_time_base && self.header.time_base != TimeBase::TbDontCare
+        {
+            *event = Some(SequenceLoadEvent::TimeBaseMismatch {
+                current: valid_time_base,
+                seq: self.header.time_base,
+            });
+            return false;
+        }
+        let valid_context = current_time.get_context();
+        if self.header.time_context != valid_context
+            && self.header.time_context != FW_CONTEXT_DONT_CARE
+        {
+            *event = Some(SequenceLoadEvent::TimeContextMismatch {
+                current: valid_context,
+                seq: self.header.time_context,
+            });
+            return false;
+        }
+        // Canonicalize: after a successful validate the header carries the
+        // LIVE base/context, which is what makes don't-care files run.
+        self.header.time_base = valid_time_base;
+        self.header.time_context = valid_context;
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FPrimeSequence — the format `fprime-seqgen` emits.
+// ---------------------------------------------------------------------------
+
+/// The default binary sequence format (C++ `FPrimeSequence`).
+///
+/// File layout: `[header 11][records fileSize-4][CRC 4]`, all big-endian.
+/// A command record is
+/// `[descriptor u8][seconds u32][useconds u32][recordSize u32][recordSize
+/// bytes]` where the payload is a complete command com packet
+/// (`[u16 0x0000][opcode u32][args]`). An end-of-sequence record is the
+/// single byte `0x02`.
+pub struct FPrimeSequence {
+    base: SequenceBase,
+    crc: Hash,
+    crc_stored: u32,
+}
+
+impl Default for FPrimeSequence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FPrimeSequence {
+    /// A sequence with no buffer yet (C++ constructor).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            base: SequenceBase::new(),
+            crc: Hash::new(),
+            crc_stored: 0,
+        }
+    }
+
+    /// The allocator identifier passed to [`Sequence::allocate_buffer`].
+    #[must_use]
+    pub fn allocator_id(&self) -> FwEnumStoreType {
+        self.base.allocator_id
+    }
+
+    /// The stored (file) CRC of the last load attempt.
+    #[must_use]
+    pub fn stored_crc(&self) -> u32 {
+        self.crc_stored
+    }
+
     /// C++ `readFile()`.
     fn read_file(&mut self, event: &mut Option<SequenceLoadEvent>) -> bool {
         // The name is copied out so the borrow does not conflict with the
         // `&mut self` read path below (C++ passes `m_fileName.toChar()`).
-        let name = self.file_name.clone();
+        let name = self.base.file_name.clone();
         let Some(path) = name.as_str() else {
             // A non-UTF-8 path cannot be opened through the Rust OSAL; C++
             // would hand the raw bytes to open(2) and fail there.
@@ -517,7 +618,7 @@ impl FPrimeSequence {
         }
         let header_bytes: [u8; SEQUENCE_HEADER_SIZE] = {
             let mut copy = [0u8; SEQUENCE_HEADER_SIZE];
-            copy.copy_from_slice(&self.storage[..SEQUENCE_HEADER_SIZE]);
+            copy.copy_from_slice(&self.base.storage[..SEQUENCE_HEADER_SIZE]);
             copy
         };
         self.crc.update(&header_bytes);
@@ -527,9 +628,9 @@ impl FPrimeSequence {
         {
             return false;
         }
-        let buff_len = self.ser_loc;
+        let buff_len = self.base.ser_loc;
         let mut crc = std::mem::take(&mut self.crc);
-        crc.update(&self.storage[..buff_len]);
+        crc.update(&self.base.storage[..buff_len]);
         self.crc = crc;
         true
     }
@@ -540,7 +641,7 @@ impl FPrimeSequence {
         file: &mut fprime_os::File,
         event: &mut Option<SequenceLoadEvent>,
     ) -> bool {
-        let capacity = self.storage.len();
+        let capacity = self.base.storage.len();
         fw_assert!(
             capacity >= SEQUENCE_HEADER_SIZE,
             capacity as i32,
@@ -548,7 +649,7 @@ impl FPrimeSequence {
         );
         let mut read_len: FwSizeType = 0;
         let status = file.read(
-            &mut self.storage[..SEQUENCE_HEADER_SIZE],
+            &mut self.base.storage[..SEQUENCE_HEADER_SIZE],
             &mut read_len,
             WaitType::Wait,
         );
@@ -566,15 +667,15 @@ impl FPrimeSequence {
             });
             return false;
         }
-        self.set_buff_len(SEQUENCE_HEADER_SIZE);
+        self.base.set_buff_len(SEQUENCE_HEADER_SIZE);
         true
     }
 
     /// C++ `deserializeHeader()`.
     fn deserialize_header(&mut self, event: &mut Option<SequenceLoadEvent>) -> bool {
-        let capacity = self.storage.len();
+        let capacity = self.base.storage.len();
         let mut header = SequenceHeader::default();
-        let outcome = self.with_deser(|buf| {
+        let outcome = self.base.with_deser(|buf| {
             let mut file_size = 0u32;
             let status = buf.deserialize_u32_be(&mut file_size);
             if !status.is_ok() {
@@ -614,7 +715,7 @@ impl FPrimeSequence {
         });
         match outcome {
             Ok(()) => {
-                self.header = header;
+                self.base.header = header;
                 true
             }
             Err(load_event) => {
@@ -633,9 +734,13 @@ impl FPrimeSequence {
         file: &mut fprime_os::File,
         event: &mut Option<SequenceLoadEvent>,
     ) -> bool {
-        let size = self.header.file_size as usize;
+        let size = self.base.header.file_size as usize;
         let mut read_len: FwSizeType = 0;
-        let status = file.read(&mut self.storage[..size], &mut read_len, WaitType::Wait);
+        let status = file.read(
+            &mut self.base.storage[..size],
+            &mut read_len,
+            WaitType::Wait,
+        );
         if status != FileStatus::OpOk {
             *event = Some(SequenceLoadEvent::FileInvalid {
                 stage: FileReadStage::ReadSeqData,
@@ -650,14 +755,14 @@ impl FPrimeSequence {
             });
             return false;
         }
-        self.set_buff_len(size);
+        self.base.set_buff_len(size);
         true
     }
 
     /// C++ `extractCRC()` — pulls the trailing four bytes out and shortens
     /// the buffer to the record data.
     fn extract_crc(&mut self, event: &mut Option<SequenceLoadEvent>) -> bool {
-        let buff_size = self.ser_loc;
+        let buff_size = self.base.ser_loc;
         if buff_size < SEQUENCE_CRC_SIZE {
             *event = Some(SequenceLoadEvent::FileInvalid {
                 stage: FileReadStage::ReadSeqCrc,
@@ -667,9 +772,9 @@ impl FPrimeSequence {
         }
         let data_size = buff_size - SEQUENCE_CRC_SIZE;
         let mut raw = [0u8; SEQUENCE_CRC_SIZE];
-        raw.copy_from_slice(&self.storage[data_size..buff_size]);
+        raw.copy_from_slice(&self.base.storage[data_size..buff_size]);
         self.crc_stored = u32::from_be_bytes(raw);
-        self.set_buff_len(data_size);
+        self.base.set_buff_len(data_size);
         true
     }
 
@@ -686,41 +791,9 @@ impl FPrimeSequence {
         true
     }
 
-    /// C++ `Header::validateTime(component)` — validates AND canonicalizes.
-    fn validate_time(
-        &mut self,
-        current_time: &Time,
-        event: &mut Option<SequenceLoadEvent>,
-    ) -> bool {
-        let valid_time_base = current_time.get_time_base();
-        if self.header.time_base != valid_time_base && self.header.time_base != TimeBase::TbDontCare
-        {
-            *event = Some(SequenceLoadEvent::TimeBaseMismatch {
-                current: valid_time_base,
-                seq: self.header.time_base,
-            });
-            return false;
-        }
-        let valid_context = current_time.get_context();
-        if self.header.time_context != valid_context
-            && self.header.time_context != FW_CONTEXT_DONT_CARE
-        {
-            *event = Some(SequenceLoadEvent::TimeContextMismatch {
-                current: valid_context,
-                seq: self.header.time_context,
-            });
-            return false;
-        }
-        // Canonicalize: after a successful validate the header carries the
-        // LIVE base/context, which is what makes don't-care files run.
-        self.header.time_base = valid_time_base;
-        self.header.time_context = valid_context;
-        true
-    }
-
     /// C++ `validateRecords()`.
     fn validate_records(&mut self, event: &mut Option<SequenceLoadEvent>) -> bool {
-        let num_records = self.header.num_records;
+        let num_records = self.base.header.num_records;
         if num_records == 0 {
             *event = Some(SequenceLoadEvent::NoRecords);
             return false;
@@ -736,7 +809,7 @@ impl FPrimeSequence {
                 return false;
             }
         }
-        let left = self.deserialize_size_left();
+        let left = self.base.deserialize_size_left();
         if left > 0 {
             *event = Some(SequenceLoadEvent::RecordMismatch {
                 header_records: num_records,
@@ -744,13 +817,13 @@ impl FPrimeSequence {
             });
             return false;
         }
-        self.reset();
+        self.base.reset();
         true
     }
 
     /// C++ `deserializeRecord()`.
     fn deserialize_record(&mut self, record: &mut SequenceRecord) -> SerializeStatus {
-        self.with_deser(|buf| {
+        self.base.with_deser(|buf| {
             // Descriptor.
             let mut desc_entry = 0u8;
             let status = buf.deserialize_u8_be(&mut desc_entry);
@@ -819,44 +892,35 @@ impl FPrimeSequence {
 
 impl Sequence for FPrimeSequence {
     fn allocate_buffer(&mut self, identifier: FwEnumStoreType, bytes: usize) {
-        // C++ FW_ASSERT(bytes >= Header::SERIALIZED_SIZE).
-        fw_assert!(bytes >= SEQUENCE_HEADER_SIZE, bytes as i32);
-        self.allocator_id = identifier;
-        self.storage = vec![0u8; bytes].into_boxed_slice();
-        self.ser_loc = 0;
-        self.deser_loc = 0;
+        self.base.allocate_buffer(identifier, bytes);
     }
 
     fn deallocate_buffer(&mut self) {
-        self.storage = Box::new([]);
-        self.ser_loc = 0;
-        self.deser_loc = 0;
+        self.base.deallocate_buffer();
     }
 
     fn capacity(&self) -> usize {
-        self.storage.len()
+        self.base.storage.len()
     }
 
     fn set_file_name(&mut self, file_name: &CmdStringArg) {
-        self.file_name = file_name.clone();
-        self.log_file_name.set_bytes(file_name.as_bytes());
-        self.string_file_name.set_bytes(file_name.as_bytes());
+        self.base.set_file_name(file_name);
     }
 
     fn file_name(&self) -> &CmdStringArg {
-        &self.file_name
+        &self.base.file_name
     }
 
     fn log_file_name(&self) -> &LogStringArg {
-        &self.log_file_name
+        &self.base.log_file_name
     }
 
     fn string_file_name(&self) -> &FwDefaultString {
-        &self.string_file_name
+        &self.base.string_file_name
     }
 
     fn header(&self) -> &SequenceHeader {
-        &self.header
+        &self.base.header
     }
 
     fn load_file(
@@ -866,17 +930,17 @@ impl Sequence for FPrimeSequence {
         event: &mut Option<SequenceLoadEvent>,
     ) -> bool {
         // C++ FW_ASSERT(m_buffer.getBuffAddr() != nullptr).
-        fw_assert!(!self.storage.is_empty());
-        self.set_file_name(file_name);
+        fw_assert!(!self.base.storage.is_empty());
+        self.base.set_file_name(file_name);
         // Short-circuit chain, exactly as in C++.
         self.read_file(event)
             && self.validate_crc(event)
-            && self.validate_time(current_time, event)
+            && self.base.validate_time(current_time, event)
             && self.validate_records(event)
     }
 
     fn has_more_records(&self) -> bool {
-        self.deserialize_size_left() > 0
+        self.base.deserialize_size_left() > 0
     }
 
     fn next_record(&mut self, record: &mut SequenceRecord) {
@@ -885,12 +949,11 @@ impl Sequence for FPrimeSequence {
     }
 
     fn reset(&mut self) {
-        self.deser_loc = 0;
+        self.base.reset();
     }
 
     fn clear(&mut self) {
-        self.ser_loc = 0;
-        self.deser_loc = 0;
+        self.base.clear();
     }
 }
 
@@ -2515,6 +2578,9 @@ impl ActiveComponent for CmdSequencer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ports of the upstream AMPCS-format tests (`tests/ampcs.rs`).
+    mod ampcs;
     use fprime_comp::{CmdRegPort, LogPort, LogTextPort, TimePort, TlmPort};
     use fprime_fw::{Serialize, TextLogString, TlmBuffer};
     use std::path::{Path, PathBuf};
