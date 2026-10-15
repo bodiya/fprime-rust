@@ -11,19 +11,33 @@
 //! - `set_id_bases()` — every instance's base id;
 //! - `init()` — queue creation for queued and active instances;
 //! - `connect()` — every connection of the resolved graph, port numbers
-//!   included, in graph order;
+//!   included, in graph order; a typed output to a serial input is
+//!   `connect_serial`, a serial output to a typed input `connect_typed`
+//!   (the call is serialized / deserialized, C++ `invokeSerial`);
 //! - `reg_commands()` and `load_parameters()`;
 //! - `start_tasks()` / `exit_tasks()` / `join_tasks()` for active
 //!   instances.
 //!
 //! Every instance must be of a generated component (the port field and
-//! factory names are the generated ones).
+//! factory names are the generated ones). A component with async serial
+//! input ports is initialized with a com-buffer message size (see
+//! `init`). Each telemetry packet set of the topology becomes a packet
+//! table module next to the topology struct (see [`super::packets`]).
 
 use super::Generator;
 use super::names::{snake, snake_ident};
-use crate::analysis::{ComponentModel, InstanceModel, PortInstance, SymId};
+use crate::analysis::{ComponentModel, InstanceModel, NameGroup, PortInstance, PortType, SymId};
 use crate::ast::{ComponentKind, GeneralPortKind, SpecialPortKind};
-use crate::error::{Diagnostic, Result};
+use crate::error::{Diagnostic, Loc, Result};
+
+/// The type of a connection endpoint.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EndType {
+    /// A typed port (general or special) of this port definition.
+    Typed(SymId),
+    /// A `serial` port.
+    Serial,
+}
 
 impl Generator<'_, '_> {
     /// The Rust path of an instance's implementation type.
@@ -124,6 +138,45 @@ impl Generator<'_, '_> {
         )
     }
 
+    /// The type of port `port` of `comp`: its port definition, the
+    /// framework port of a special port, or serial.
+    fn end_type(&self, comp: &ComponentModel, port: &str, loc: &Loc) -> Result<EndType> {
+        match comp.port(port).expect("resolved port") {
+            PortInstance::General {
+                port: PortType::Typed(p),
+                ..
+            } => Ok(EndType::Typed(*p)),
+            PortInstance::General {
+                port: PortType::Serial,
+                ..
+            } => Ok(EndType::Serial),
+            PortInstance::Special { kind, .. } => {
+                let fpp = super::serial::special_port_type(*kind);
+                match self.find(NameGroup::Port, fpp) {
+                    Some(p) if self.a.ports.contains_key(&p) => Ok(EndType::Typed(p)),
+                    _ => Err(Diagnostic::codegen(
+                        loc.clone(),
+                        format!(
+                            "connecting special port {port} to a serial port needs the framework definition of {fpp}"
+                        ),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Check that port type `psym` can cross a typed <-> serial
+    /// connection.
+    fn check_serializable(&self, psym: SymId, loc: &Loc) -> Result<()> {
+        match self.serial_obstacle(psym) {
+            Some(why) => Err(Diagnostic::codegen(
+                loc.clone(),
+                format!("cannot connect a serial port here: {why}"),
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Emit everything for a topology.
     pub(super) fn emit_topology(&mut self, sym: SymId) -> Result<()> {
         let t = self.a.topologies[&sym].clone();
@@ -207,7 +260,29 @@ impl Generator<'_, '_> {
                         ),
                     ));
                 };
-                self.line(&format!("{}.init({depth});", self.base_of(inst, field)));
+                let serial_async = comp.ports.iter().any(|p| {
+                    matches!(
+                        p,
+                        PortInstance::General {
+                            kind: GeneralPortKind::AsyncInput,
+                            port: PortType::Serial,
+                            ..
+                        }
+                    )
+                });
+                if serial_async {
+                    // Deliberate deviation: the C++ topology calls
+                    // `init(QueueSizes::x, InstanceIds::x)`, so the instance
+                    // index lands in `msgSize` and leaves no room for a
+                    // serialized call; the Rust topology sizes serial calls
+                    // for a com buffer.
+                    self.line(&format!(
+                        "{}.init({depth}, ::fprime_config::FW_COM_BUFFER_MAX_SIZE as ::fprime_config::FwSizeType);",
+                        self.base_of(inst, field)
+                    ));
+                } else {
+                    self.line(&format!("{}.init({depth});", self.base_of(inst, field)));
+                }
             }
         }
         self.dedent();
@@ -233,9 +308,25 @@ impl Generator<'_, '_> {
             let (ff, fi) = by_sym(c.from.instance);
             let (tf, ti) = by_sym(c.to.instance);
             let fcomp = self.a.components[&fi.component].clone();
+            let tcomp = self.a.components[&ti.component].clone();
             let out = self.output_expr(&fi, &ff, &fcomp, &c.from.port, c.from.num.unwrap_or(0))?;
             let inp = self.input_expr(&ti, &tf, &c.to.port, c.to.num.unwrap_or(0));
-            self.line(&format!("{out}.connect_to({inp});"));
+            // Typed <-> serial connections serialize or deserialize the
+            // call (C++ `registerSerialPort` + `invokeSerial`).
+            let from_type = self.end_type(&fcomp, &c.from.port, &c.from.loc)?;
+            let to_type = self.end_type(&tcomp, &c.to.port, &c.to.loc)?;
+            let connect = match (from_type, to_type) {
+                (EndType::Typed(p), EndType::Serial) => {
+                    self.check_serializable(p, &c.loc)?;
+                    "connect_serial"
+                }
+                (EndType::Serial, EndType::Typed(p)) => {
+                    self.check_serializable(p, &c.loc)?;
+                    "connect_typed"
+                }
+                _ => "connect_to",
+            };
+            self.line(&format!("{out}.{connect}({inp});"));
         }
         self.dedent();
         self.line("}");
@@ -311,6 +402,10 @@ impl Generator<'_, '_> {
         self.line("}");
         self.dedent();
         self.line("}");
+
+        // The packet tables of the topology's telemetry packet sets.
+        self.emit_packet_sets(sym)?;
+
         let _ = snake;
         Ok(())
     }

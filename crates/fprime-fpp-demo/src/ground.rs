@@ -8,8 +8,8 @@ use fprime_config::{
     FwChanIdType, FwDpIdType, FwEventIdType, FwIndexType, FwOpcodeType, FwPrmIdType, FwSizeType,
 };
 use fprime_fw::{
-    Buffer, CmdResponse, Endianness, LengthMode, LogBuffer, LogSeverity, ParamBuffer, ParamValid,
-    SerBuf, Success, TextLogString, Time, TlmBuffer,
+    Buffer, CmdResponse, ComBuffer, Endianness, LengthMode, LogBuffer, LogSeverity, ParamBuffer,
+    ParamValid, SerBuf, Success, TextLogString, Time, TlmBuffer,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,10 @@ pub struct GroundLog {
     pub texts: Vec<(FwEventIdType, String)>,
     pub tlm: Vec<(FwChanIdType, Vec<u8>)>,
     pub reports: Vec<(u32, Reading)>,
+    /// Reports that came back through the relay.
+    pub relayed: Vec<(FwIndexType, u32, Reading)>,
+    /// Com buffers that came back through the relay (port, data, context).
+    pub relayed_com: Vec<(FwIndexType, Vec<u8>, u32)>,
     pub ticks: Vec<FwIndexType>,
     /// Parameter values the stub answers with (id -> serialized value).
     pub prm_values: HashMap<FwPrmIdType, Vec<u8>>,
@@ -184,6 +188,22 @@ impl GroundHandlers for Ground {
 
     fn tick_in_handler(&self, port_num: FwIndexType) {
         self.log.lock().unwrap().ticks.push(port_num);
+    }
+
+    fn relay_in_handler(&self, port_num: FwIndexType, seq: u32, reading: &Reading) {
+        self.log
+            .lock()
+            .unwrap()
+            .relayed
+            .push((port_num, seq, reading.clone()));
+    }
+
+    fn com_relay_in_handler(&self, port_num: FwIndexType, data: &mut ComBuffer, context: u32) {
+        self.log
+            .lock()
+            .unwrap()
+            .relayed_com
+            .push((port_num, data.as_slice().to_vec(), context));
     }
 }
 

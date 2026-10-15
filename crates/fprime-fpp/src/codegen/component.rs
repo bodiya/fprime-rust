@@ -36,7 +36,7 @@ use super::names::{ident, snake};
 
 /// Snake-case identifier for an FPP parameter, kept clear of the names the
 /// generated signatures and locals use themselves.
-fn snake_ident(name: &str) -> String {
+pub(super) fn snake_ident(name: &str) -> String {
     let s = super::names::snake_ident(name);
     match s.as_str() {
         "port_num" | "op_code" | "cmd_seq" | "args" | "value" | "time_tag" | "container"
@@ -82,6 +82,9 @@ enum MsgKind {
     ProductRecv(String),
     /// An internal port (name).
     Internal(String),
+    /// An async serial input port (port name): the message carries the
+    /// serialized call as a length-prefixed buffer.
+    Serial(String),
 }
 
 /// What the generator knows about the component being emitted.
@@ -103,6 +106,10 @@ struct Ctx<'m> {
     needs_escrow: bool,
     /// Any guarded port or command.
     needs_guard: bool,
+    /// Any async serial input port (the queue message size is then an
+    /// `init` argument and serial calls are queued through a scratch
+    /// buffer of that size).
+    serial_async: bool,
 }
 
 impl Generator<'_, '_> {
@@ -115,21 +122,6 @@ impl Generator<'_, '_> {
         let loc = s.loc.clone();
 
         // Unsupported constructs.
-        for p in &m.ports {
-            if let PortInstance::General {
-                port: PortType::Serial,
-                name: pn,
-                ..
-            } = p
-            {
-                return Err(Diagnostic::codegen(
-                    p.loc().clone(),
-                    format!(
-                        "component {name}: serial port {pn} is not supported by the Rust back end (typed ports only)"
-                    ),
-                ));
-            }
-        }
         if let Some((smi, _)) = m.state_machine_instances.first() {
             return Err(Diagnostic::codegen(
                 loc,
@@ -168,6 +160,7 @@ impl Generator<'_, '_> {
             msgs: Vec::new(),
             needs_escrow: false,
             needs_guard: false,
+            serial_async: false,
         };
         self.collect_msgs(&mut ctx)?;
 
@@ -215,6 +208,23 @@ impl Generator<'_, '_> {
                         priority: priority.unwrap_or(0),
                         queue_full: *queue_full,
                     });
+                }
+                PortInstance::General {
+                    name,
+                    kind: GeneralPortKind::AsyncInput,
+                    port: PortType::Serial,
+                    priority,
+                    queue_full,
+                    ..
+                } => {
+                    ctx.msgs.push(AsyncMsg {
+                        const_name: format!("MSG_TYPE_{}", snake(name).to_ascii_uppercase()),
+                        kind: MsgKind::Serial(name.clone()),
+                        params: Vec::new(),
+                        priority: priority.unwrap_or(0),
+                        queue_full: *queue_full,
+                    });
+                    ctx.serial_async = true;
                 }
                 PortInstance::General {
                     kind: GeneralPortKind::GuardedInput,
@@ -295,7 +305,7 @@ impl Generator<'_, '_> {
 
     /// A port definition's parameters with their passing modes (bound
     /// modes win over the default rules).
-    fn port_params(&self, psym: SymId) -> Vec<(ParamDef, String)> {
+    pub(super) fn port_params(&self, psym: SymId) -> Vec<(ParamDef, String)> {
         let def = &self.a.ports[&psym];
         def.params
             .iter()
@@ -500,6 +510,27 @@ impl Generator<'_, '_> {
                         ));
                     }
                 }
+                PortInstance::General {
+                    kind: GeneralPortKind::Output,
+                    name,
+                    size,
+                    port: PortType::Serial,
+                    docs,
+                    ..
+                } => {
+                    self.doc(docs);
+                    if *size == 1 {
+                        self.line(&format!(
+                            "pub {}: ::fprime_comp::OutputPort<dyn ::fprime_comp::SerializePort>,",
+                            snake_ident(name)
+                        ));
+                    } else {
+                        self.line(&format!(
+                            "pub {}: [::fprime_comp::OutputPort<dyn ::fprime_comp::SerializePort>; {size}],",
+                            snake_ident(name)
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -538,6 +569,10 @@ impl Generator<'_, '_> {
         if ctx.needs_escrow {
             self.line("/// Escrow for `Fw.Buffer`s crossing the queue.");
             self.line("pub escrow: ::fprime_comp::BufferEscrow,");
+        }
+        if ctx.serial_async {
+            self.line("/// Queue message scratch for async serial calls, sized at `init` to the runtime message size (C++ `m_msgSize`).");
+            self.line("pub serial_msg: ::std::sync::Mutex<::std::boxed::Box<[u8]>>,");
         }
         self.dedent();
         self.line("}");
@@ -780,12 +815,25 @@ impl Generator<'_, '_> {
         if ctx.needs_escrow {
             self.line("escrow: ::fprime_comp::BufferEscrow::new(),");
         }
+        if ctx.serial_async {
+            self.line("serial_msg: ::std::sync::Mutex::new(::std::boxed::Box::new([])),");
+        }
         self.dedent();
         self.line("}");
         self.dedent();
         self.line("}");
         // init / id base
-        if ctx.kind != ComponentKind::Passive {
+        if ctx.serial_async {
+            let q = Self::queued_expr(ctx);
+            self.line("/// Create the message queue (C++ `init(queueDepth, msgSize)`): the message size is `msg_size` plus the message type and port number, and at least `MSG_SIZE`.");
+            self.line("pub fn init(&self, queue_depth: ::fprime_config::FwSizeType, msg_size: ::fprime_config::FwSizeType) {");
+            self.indent();
+            self.line("let fpp_size = (msg_size + (::std::mem::size_of::<::fprime_config::FwIndexType>() + ::std::mem::size_of::<::fprime_config::FwEnumStoreType>()) as ::fprime_config::FwSizeType).max(Self::MSG_SIZE as ::fprime_config::FwSizeType);");
+            self.line(&format!("{q}.create_queue(queue_depth, fpp_size);"));
+            self.line("*self.serial_msg.lock().unwrap() = ::std::vec![0u8; fpp_size as usize].into_boxed_slice();");
+            self.dedent();
+            self.line("}");
+        } else if ctx.kind != ComponentKind::Passive {
             let q = Self::queued_expr(ctx);
             self.line("/// Create the message queue (C++ `init(queueDepth)`).");
             self.line("pub fn init(&self, queue_depth: ::fprime_config::FwSizeType) {");
@@ -879,6 +927,39 @@ impl Generator<'_, '_> {
                     self.line(&format!("    port_num == 0 && self.{f}.is_connected()"));
                 } else {
                     self.line(&format!("    (port_num as usize) < {size} && self.{f}[port_num as usize].is_connected()"));
+                }
+                self.line("}");
+            }
+        }
+        for p in &ctx.m.ports {
+            if let PortInstance::General {
+                kind: GeneralPortKind::Output,
+                name,
+                size,
+                port: PortType::Serial,
+                ..
+            } = p
+            {
+                let f = snake_ident(name);
+                let plain = snake(name);
+                self.line(&format!("/// Invoke serial output port `{name}` with a serialized call and return the target's status (C++ `{name}_out`). Asserts if unconnected."));
+                self.line(&format!("pub fn {plain}_out(&self, port_num: ::fprime_config::FwIndexType, buffer: &mut dyn ::fprime_fw::SerBufAny) -> ::fprime_fw::SerializeStatus {{"));
+                if *size == 1 {
+                    self.line("    ::fprime_fw::fw_assert!(port_num == 0, port_num);");
+                    self.line(&format!("    let p = self.{f}.get();"));
+                    self.line("    p.target.invoke_serial(p.port_num, buffer)");
+                } else {
+                    self.line(&format!("    ::fprime_fw::fw_assert!(port_num >= 0 && (port_num as usize) < {size}, port_num);"));
+                    self.line(&format!("    let p = self.{f}[port_num as usize].get();"));
+                    self.line("    p.target.invoke_serial(p.port_num, buffer)");
+                }
+                self.line("}");
+                self.line(&format!("/// Whether serial output port `{name}` is connected (C++ `isConnected_{name}_OutputPort`)."));
+                self.line(&format!("pub fn is_connected_{plain}_out(&self, port_num: ::fprime_config::FwIndexType) -> bool {{"));
+                if *size == 1 {
+                    self.line(&format!("    port_num == 0 && self.{f}.is_connected()"));
+                } else {
+                    self.line(&format!("    port_num >= 0 && (port_num as usize) < {size} && self.{f}[port_num as usize].is_connected()"));
                 }
                 self.line("}");
             }
@@ -1327,6 +1408,34 @@ impl Generator<'_, '_> {
                 }
             }
         }
+        // Serial input ports.
+        for p in &ctx.m.ports {
+            if let PortInstance::General {
+                name,
+                kind,
+                port: PortType::Serial,
+                docs,
+                ..
+            } = p
+            {
+                if *kind == GeneralPortKind::Output {
+                    continue;
+                }
+                self.doc(docs);
+                self.line(&format!("/// Handler for {kind} serial port `{name}`: `buffer` holds the serialized call."));
+                self.line(&format!(
+                    "fn {}_handler(&self, port_num: ::fprime_config::FwIndexType, buffer: &mut dyn ::fprime_fw::SerBufAny);",
+                    snake(name)
+                ));
+                if *kind == GeneralPortKind::AsyncInput {
+                    // C++ declares a pre-message hook for async serial
+                    // ports but never calls it; only the overflow hook is
+                    // reachable, so only it is generated.
+                    self.line(&format!("/// Called when the queue is full and `{name}` has the `hook` policy (C++ `{name}_overflowHook`)."));
+                    self.line(&format!("fn {}_overflow_hook(&self, _port_num: ::fprime_config::FwIndexType, _buffer: &mut dyn ::fprime_fw::SerBufAny) {{}}", snake(name)));
+                }
+            }
+        }
         // Commands.
         for c in &ctx.m.commands {
             if c.param_cmd.is_some() {
@@ -1414,6 +1523,19 @@ impl Generator<'_, '_> {
                         format!("{}{}Adapter", ctx.name, super::names::pascal(&snake(name)));
                     self.line(&format!("/// Input port `{name}` ({kind}): a port reference to hand to a connection."));
                     self.line(&format!("fn {}(self: &::std::sync::Arc<Self>, port_num: ::fprime_config::FwIndexType) -> ::fprime_comp::PortRef<dyn {trait_path}> {{", snake_ident(name)));
+                    self.line(&format!("    ::fprime_comp::PortRef::new(::std::sync::Arc::new({adapter} {{ comp: ::std::sync::Arc::clone(self) }}), port_num)"));
+                    self.line("}");
+                }
+                PortInstance::General {
+                    name,
+                    kind,
+                    port: PortType::Serial,
+                    ..
+                } if *kind != GeneralPortKind::Output => {
+                    let adapter =
+                        format!("{}{}Adapter", ctx.name, super::names::pascal(&snake(name)));
+                    self.line(&format!("/// Serial input port `{name}` ({kind}): a port reference to hand to a connection."));
+                    self.line(&format!("fn {}(self: &::std::sync::Arc<Self>, port_num: ::fprime_config::FwIndexType) -> ::fprime_comp::PortRef<dyn ::fprime_comp::SerializePort> {{", snake_ident(name)));
                     self.line(&format!("    ::fprime_comp::PortRef::new(::std::sync::Arc::new({adapter} {{ comp: ::std::sync::Arc::clone(self) }}), port_num)"));
                     self.line("}");
                 }
@@ -1611,6 +1733,55 @@ impl Generator<'_, '_> {
         Ok(())
     }
 
+    /// Emit the queueing of an async serial call (`buffer` in scope) from a
+    /// serial input adapter: `[msg type][port number][u16 size][bytes]`
+    /// in the message scratch, then the queue-full policy.
+    fn emit_serial_enqueue(&mut self, ctx: &Ctx<'_>, msg: &AsyncMsg) -> Result<()> {
+        let base = ctx.base.clone();
+        let MsgKind::Serial(name) = &msg.kind else {
+            unreachable!("serial message")
+        };
+        let q = match ctx.kind {
+            ComponentKind::Queued => "queued",
+            ComponentKind::Active => "active.queued",
+            ComponentKind::Passive => unreachable!("passive components have no queue"),
+        };
+        let policy = match msg.queue_full {
+            QueueFull::Assert => "Assert",
+            QueueFull::Block => "Block",
+            QueueFull::Drop => "Drop",
+            QueueFull::Hook => "Hook",
+        };
+        self.line("let fpp_base = self.comp.base();");
+        self.line("let fpp_send_status = {");
+        self.indent();
+        self.line("let mut fpp_scratch = fpp_base.serial_msg.lock().unwrap();");
+        self.line("let mut fpp_msg = ::fprime_fw::ExtBuf::new(&mut fpp_scratch[..]);");
+        self.line(&format!("let fpp_status = ::fprime_comp::msg::write_envelope_header(&mut fpp_msg, {base}::{}, port_num);", msg.const_name));
+        self.line("::fprime_fw::fw_assert!(fpp_status.is_ok(), fpp_status as i32);");
+        self.line(
+            "let fpp_status = fpp_msg.serialize_buffer(&*buffer, ::fprime_fw::Endianness::Big);",
+        );
+        self.line("::fprime_fw::fw_assert!(fpp_status.is_ok(), fpp_status as i32);");
+        self.line(&format!(
+            "fpp_base.{q}.send_message(&fpp_msg, {} as ::fprime_config::FwQueuePriorityType, ::fprime_comp::QueueFullPolicy::{policy})",
+            msg.priority
+        ));
+        self.dedent();
+        self.line("};");
+        if msg.queue_full == QueueFull::Hook {
+            self.line("if fpp_send_status == ::fprime_os::queue::Status::Full {");
+            self.line(&format!(
+                "    self.comp.{}_overflow_hook(port_num, buffer);",
+                snake(name)
+            ));
+            self.line("}");
+        } else {
+            self.line("let _ = fpp_send_status;");
+        }
+        Ok(())
+    }
+
     /// How a bound argument identifier is passed to a hook after being
     /// serialized (an owned buffer is in escrow by then, so hooks see an
     /// empty one).
@@ -1699,6 +1870,21 @@ impl Generator<'_, '_> {
                         format!(", {}", call.join(", "))
                     };
                     self.line(&format!("self.{}_handler(port_num{calls});", snake(name)));
+                }
+                MsgKind::Serial(name) => {
+                    // The serialized call follows as a length-prefixed
+                    // buffer; the handler gets a view of it in place,
+                    // with the rest of the message storage as capacity
+                    // (C++ copies it into a buffer of `m_msgSize`).
+                    self.line("let _ = fpp_base;");
+                    self.line("let mut fpp_len: ::fprime_config::FwSizeStoreType = 0;");
+                    self.line("if !fpp_msg.deserialize_u16_be(&mut fpp_len).is_ok() || fpp_len as usize > fpp_msg.deserialize_size_left() { return ::fprime_comp::MsgDispatchStatus::Error; }");
+                    self.line("let fpp_start = fpp_msg.deser_loc();");
+                    self.line("let mut fpp_buffer = ::fprime_fw::ExtBuf::with_len(&mut fpp_msg.bytes_mut()[fpp_start..], fpp_len as usize);");
+                    self.line(&format!(
+                        "self.{}_handler(port_num, &mut fpp_buffer);",
+                        snake(name)
+                    ));
                 }
                 MsgKind::Internal(name) => {
                     let call = self.emit_deser_args("fpp_base", &msg.params)?;
@@ -1897,6 +2083,61 @@ impl Generator<'_, '_> {
                         }
                         GeneralPortKind::Output => unreachable!(),
                     }
+                    self.dedent();
+                    self.line("}");
+                    self.dedent();
+                    self.line("}");
+                }
+                PortInstance::General {
+                    name,
+                    kind,
+                    port: PortType::Serial,
+                    ..
+                } if *kind != GeneralPortKind::Output => {
+                    let adapter =
+                        format!("{}{}Adapter", ctx.name, super::names::pascal(&snake(name)));
+                    self.line("");
+                    self.line(&format!(
+                        "/// Adapter of serial input port `{name}` (the C++ `InputSerializePort` and its static thunk)."
+                    ));
+                    self.line(&format!(
+                        "pub struct {adapter}<C: {handlers}> {{ comp: ::std::sync::Arc<C> }}"
+                    ));
+                    self.line(&format!(
+                        "impl<C: {handlers}> ::fprime_comp::SerializePort for {adapter}<C> {{"
+                    ));
+                    self.indent();
+                    self.line("fn invoke_serial(&self, port_num: ::fprime_config::FwIndexType, buffer: &mut dyn ::fprime_fw::SerBufAny) -> ::fprime_fw::SerializeStatus {");
+                    self.indent();
+                    match kind {
+                        GeneralPortKind::SyncInput => {
+                            self.line(&format!(
+                                "self.comp.{}_handler(port_num, buffer);",
+                                snake(name)
+                            ));
+                        }
+                        GeneralPortKind::GuardedInput => {
+                            self.line("let _fpp_guard = self.comp.base().guard.lock().unwrap();");
+                            self.line(&format!(
+                                "self.comp.{}_handler(port_num, buffer);",
+                                snake(name)
+                            ));
+                        }
+                        GeneralPortKind::AsyncInput => {
+                            let msg = ctx
+                                .msgs
+                                .iter()
+                                .find(|m| matches!(&m.kind, MsgKind::Serial(n) if n == name))
+                                .expect("async serial msg")
+                                .clone();
+                            self.emit_serial_enqueue(ctx, &msg)?;
+                        }
+                        GeneralPortKind::Output => unreachable!(),
+                    }
+                    self.line(
+                        "// C++ parity: `InputSerializePort::invokeSerial` always answers OK.",
+                    );
+                    self.line("::fprime_fw::SerializeStatus::Ok");
                     self.dedent();
                     self.line("}");
                     self.dedent();

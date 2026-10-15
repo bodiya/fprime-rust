@@ -1633,8 +1633,8 @@ rest of the workspace:
   the argument types (buffers use `2 + capacity`; escrowed buffers 8),
   evaluated by rustc, so a bound type without `FppSized` fails to compile
   rather than silently mis-sizing the queue.
-- Not generated: state machine instances (error), serial ports (error),
-  telemetry packet sets (ignored), the dictionary.
+- Not generated: state machine instances (error). Serial ports and
+  telemetry packet tables: see the ROADMAP item 15 section at the end.
 
 ### JSON dictionary (`codegen::dictionary`)
 
@@ -2016,8 +2016,8 @@ arguments are copy-in only across a serialized call. Deviations: ports with a
 return value or an `Fw::Buffer` do not implement `SerializablePort`, so
 wiring them to a serial port is a compile error (C++ asserts, or serializes a
 pointer); `Fw::ObjRegistry` is not involved (C++ serial ports never use it)
-and stays unported. `fpp-to-rust` does not yet emit `serializable_port!` or
-serial port instances (ROADMAP item 15).
+and stays unported. `fpp-to-rust` emits `serializable_port!` and serial port
+instances on this runtime (ROADMAP item 15 section below).
 
 ```text
 GenericHub (fprime_svc::generic_hub, PASSIVE; no commands, events, telemetry or state)
@@ -2197,3 +2197,86 @@ rather than 10000 time-seeded ones), plus the error branches, the threshold and
 offset arithmetic, the record wire bytes, throttles and the parameter commands.
 The integration test runs `DpWriter` → `DpCompressProc` → `DpZLibCompressor` →
 `BufferManager` and decodes the `.fdp` file the way the ground does.
+
+### fprime-fpp: serial ports and telemetry packet tables (ROADMAP item 15)
+
+Generated on item 9's `fprime_comp::serial_port` runtime (no new runtime
+API). Per FPP construct:
+
+```text
+port P(args)            -> pub trait PPort { .. }
+                           + ::fprime_comp::serializable_port! { port: PPort; args { <mode> name: Type, .. } }
+                             when P has no return value and no Fw.Buffer parameter (modes val/ref/mut/buf
+                             as in the trait signature). Bound framework ports rely on fprime-comp's list.
+sync|guarded|async input port p: [n] serial
+  CHandlers:  fn p_handler(&self, port_num, buffer: &mut dyn SerBufAny);
+              fn p_overflow_hook(&self, port_num, buffer) {}            (async only)
+  CComponent: fn p(self: &Arc<Self>, port_num) -> PortRef<dyn SerializePort>
+  adapter:    CPAdapter<C> implements SerializePort, answers SerializeStatus::Ok
+  async:      MSG_TYPE_P; message [msg type i32][port i16][u16 size][bytes]; the handler gets an
+              ExtBuf view of the bytes inside the dispatch buffer
+  CBase:      serial_msg: Mutex<Box<[u8]>> (enqueue scratch, sized at init);
+              init(queue_depth, msg_size)  // queue msg = max(msg_size + 6, MSG_SIZE)
+output port p: [n] serial
+  CBase:      pub p: OutputPort<dyn SerializePort> | [..; n]
+              p_out(port_num, buffer: &mut dyn SerBufAny) -> SerializeStatus   (asserts unconnected / range)
+              is_connected_p_out(port_num) -> bool
+topology connections: typed|special out -> serial in: out.connect_serial(in)
+                      serial out -> typed|special in: out.connect_typed(in)
+                      serial -> serial and typed -> typed: out.connect_to(in)
+telemetry packets S (topology T) -> pub mod T_STlmPackets {
+    PACKET_LIST: &[TlmPacketizerPacket<'static>]; OMITTED_CHANNELS: &[TlmPacketizerChannelEntry];
+    mod ChannelIds / ChannelSizes / PacketIds / PacketGroups / PacketDataSizes / PacketEntryArrays /
+        Packets (NUM_PACKETS) / SizeBounds (PACKET_HEADER_SIZE, PACKET_MAX_DATA_SIZE) }
+codegen::Options::packetizer_path (default "::fprime_svc::tlm_packetizer")
+analysis: serial <-> typed port with a return value is an error (reference checkSerialWithTypedInput;
+          special prmGetOut / productGetOut included)
+```
+
+The packet tables follow `TlmPacketSetCppWriter`: packets in **name** order
+(not id order — this is the order `set_packet_list` fills and `Run` sends
+them), channels in declaration order as `(base id + local id, maximum
+serialized size)` (strings `size + 2`, bools 1), omitted channels in
+qualified-name order; compile-time assertions replace the `static_assert`s
+(header fits a com buffer, each packet's data fits the rest, at most
+`MAX_PACKETIZER_PACKETS` packets). The set is checked as the dictionary
+checks it (a channel used twice, used and omitted, or neither, is an error).
+
+Deviations and notes:
+
+- **No automatic `set_packet_list`.** Neither does the C++ topology:
+  upstream deployments call `setPacketList(<T>_<S>TlmPackets::packetList,
+  ::omittedChannels, level)` in `phase Fpp.ToCpp.Phases.configComponents`
+  instance code. The Rust back end has no init-specifier support, and a
+  generated topology can only hold generated components (the packetizer is
+  hand-written), so the deployment makes that call itself
+  (`fprime-fpp-demo/tests/packets.rs` does). Both are left on item 15.
+- **Async serial message size.** C++ topologies call `init(QueueSizes::x,
+  InstanceIds::x)` on a component with async serial ports, so the instance
+  index becomes `msgSize`; the Rust topology passes
+  `FW_COM_BUFFER_MAX_SIZE` instead. The enqueue side serializes into a
+  scratch buffer of the runtime message size held under a mutex (C++ uses a
+  variable-length stack array); the dispatch side hands the handler a view
+  of the received bytes instead of copying them into a new
+  `m_msgSize` buffer (its capacity is the rest of the message storage).
+- The async serial **pre-message hook** is declared but never called by the
+  C++ generated code, so it is not generated; the overflow hook is.
+- Queue message types number in port declaration order with typed and
+  serial async ports interleaved (C++ lists typed async ports before serial
+  ones); the numbering is internal to the component.
+- A connection through a port carrying an `Fw.Buffer` is a generation
+  error (`cannot connect a serial port here: ...`), matching the runtime's
+  compile-time refusal; a bound framework port that fprime-comp does not
+  declare serializable fails to compile at `connect_serial`/`connect_typed`.
+
+Tests: `crates/fprime-fpp/tests/codegen.rs` (wiring, refusal, packet order
+and checks), `tests/analysis.rs` (the return-value rule), and in
+`fprime-fpp-demo` a queued `Relay` (sync, guarded and async serial inputs,
+`serialOut[4]`) wired between typed `Demo.Report` and `Fw.Com` ports of the
+ground stub (`tests/serial.rs`: round trips, the queue message bytes, the
+overflow hook, deserialization statuses), and `tests/packets.rs`: the
+generated tables entry by entry, against the dictionary's
+`telemetryPacketSets`, and a real `TlmPacketizer` configured from them
+emitting byte-exact packets from the generated sensor's telemetry (and
+staying silent on the omitted channels). The Rust Ref model has no packet
+set (it uses `TlmChan`), so its dictionary is unchanged.

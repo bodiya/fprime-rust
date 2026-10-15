@@ -1,6 +1,7 @@
 @ Demo components and topology: a queued sensor with every kind of
-@ component member, a passive ground stub that closes every port, and the
-@ topology wiring them (patterns, port arrays, numbering).
+@ component member, a passive ground stub that closes every port, a
+@ queued serial relay, and the topology wiring them (patterns, port
+@ arrays, numbering, typed <-> serial connections, telemetry packets).
 module Demo {
 
   @ A report of one reading
@@ -108,7 +109,40 @@ module Demo {
     output port deliverOut: Deliver
     output port measureOut: Measure
 
+    @ Reports sent through the relay (typed -> serial)
+    output port relayOut: Report
+
+    @ Reports coming back from the relay (serial -> typed)
+    sync input port relayIn: Report
+
+    @ Raw serialized calls into the relay (serial -> serial)
+    output port serialOut: serial
+
+    @ A framework-typed call through the relay (typed -> serial)
+    output port comRelayOut: Fw.Com
+
+    @ The framework-typed call coming back (serial -> typed)
+    sync input port comRelayIn: Fw.Com
+
     match cmdOut with cmdRegIn
+
+  }
+
+  @ A serial relay, a hub in miniature: every serialized call it receives
+  @ goes out unchanged on a serial output
+  queued component Relay {
+
+    @ Synchronous serial inputs, forwarded on the serialOut port of the same number
+    sync input port serialIn: [2] serial
+
+    @ A guarded serial input, forwarded on serialOut port 2
+    guarded input port serialGuarded: serial
+
+    @ A queued serial input with an overflow hook, forwarded on serialOut port 3
+    async input port serialAsync: serial priority 4 hook
+
+    @ The serial outputs
+    output port serialOut: [4] serial
 
   }
 
@@ -118,11 +152,15 @@ module Demo {
   @ The ground instance
   instance ground: Ground base id 0x2000 type "crate::ground::Ground"
 
+  @ The relay instance
+  instance relay: Relay base id 0x3000 type "crate::relay::Relay" queue size 2
+
   @ The demo topology
   deployment topology Demo {
 
     instance sensor
     instance ground
+    instance relay
 
     command connections instance ground
     event connections instance ground
@@ -140,6 +178,46 @@ module Demo {
       ground.measureOut -> sensor.measure
       sensor.productGetOut -> ground.dpGetIn
       sensor.productSendOut -> ground.dpSendIn
+    }
+
+    connections Serial {
+      # typed -> serial -> typed (synchronous)
+      ground.relayOut -> relay.serialIn[0]
+      relay.serialOut[0] -> ground.relayIn
+      # serial -> serial -> serial (queued) -> typed
+      ground.serialOut -> relay.serialIn[1]
+      relay.serialOut[1] -> relay.serialAsync
+      relay.serialOut[3] -> ground.relayIn
+      # a framework port type through a guarded serial port
+      ground.comRelayOut -> relay.serialGuarded
+      relay.serialOut[2] -> ground.comRelayIn
+    }
+
+    @ Packets of the sensor's channels
+    telemetry packets DemoPackets {
+
+      @ Listed second: packets are ordered by name
+      packet Status group 1 {
+        sensor.Mode
+        sensor.Value
+      }
+
+      packet Name id 4 group 2 {
+        sensor.Label
+      }
+
+    }
+
+    @ Only the value, the rest omitted
+    telemetry packets Minimal {
+
+      packet Values group 0 {
+        sensor.Value
+      }
+
+    } omit {
+      sensor.Mode
+      sensor.Label
     }
 
   }

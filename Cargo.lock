@@ -44,6 +44,7 @@ dependencies = [
  "fprime-fpp",
  "fprime-fw",
  "fprime-os",
+ "fprime-svc",
 ]
 
 [[package]]

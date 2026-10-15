@@ -772,6 +772,29 @@ impl<'a> Analysis<'a> {
             if let (PortInstance::General { port: a, .. }, PortInstance::General { port: b, .. }) =
                 (fp, tp)
             {
+                // `Connection.checkSerialWithTypedInput`: a typed port
+                // with a return type cannot be connected to a serial port.
+                match (a, b) {
+                    (PortType::Serial, PortType::Typed(y)) if self.ports[y].ret.is_some() => {
+                        return Err(Diagnostic::semantic(
+                            c.loc.clone(),
+                            format!(
+                                "cannot connect serial output port to input port of type {}, which returns a value",
+                                self.symbols.sym(*y).name
+                            ),
+                        ));
+                    }
+                    (PortType::Typed(x), PortType::Serial) if self.ports[x].ret.is_some() => {
+                        return Err(Diagnostic::semantic(
+                            c.loc.clone(),
+                            format!(
+                                "cannot connect output port of type {}, which returns a value, to serial input port",
+                                self.symbols.sym(*x).name
+                            ),
+                        ));
+                    }
+                    _ => {}
+                }
                 if let (PortType::Typed(x), PortType::Typed(y)) = (a, b) {
                     if x != y {
                         return Err(Diagnostic::semantic(
@@ -785,6 +808,30 @@ impl<'a> Analysis<'a> {
                             ),
                         ));
                     }
+                }
+            }
+            // The same rule for the special ports whose framework port
+            // type returns a value (`Fw.PrmGet`, `Fw.DpGet`).
+            if let (
+                PortInstance::Special { kind, .. },
+                PortInstance::General {
+                    port: PortType::Serial,
+                    ..
+                },
+            ) = (fp, tp)
+            {
+                let ret_type = match kind {
+                    SpecialPortKind::ParamGet => Some("PrmGet"),
+                    SpecialPortKind::ProductGet => Some("DpGet"),
+                    _ => None,
+                };
+                if let Some(t) = ret_type {
+                    return Err(Diagnostic::semantic(
+                        c.loc.clone(),
+                        format!(
+                            "cannot connect output port of type {t}, which returns a value, to serial input port"
+                        ),
+                    ));
                 }
             }
             if let Some(n) = c.from.num {

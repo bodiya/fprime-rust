@@ -9,6 +9,7 @@ use fprime_fpp_demo::generated::Demo::{
     self, DemoTopology, SensorBase, SensorComponent, SensorHandlers,
 };
 use fprime_fpp_demo::ground::Ground;
+use fprime_fpp_demo::relay::Relay;
 use fprime_fpp_demo::sensor::Sensor;
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, FwString, LogSeverity, ParamValid, SerBuf,
@@ -24,6 +25,7 @@ fn build() -> (DemoTopology, Arc<Sensor>, Arc<Ground>) {
     let top = DemoTopology {
         sensor: Arc::clone(&sensor),
         ground: Arc::clone(&ground),
+        relay: Relay::new("relay"),
     };
     top.set_id_bases();
     top.init();

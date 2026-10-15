@@ -10,6 +10,9 @@
 //! Parameter passing: FPP `ref` becomes `&mut T`; a value parameter is by
 //! value for `Copy` types and `&T` otherwise; serializable buffers are
 //! always `&mut T`; `Fw.Buffer` is always owned (it moves).
+//!
+//! A port that can be serialized also gets a
+//! `fprime_comp::serializable_port!` invocation (see [`super::serial`]).
 
 use super::{Generator, names};
 use crate::analysis::SymId;
@@ -61,6 +64,11 @@ impl Generator<'_, '_> {
         self.line(&sig);
         self.dedent();
         self.line("}");
+        // The serial halves (C++ `invokeSerial` and the serializing
+        // branch of `invoke`), for ports that can be serialized.
+        if self.serial_obstacle(sym).is_none() {
+            self.emit_serializable_port(sym)?;
+        }
         Ok(())
     }
 }

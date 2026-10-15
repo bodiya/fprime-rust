@@ -15,6 +15,8 @@
 //! | `port P` | `pub trait PPort: Send + Sync { fn invoke(&self, port_num, ..) }` |
 //! | `component C` | `CBase` (the autocoded base: ports, glue, queue, ids), `CHandlers` (the handler trait the implementation provides), `CComponent` (base access), generated adapters, dispatch, event/telemetry/parameter helpers |
 //! | `topology T` | `TTopology`: instance fields, `set_id_bases`, `connect`, `reg_commands`, `load_parameters`, task start/exit/join |
+//! | `telemetry packets S` (in topology `T`) | `T_STlmPackets`: the `TlmPacketizer` packet table (`PACKET_LIST`, `OMITTED_CHANNELS`) |
+//! | `serial` port | `fprime_comp::SerializePort` inputs and `OutputPort<dyn SerializePort>` outputs; `serializable_port!` per port definition; typed <-> serial connections with `connect_serial` / `connect_typed` |
 //!
 //! Framework definitions the port already hand-writes (`Fw.Time`,
 //! `Fw.Cmd`, config aliases, ...) are *bound* to their existing Rust items
@@ -28,7 +30,9 @@
 pub mod component;
 pub mod dictionary;
 pub mod names;
+pub mod packets;
 pub mod ports;
+pub mod serial;
 pub mod topology;
 pub mod types;
 
@@ -342,6 +346,11 @@ pub struct Options {
     /// (`$crate::generated::...`) instead of relying on imports at the
     /// invocation site.
     pub include_path: Option<String>,
+    /// Rust path of the module that defines `TlmPacketizerPacket`,
+    /// `TlmPacketizerChannelEntry` and `MAX_PACKETIZER_PACKETS`, which the
+    /// packet tables of telemetry packet sets are built from (default
+    /// `::fprime_svc::tlm_packetizer`).
+    pub packetizer_path: String,
 }
 
 impl Default for Options {
@@ -351,6 +360,7 @@ impl Default for Options {
             impl_prefix: "crate::".into(),
             targets: Vec::new(),
             include_path: None,
+            packetizer_path: "::fprime_svc::tlm_packetizer".into(),
         }
     }
 }

@@ -464,3 +464,52 @@ fn topology_errors() {
     let not_member = "module M { topology T { instance a\n connections C { a.o -> b.i } } }";
     assert!(analyze_err(&[("base.fpp", base), ("t.fpp", not_member)]).contains("not a member"));
 }
+
+#[test]
+fn serial_connections_follow_the_reference_rules() {
+    let base = r#"
+      module M {
+        port R -> U32
+        port P(x: U32)
+        passive component S {
+          output port so: [4] serial
+          sync input port si: [4] serial
+          output port ro: R
+          sync input port ri: R
+          output port po: P
+          sync input port pi: P
+          param get port prmGetOut
+          param set port prmSetOut
+          time get port timeGetOut
+        }
+        instance s: S base id 1
+      }"#;
+    // Serial <-> typed without a return value, serial <-> serial, and a
+    // special port to a serial port are all fine.
+    let ok = "module M { topology T { instance s\n connections C { s.so[0] -> s.pi, s.po -> s.si[0], s.so[1] -> s.si[1], s.prmSetOut -> s.si[2], s.timeGetOut -> s.si[3] } } }";
+    let mut session = Session::new();
+    let a = analyze(&mut session, &[("base.fpp", base), ("t.fpp", ok)]);
+    let t = a.topologies.values().next().unwrap();
+    assert_eq!(t.connections.len(), 5);
+
+    // `Connection.checkSerialWithTypedInput`.
+    let to_ret = "module M { topology T { instance s\n connections C { s.so -> s.ri } } }";
+    assert!(
+        analyze_err(&[("base.fpp", base), ("t.fpp", to_ret)]).contains(
+            "cannot connect serial output port to input port of type R, which returns a value"
+        )
+    );
+    let from_ret = "module M { topology T { instance s\n connections C { s.ro -> s.si } } }";
+    assert!(
+        analyze_err(&[("base.fpp", base), ("t.fpp", from_ret)]).contains(
+            "cannot connect output port of type R, which returns a value, to serial input port"
+        )
+    );
+    let from_prm_get =
+        "module M { topology T { instance s\n connections C { s.prmGetOut -> s.si } } }";
+    assert!(
+        analyze_err(&[("base.fpp", base), ("t.fpp", from_prm_get)]).contains(
+            "cannot connect output port of type PrmGet, which returns a value, to serial input port"
+        )
+    );
+}

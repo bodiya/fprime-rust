@@ -51,6 +51,8 @@ topologies) and the reference compiler's own `fpp-to-cpp` test corpora.
 | `port P` | `pub trait PPort: Send + Sync { fn invoke(&self, port_num, ..) [-> R] }` |
 | `component C` | `CBase`, `CHandlers`, `CComponent`, adapters, `impl_c_component!` (below) |
 | `topology T` | `TTopology { instances }` with `set_id_bases`, `init`, `connect`, `reg_commands`, `load_parameters`, `start_tasks`/`exit_tasks`/`join_tasks` |
+| `serial` port | input: a `fprime_comp::SerializePort` adapter; output: `OutputPort<dyn SerializePort>`; each serializable `port P` also gets `fprime_comp::serializable_port!` |
+| `telemetry packets S` in `T` | `T_STlmPackets` with `PACKET_LIST` / `OMITTED_CHANNELS` for `TlmPacketizer::set_packet_list` |
 | `deployment topology T` / `system S` | with `--dict`: `TTopologyDictionary.json` / `SSystemDictionary.json` |
 
 **Bindings.** Framework definitions the workspace hand-writes are never
@@ -115,6 +117,53 @@ Each instance becomes an `Arc<Impl>` field, where `Impl` is the instance's
 numbers, so pattern graphs and port arrays behave exactly as in the C++
 topology. Every instance must be of a generated component.
 
+### Serial ports
+
+On item 9's runtime (`fprime_comp::serial_port`). A port definition with no
+return value and no `Fw.Buffer` parameter is followed by
+`serializable_port! { port: PPort; args { val x: U, ref s: S, .. } }`
+(the C++ `<P>PortSerializer` and the `FW_PORT_SERIALIZATION` halves of the
+typed port: arguments in order, big-endian). In a component:
+
+- a `serial` input port `p` gets `p_handler(&self, port_num, buffer: &mut
+  dyn SerBufAny)` and a factory returning `PortRef<dyn SerializePort>`; the
+  adapter answers `SerializeStatus::Ok` (C++ `InputSerializePort`). Sync
+  and guarded ports call the handler; an async one queues
+  `[msg type][port number][u16 size][bytes]` and the dispatch hands the
+  handler a view of the bytes. The C++ async serial pre-message hook is
+  never called upstream, so only `p_overflow_hook` is generated. A
+  component with async serial ports takes `init(queue_depth, msg_size)`
+  (C++ `init(queueDepth, msgSize)`: the queue message is
+  `max(msg_size + 6, MSG_SIZE)`), and the generated topology passes
+  `FW_COM_BUFFER_MAX_SIZE` (C++ passes the instance id, which leaves no
+  room for a call);
+- a `serial` output port `p` is an `OutputPort<dyn SerializePort>` (or an
+  array) with `p_out(port_num, buffer) -> SerializeStatus` (asserts if
+  unconnected) and `is_connected_p_out`.
+
+The topology connects a typed (or special) output to a serial input with
+`connect_serial`, a serial output to a typed (or special) input with
+`connect_typed`, and serial to serial directly. A connection through a port
+that returns a value is rejected by the analysis (the reference's
+`checkSerialWithTypedInput`, special `prmGetOut`/`productGetOut` included);
+one through a port carrying an `Fw.Buffer` is a generation error.
+
+### Telemetry packet sets
+
+`telemetry packets S` of topology `T` becomes a module `T_STlmPackets`
+(C++ `T_STlmPacketsAc`): `PACKET_LIST: &[TlmPacketizerPacket]` (packets in
+name order, channels in declaration order as `(global id, max serialized
+size)`, with id and group), `OMITTED_CHANNELS` (in qualified-name order) and
+the C++ file-local tables (`ChannelIds`, `ChannelSizes`, `PacketIds`,
+`PacketGroups`, `PacketDataSizes`, `PacketEntryArrays`, `Packets`,
+`SizeBounds`) with the `static_assert`s as compile-time assertions. The set
+is checked as the dictionary checks it. As in C++, the topology does not
+configure a packetizer; a deployment calls
+`tlm_send.set_packet_list(T_STlmPackets::PACKET_LIST,
+T_STlmPackets::OMITTED_CHANNELS, level)` (upstream does it in
+`phase Fpp.ToCpp.Phases.configComponents` code). The types come from
+`Options::packetizer_path` (default `::fprime_svc::tlm_packetizer`).
+
 ## JSON dictionary (`--dict DIR`)
 
 The second back end writes the ground dictionary the stock F Prime ground
@@ -145,8 +194,8 @@ printer and parser.
 
 ## Not generated (yet)
 
-State machine instances (`Fw/Sm` autocoding) and serial ports in the Rust
-back end; telemetry packet sets reach the dictionary but not the Rust
+State machine instances (`Fw/Sm` autocoding); instance init specifiers
+(`phase ... "code"`); instances of hand-written components in a generated
 topology. Anonymous struct constants and abstract-type values are emitted
 as comments.
 
@@ -179,10 +228,12 @@ src/include.rs      include splicing
 src/transform.rs    implicit state enums
 src/analysis/       symbols, types/values, eval, format strings, components, topologies
 src/analysis/uses.rs  deep used-symbol closure (dictionary contents)
-src/codegen/        bindings + driver, names, types, ports, component, topology
+src/codegen/        bindings + driver, names, types, ports, component, topology,
+                    serial (serial-port helpers), packets (telemetry packet tables)
 src/codegen/dictionary.rs  the JSON dictionary back end
 src/json.rs         JSON value, printer, parser
 src/bin/fpp_to_rust.rs
 tests/analysis.rs   reference-rule tests on inline models
+tests/codegen.rs    back-end tests on inline models (serial wiring, packet tables)
 tests/dictionary.rs the reference fpp-to-dict corpus (tests/dict)
 ```

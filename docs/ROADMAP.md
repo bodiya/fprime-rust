@@ -34,7 +34,8 @@ subsystems, then the strategic changes.
   wiring. `crates/fprime-fpp-demo` builds a model from FPP at build time
   and tests the generated code end to end; the whole upstream framework
   model and the Ref deployment analyze. Not generated: state machines
-  (`Fw/Sm`, item 11 below) and serial ports (item 15). See
+  (`Fw/Sm`, item 11 below; serial ports and packet tables landed with
+  item 15). See
   `crates/fprime-fpp/README.md`.
 
 - **Config constants into `fprime-config`** (item 1). `FW_FILE_BUFFER_MAX_SIZE`,
@@ -110,6 +111,26 @@ subsystems, then the strategic changes.
   dictionary are unchanged; `fprime_config::dp_compression` carries the
   subtopology constants.
 
+- **FPP back end: serial ports and telemetry packet tables** (item 15,
+  except state machines). `fpp-to-rust` targets item 9's
+  `fprime_comp::serial_port` runtime: every generated port definition
+  without a return value or an `Fw.Buffer` gets a `serializable_port!`;
+  `serial` input ports are `SerializePort` adapters (sync, guarded and
+  async, the latter queued as `[type][port][u16 size][bytes]` with the
+  overflow hook) whose handlers get the serialized call, `serial` outputs
+  are `OutputPort<dyn SerializePort>`s with `<port>_out` returning the
+  callee's status, and the topology wires typed → serial with
+  `connect_serial` and serial → typed with `connect_typed`; the analysis
+  enforces the reference's no-return-value rule. Each topology
+  `telemetry packets` set becomes `<Topology>_<Set>TlmPackets` with the
+  `PACKET_LIST` / `OMITTED_CHANNELS` that `TlmPacketizer::set_packet_list`
+  takes, ordered and checked as `TlmPacketSetCppWriter` does. Like the
+  C++ autocoder, the topology does not call `set_packet_list` itself
+  (upstream does it in instance init code). `fprime-fpp-demo` proves both
+  end to end: a queued `Relay` between typed ports, and a real
+  `TlmPacketizer` packetizing the generated sensor's telemetry from the
+  generated tables.
+
 ## Next: small follow-ups
 
 These surfaced while porting the items above. None changes the wire format of
@@ -138,12 +159,13 @@ the Ref deployment.
 13. **`no_std` OSAL seam.** `fprime-os` keeps the seam; making `fprime-fw`
     and `fprime-comp` `no_std` + `alloc` is the first real test of it.
 15. **FPP back-end gaps.** The front end is complete; the Rust back end
-    still lacks state-machine instances (needs item 11) and serial ports
-    (the runtime they would target, `fprime_comp::serial_port`, landed with
-    item 9: generate `serial` port instances as `SerializePort`s and a
-    `serializable_port!` for each generated port definition).
-    Telemetry packet sets are analyzed and written to the dictionary but
-    the Rust topology does not yet instantiate a packetizer from them.
+    still lacks state-machine instances (needs item 11). Serial ports and
+    telemetry packet tables are done (see "Done in phase 2"). Still open
+    here: instance init specifiers (`phase ... """code"""`), which is how
+    upstream deployments call `setPacketList` on their packetizer, and
+    instances of hand-written framework components in a generated
+    topology (so a generated topology could hold the `TlmPacketizer`
+    itself).
 
 ## Cross-compatibility with the stock ground system
 
