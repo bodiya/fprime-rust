@@ -164,6 +164,24 @@ fpp_enum! {
     default Ok
 }
 
+fpp_enum! {
+    /// `Fw.StringFormatStatus` — the GDS-visible shadow enum for
+    /// `Fw::FormatStatus`.
+    pub enum StringFormatStatus : u8 {
+        /// Format worked.
+        Success = 0,
+        /// Format overflowed the destination.
+        Overflowed = 1,
+        /// The format string was invalid.
+        InvalidFormatString = 2,
+        /// `FwSizeType` overflowed `size_t`.
+        SizeOverflow = 3,
+        /// An underlying call returned an error.
+        OtherError = 4,
+    }
+    default Success
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -37,6 +37,14 @@ subsystems, then the strategic changes.
   (`Fw/Sm`, item 11 below) and serial ports (item 15). See
   `crates/fprime-fpp/README.md`.
 
+- **Config constants into `fprime-config`** (item 1). `FW_FILE_BUFFER_MAX_SIZE`,
+  `FILE_DOWN_COMPLETE_PORTS`, `file_downlink::*`, `file_manager::*` and
+  `crc_checker::FILE_READ_BLOCK` now live in `fprime-config`, re-exported
+  under their old component paths; `Fw::StringFormatStatus` moved to
+  `fprime-fw::enums`. The `PassiveTextLogger`, `TlmPacketizer` and
+  `SystemResources` constants are still module-local (see
+  `docs/api-notes.md`), and the CCSDS `ComCfg` values stay in
+  `ccsds::types` by design.
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
   and `PrmDb` all use the one implementation; `PrmDb`'s private `String`-based
@@ -51,13 +59,8 @@ subsystems, then the strategic changes.
 
 ## Next: small, unblocked
 
-1. **Config constants into `fprime-config`.** Several components carry
-   module-level consts flagged "migrate when config is next touched":
-   `FW_FILE_BUFFER_MAX_SIZE`, `FileDownCompletePorts`, `FILEDOWNLINK_*`,
-   `FileManagerConfig::*` (`file_uplink.rs`, `file_downlink.rs`,
-   `file_manager.rs`), `CONFIG_CRC_FILE_READ_BLOCK` (`fprime-utils`),
-   `Fw::StringFormatStatus` (`file_manager.rs` → `fprime-fw::enums`). Pure
-   moves with re-exports; no behavior change.
+(Item 1, the config-constant move, is done; see above.)
+
 2. **`FileManager` sandbox (`resolveInSandbox`).** Upstream now resolves every
    command path through `Os::SandboxedFile` before use. Port the
    `configureSandbox()` entry point and the resolve step onto the moved

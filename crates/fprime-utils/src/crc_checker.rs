@@ -17,8 +17,9 @@ use std::io::{Read, Write};
 use crate::hash::{HASH_EXTENSION_STRING, Hash};
 
 /// Block size used when reading files for CRC calculation
-/// (C++ `CONFIG_CRC_FILE_READ_BLOCK`, `default/config/CRCCheckerConfig.hpp`).
-pub const CRC_FILE_READ_BLOCK: usize = 2048;
+/// (C++ `CONFIG_CRC_FILE_READ_BLOCK`, `default/config/CRCCheckerConfig.hpp`);
+/// configured in [`fprime_config::crc_checker`].
+pub use fprime_config::crc_checker::FILE_READ_BLOCK as CRC_FILE_READ_BLOCK;
 
 /// CRC checker status (port of `Utils::crc_stat_t`, exact discriminants).
 #[must_use]

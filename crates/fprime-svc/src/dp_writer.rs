@@ -26,7 +26,6 @@
 //! * The C++ file is never explicitly closed (it relies on the `Os::File`
 //!   destructor); the Rust [`File`] closes on drop, which is the same thing.
 
-use crate::file_manager::StringFormatStatus;
 use fprime_comp::escrow::BufferEscrow;
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferSendPort, CmdGlue, CmdPort, ComponentDispatch, EventGlue,
@@ -38,6 +37,7 @@ use fprime_config::{
     FwDpIdType, FwDpPriorityType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
     FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::StringFormatStatus;
 use fprime_fw::dp::DpContainer;
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, FileNameString, LinearBuffer, LogSeverity,

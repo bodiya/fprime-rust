@@ -33,7 +33,6 @@ use crate::dp_writer::{DP_EXT, DpWrittenPort, format_dp_file_name};
 use crate::file_downlink::{
     SendFileCompletePort, SendFileNameArg, SendFileRequestPort, SendFileResponse, SendFileStatus,
 };
-use crate::file_manager::StringFormatStatus;
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComponentDispatch, EventGlue, EventThrottle,
     MsgDispatchStatus, OutputPort, PingPort, PortRef, QueueFullPolicy, TlmGlue, msg,
@@ -43,6 +42,7 @@ use fprime_config::{
     FwDpIdType, FwDpPriorityType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
     FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::StringFormatStatus;
 use fprime_fw::dp::{DpContainer, DpState};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, ExtBuf, FileNameString, FwDefaultString,

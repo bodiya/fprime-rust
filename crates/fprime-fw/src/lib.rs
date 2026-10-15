@@ -28,8 +28,8 @@ pub use fprime_config as config;
 pub use buffer::{Buffer, BufferStorage};
 pub use com::{Apid, ComPacketType, FrameContext, Pvn, SA_INDEX_UNSET};
 pub use enums::{
-    CmdResponse, Completed, DeserialStatus, Enabled, Health, LogSeverity, ParamValid, Success,
-    TlmValid, Wait,
+    CmdResponse, Completed, DeserialStatus, Enabled, Health, LogSeverity, ParamValid,
+    StringFormatStatus, Success, TlmValid, Wait,
 };
 pub use fpp::FppSized;
 pub use logger::FwLogger;

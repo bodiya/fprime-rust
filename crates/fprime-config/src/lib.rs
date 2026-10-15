@@ -83,6 +83,10 @@ const _: () = {
 
 /// Maximum size of a com buffer (`FW_COM_BUFFER_MAX_SIZE`).
 pub const FW_COM_BUFFER_MAX_SIZE: usize = 512;
+/// Maximum size of a file-packet buffer (`FW_FILE_BUFFER_MAX_SIZE`); a file
+/// packet travels in one com buffer, so it defaults to
+/// [`FW_COM_BUFFER_MAX_SIZE`].
+pub const FW_FILE_BUFFER_MAX_SIZE: usize = FW_COM_BUFFER_MAX_SIZE;
 /// Command argument buffer: 512 - sizeof(FwOpcodeType)=4 - sizeof(FwPacketDescriptorType)=2.
 pub const FW_CMD_ARG_BUFFER_MAX_SIZE: usize = FW_COM_BUFFER_MAX_SIZE - 4 - 2;
 /// Event log argument buffer size.
@@ -136,6 +140,8 @@ pub const RATE_GROUP_MEMBER_OUT_PORTS: usize = 10;
 pub const RATE_GROUP_DRIVER_CYCLE_PORTS: usize = 3;
 /// Number of ping ports on the Health component (`HealthPingPorts`).
 pub const HEALTH_PING_PORTS: usize = 25;
+/// Number of `FileComplete` output ports on FileDownlink (`FileDownCompletePorts`).
+pub const FILE_DOWN_COMPLETE_PORTS: usize = 1;
 
 // ---------------------------------------------------------------------------
 // Per-component configuration (default/config/*Cfg.hpp equivalents)
@@ -208,6 +214,43 @@ pub mod com_queue {
     pub const BUFFER_PORTS: usize = 1;
 }
 
+/// `Svc::FileDownlink` configuration (`FileDownlinkCfg.hpp`).
+pub mod file_downlink {
+    /// Size of the internal file-packet buffer
+    /// (`FILEDOWNLINK_INTERNAL_BUFFER_SIZE`).
+    pub const INTERNAL_BUFFER_SIZE: usize = super::FW_FILE_BUFFER_MAX_SIZE;
+    /// When true, failures report success on the command/port response while
+    /// still emitting their warning events
+    /// (`FILEDOWNLINK_COMMAND_FAILURES_DISABLED`).
+    pub const COMMAND_FAILURES_DISABLED: bool = true;
+}
+
+/// `Svc::FileManager` configuration (`FileManagerConfig.hpp` +
+/// `FileManagerCfg.fpp`).
+pub mod file_manager {
+    use super::FwDpPriorityType;
+
+    /// Directory entries listed per rate tick
+    /// (`FileManagerConfig::FILES_PER_RATE_TICK`).
+    pub const FILES_PER_RATE_TICK: u32 = 1;
+    /// Maximum file bytes per `GenerateDp` chunk
+    /// (`FileManagerConfig::GENERATE_DP_MAX_CHUNK_SIZE`).
+    pub const GENERATE_DP_MAX_CHUNK_SIZE: u32 = 1024;
+    /// `GenerateDp` chunks emitted per rate tick in paced mode
+    /// (`FileManagerConfig::CHUNKS_PER_RATE_TICK`).
+    pub const CHUNKS_PER_RATE_TICK: u32 = 1;
+    /// Container priority used when a `GenerateDp` command passes
+    /// `priority = 0` (`FileManagerCfg::DEFAULT_DP_PRIORITY`).
+    pub const DEFAULT_DP_PRIORITY: FwDpPriorityType = 10;
+}
+
+/// `Utils::CRCChecker` configuration (`CRCCheckerConfig.hpp`).
+pub mod crc_checker {
+    /// Block size for streaming a file through the CRC
+    /// (`CONFIG_CRC_FILE_READ_BLOCK`).
+    pub const FILE_READ_BLOCK: usize = 2048;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +306,14 @@ mod tests {
         assert_eq!(RATE_GROUP_MEMBER_OUT_PORTS, 10);
         assert_eq!(RATE_GROUP_DRIVER_CYCLE_PORTS, 3);
         assert_eq!(HEALTH_PING_PORTS, 25);
+        assert_eq!(FILE_DOWN_COMPLETE_PORTS, 1);
+        assert_eq!(FW_FILE_BUFFER_MAX_SIZE, 512);
+        assert_eq!(file_downlink::INTERNAL_BUFFER_SIZE, 512);
+        assert!(file_downlink::COMMAND_FAILURES_DISABLED);
+        assert_eq!(file_manager::FILES_PER_RATE_TICK, 1);
+        assert_eq!(file_manager::GENERATE_DP_MAX_CHUNK_SIZE, 1024);
+        assert_eq!(file_manager::CHUNKS_PER_RATE_TICK, 1);
+        assert_eq!(file_manager::DEFAULT_DP_PRIORITY, 10);
+        assert_eq!(crc_checker::FILE_READ_BLOCK, 2048);
     }
 }

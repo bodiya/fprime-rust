@@ -73,19 +73,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
-// Config (C++ default/config/FileManagerConfig.hpp + FileManagerCfg.fpp)
+// Config (C++ default/config/FileManagerConfig.hpp + FileManagerCfg.fpp),
+// configured in `fprime_config::file_manager` and re-exported here.
 // ---------------------------------------------------------------------------
 
-/// `FileManagerConfig::FILES_PER_RATE_TICK` — directory entries listed per
-/// rate tick.
-pub const FILES_PER_RATE_TICK: u32 = 1;
-/// `FileManagerConfig::GENERATE_DP_MAX_CHUNK_SIZE`.
-pub const GENERATE_DP_MAX_CHUNK_SIZE: u32 = 1024;
-/// `FileManagerConfig::CHUNKS_PER_RATE_TICK`.
-pub const CHUNKS_PER_RATE_TICK: u32 = 1;
-/// `FileManagerCfg::DEFAULT_DP_PRIORITY` — the container priority used when
-/// a `GenerateDp` command passes `priority = 0`.
-pub const DEFAULT_DP_PRIORITY: FwDpPriorityType = 10;
+pub use fprime_config::file_manager::{
+    CHUNKS_PER_RATE_TICK, DEFAULT_DP_PRIORITY, FILES_PER_RATE_TICK, GENERATE_DP_MAX_CHUNK_SIZE,
+};
 
 // ---------------------------------------------------------------------------
 // Data products (FileManager.fpp `product container` / `product record`)
@@ -159,25 +153,8 @@ fpp_enum! {
     default Paced
 }
 
-fpp_enum! {
-    /// `Fw.StringFormatStatus` — the shadow enum for `Fw::FormatStatus`.
-    /// Declared here because `fprime-fw`'s `enums` module (owned by an
-    /// earlier wave) does not carry it; move it there when that crate is
-    /// next touched.
-    pub enum StringFormatStatus : u8 {
-        /// Format worked.
-        Success = 0,
-        /// Format overflowed the destination.
-        Overflowed = 1,
-        /// The format string was invalid.
-        InvalidFormatString = 2,
-        /// `FwSizeType` overflowed `size_t`.
-        SizeOverflow = 3,
-        /// An underlying call returned an error.
-        OtherError = 4,
-    }
-    default Success
-}
+/// `Fw.StringFormatStatus`, re-exported from `fprime-fw` where it now lives.
+pub use fprime_fw::StringFormatStatus;
 
 // ---------------------------------------------------------------------------
 // Dictionary constants

@@ -54,9 +54,8 @@ use fprime_comp::{
     MsgDispatchStatus, OutputPort, PingPort, PortRef, QueueFullPolicy, SchedPort, TlmGlue, msg,
 };
 use fprime_config::{
-    FW_CMD_ARG_BUFFER_MAX_SIZE, FW_COM_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType,
-    FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwPacketDescriptorType,
-    FwQueuePriorityType, FwSizeType,
+    FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIdType,
+    FwIndexType, FwOpcodeType, FwPacketDescriptorType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::file_packet::{
     CancelPacket, DATA_PACKET_HEADER_SIZE, DataPacket, EndPacket, FilePacket, FilePacketType,
@@ -75,24 +74,17 @@ use std::sync::{Arc, Mutex};
 use fprime_os::SandboxedFile;
 
 // ---------------------------------------------------------------------------
-// Config constants (C++ default/config/FileDownlinkCfg.hpp + FppConstants)
+// Config constants (C++ default/config/FileDownlinkCfg.hpp + FppConstants),
+// configured in `fprime_config::file_downlink` and re-exported here.
 // ---------------------------------------------------------------------------
 
-/// `FILEDOWNLINK_INTERNAL_BUFFER_SIZE` = `FW_FILE_BUFFER_MAX_SIZE` =
-/// `FW_COM_BUFFER_MAX_SIZE` = 512.
-pub const INTERNAL_BUFFER_SIZE: usize = FW_COM_BUFFER_MAX_SIZE;
+pub use fprime_config::FILE_DOWN_COMPLETE_PORTS;
+pub use fprime_config::file_downlink::{COMMAND_FAILURES_DISABLED, INTERNAL_BUFFER_SIZE};
 
 /// Maximum file bytes per DATA packet: 512 - 11 (`DataPacket::HEADERSIZE`)
 /// - 2 (`FwPacketDescriptorType`) = 499.
 pub const MAX_DATA_SIZE: usize =
     INTERNAL_BUFFER_SIZE - DATA_PACKET_HEADER_SIZE - size_of::<FwPacketDescriptorType>();
-
-/// `FileDownCompletePorts` — the `FileComplete` output-port array size.
-pub const FILE_DOWN_COMPLETE_PORTS: usize = 1;
-
-/// `FILEDOWNLINK_COMMAND_FAILURES_DISABLED` — TRUE by default, so failures
-/// report success on the command/port response while still warning.
-pub const COMMAND_FAILURES_DISABLED: bool = true;
 
 /// The two static packet arenas (`FILE_PACKET`, `CANCEL_PACKET`).
 const PACKET_ARENA_COUNT: usize = 2;
