@@ -1455,14 +1455,15 @@ GPIO (gpio.rs)
     assoc consts: EVENTID_OPEN_CHIP=0, EVENTID_OPEN_CHIP_ERROR=1, EVENTID_OPEN_PIN_ERROR=2, EVENTID_INTERRUPT_READ_ERROR=3, EVENTID_POLLING_ERROR=4, EVENTID_INTERRUPT_TIME_ERROR=5; GPIO_POLL_TIMEOUT: u64 = 500 (ms); CONSUMER_LABEL_SIZE=32
     Wiring: connect evt.log_out/text_log_out/time_out; connect gpio_interrupt_out to an ASYNC input (it fires on the poll thread). No Tlm, no Cmd ports (FPP parity).
 
-UART (uart.rs) — reuses crate::byte_stream::{ByteStreamStatus, ByteStreamSendPort, ByteStreamDataPort, ByteStreamReadyPort}
+UART (uart.rs; `Drv::PosixUartDriver`, upstream's `LinuxUartDriver` before nasa/fprime#5811) — reuses crate::byte_stream::{ByteStreamStatus, ByteStreamSendPort, ByteStreamDataPort, ByteStreamReadyPort}
   enum UartBaudRate (repr u32, discriminants ARE the baud numbers): Baud9600..Baud4000K; const fn as_u32()->u32
   enum UartFlowControl {NoFlow=0, HwFlow=1} (Default NoFlow); enum UartParity {ParityNone=0, ParityOdd=1, ParityEven=2} (Default ParityNone)
   enum UartConfigPolicy {Reject (Default), Stty, TrustExternal}
+  const STTY_DEVICE_FLAG: &str  // "-F" on Linux/Android, "-f" on BSD-derived hosts
   fn stty_arguments(device:&str, baud, flow_control, parity) -> Vec<String>
   trait SerialBackend: Send+Sync { fn open(&self, device:&str)->io::Result<()>; fn read(&self, dest:&mut [u8])->io::Result<usize>; fn write(&self, data:&[u8])->io::Result<usize>; fn is_open(&self)->bool; fn close(&self) {} }
   struct FileSerialBackend: fn new()
-  struct LinuxUartDriver { pub base: PassiveBase, pub evt: EventGlue, pub tlm: TlmGlue, pub allocate_out: OutputPort<dyn BufferGetPort>, pub deallocate_out: OutputPort<dyn BufferSendPort>, pub recv_out: OutputPort<dyn ByteStreamDataPort>, pub ready_out: OutputPort<dyn ByteStreamReadyPort> }
+  struct PosixUartDriver { pub base: PassiveBase, pub evt: EventGlue, pub tlm: TlmGlue, pub allocate_out: OutputPort<dyn BufferGetPort>, pub deallocate_out: OutputPort<dyn BufferSendPort>, pub recv_out: OutputPort<dyn ByteStreamDataPort>, pub ready_out: OutputPort<dyn ByteStreamReadyPort> }
     fn new(name)->Arc<Self>; fn with_backend(name, Box<dyn SerialBackend>)->Arc<Self>
     fn set_config_policy(&self, UartConfigPolicy); fn config_policy(&self)->UartConfigPolicy
     fn open(&self, device:&str, baud:UartBaudRate, fc:UartFlowControl, parity:UartParity, allocation_size:FwSizeType)->bool
@@ -1872,3 +1873,21 @@ the FIFO (C++ dangles / leaks); an undeclared enum command argument answers
 `VALIDATION_ERROR` (workspace convention). In the Ref, both `dpMgr.productSendOut[0]`
 and `[1]` feed the fill port — upstream wires only `[0]`, but this deployment's
 `fileManager` produces on index 1 and an unconnected output port would assert.
+
+### fprime-drv: `Drv::PosixUartDriver` (formerly `LinuxUartDriver`)
+
+```text
+uart::LinuxUartDriver  ->  uart::PosixUartDriver   (no alias; same fields, methods, ids)
+uart::STTY_DEVICE_FLAG: &str = "-F" (Linux/Android) | "-f" (other hosts)
+```
+
+Port of upstream nasa/fprime#5811 (in 4dee010), which renamed the component, widened
+its CMake restriction from `Linux Darwin` to `Posix`, and deleted the deprecated
+`Drv/LinuxUartDriver` alias module. The C++ diff is a pure rename: ports, event and
+channel ids, the read loop and `open()` are unchanged, and the high baud rates stay
+conditional on the platform's `B*` macros ("platform-dependent" in the SDD; all are
+declared in the Rust enum, as before). The module file stays `uart.rs` (it never
+carried the platform in its name). Following upstream, no deprecated alias is kept.
+Following the wider restriction, `UartConfigPolicy::Stty` now passes the BSD `stty -f`
+device flag on non-Linux hosts instead of GNU-only `-F`; Linux behavior is unchanged.
+No FPP model, dictionary or Ref wiring in this repository named the driver.

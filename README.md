@@ -111,7 +111,7 @@ Requires stable Rust (edition 2024). No external crates.
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
-| Drivers | `TcpClient`, `TcpServer` (byte-stream model); `LinuxGpioDriver`, `LinuxUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
+| Drivers | `TcpClient`, `TcpServer` (byte-stream model); `LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
 ### Hardware drivers: what works without `unsafe`
@@ -127,8 +127,9 @@ can supply real hardware access without forking the component:
   faithful input/output, and *level-sampled* pseudo-interrupts (`poll(2)` is
   unavailable) — documented on the public API as sampling, not kernel edge
   interrupts.
-- **UART** ships device-file I/O over an already-configured port, with an
-  opt-in helper that applies settings via `stty`. Requesting a
+- **UART** (`PosixUartDriver`, upstream's former `LinuxUartDriver`) ships
+  device-file I/O over an already-configured port, with an opt-in helper
+  that applies settings via `stty` (GNU `-F` or BSD `-f`, per host). Requesting a
   configuration without it fails the open with `ConfigError` rather than
   silently running at the wrong baud.
 - **I²C and SPI** ship stub backends only; the required ioctls are named in

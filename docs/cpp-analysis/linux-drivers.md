@@ -3,6 +3,13 @@
 > Analysis of the C++ F Prime implementation (github.com/nasa/fprime) produced to guide this Rust port.
 > File paths refer to the C++ tree.
 
+> **Renamed upstream:** nasa/fprime#5811 renamed `Drv::LinuxUartDriver` to
+> `Drv::PosixUartDriver` (`Drv/PosixUartDriver/`), widened its build
+> restriction from `Linux Darwin` to any POSIX platform and deleted the old
+> alias module. The code, ports, events and telemetry below are unchanged; read
+> `LinuxUartDriver` as `PosixUartDriver`. The Rust port is
+> `fprime_drv::uart::PosixUartDriver`.
+
 ## Overview
 
 Four passive components wrapping Linux kernel userspace device APIs. GPIO uses the /dev/gpiochip* character-device uAPI (v2 preferred, v1 fallback) with a dedicated poll(2) interrupt thread; UART uses termios on /dev/tty* with a dedicated blocking-read thread and the ByteStreamDriver interface; I2C uses /dev/i2c-N (ioctl I2C_SLAVE + read/write, or ioctl I2C_RDWR for combined transfers); SPI uses /dev/spidevD.S (ioctl SPI_IOC_* config + SPI_IOC_MESSAGE(1) full-duplex transfer). All four ship a stub .cpp selected by CMake (FPRIME_USE_STUBBED_DRIVERS / non-Linux platform); GPIO is Linux-only, UART is restrict_platforms(Linux Darwin). Every device-touching operation except UART read/write and (half-duplex) spidev read/write requires ioctl(2), which safe zero-dependency std Rust cannot issue.

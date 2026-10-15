@@ -1,8 +1,17 @@
-//! # LinuxUartDriver — port of `Drv::LinuxUartDriver`
+//! # PosixUartDriver — port of `Drv::PosixUartDriver`
 //!
-//! C++ sources: `Drv/LinuxUartDriver/LinuxUartDriver.{fpp,hpp,cpp}`,
+//! C++ sources: `Drv/PosixUartDriver/PosixUartDriver.{fpp,hpp,cpp}`,
 //! `Events.fppi`, `Telemetry.fppi`.
-//! Analysis: `docs/cpp-analysis/linux-drivers.md`.
+//! Analysis: `docs/cpp-analysis/linux-drivers.md` (written against the
+//! pre-rename `Drv/LinuxUartDriver`).
+//!
+//! Upstream renamed `Drv::LinuxUartDriver` to `Drv::PosixUartDriver` in
+//! nasa/fprime#5811 and widened its build restriction from `Linux Darwin` to
+//! any POSIX platform; the code, ports, events and telemetry are unchanged.
+//! Upstream deleted the old name outright, so this port keeps no alias
+//! either. Following the wider restriction, the [`UartConfigPolicy::Stty`]
+//! helper picks the `stty(1)` device flag for the host (see
+//! [`STTY_DEVICE_FLAG`]).
 //!
 //! PASSIVE component implementing the `Drv.ByteStreamDriver` interface over a
 //! serial device, with a dedicated read thread (C++ `"SerReader"`):
@@ -28,7 +37,7 @@
 //! Rather than run at whatever settings the port happens to carry, this port
 //! makes configuration an explicit choice — [`UartConfigPolicy`]:
 //!
-//! - [`UartConfigPolicy::Reject`] (the default) — [`LinuxUartDriver::open`]
+//! - [`UartConfigPolicy::Reject`] (the default) — [`PosixUartDriver::open`]
 //!   emits the `ConfigError` event (FPP id 1, declared but never emitted
 //!   upstream — finally put to work) and returns `false` without touching
 //!   the device. Nothing silently runs at the wrong baud.
@@ -41,7 +50,7 @@
 //!   `stty -F /dev/ttyUSB0 115200 raw -echo -crtscts min 0 time 10`);
 //!   `open()` proceeds without applying anything.
 //!
-//! [`LinuxUartDriver::open_preconfigured`] is the same as `TrustExternal`
+//! [`PosixUartDriver::open_preconfigured`] is the same as `TrustExternal`
 //! but does not ask for settings at all.
 //!
 //! Data transfer itself is faithful: [`SerialBackend`] is plain `read`/
@@ -50,7 +59,7 @@
 //! `set_size(0)` → classify → `recv_out` with the possibly-zero-sized
 //! buffer). Because `VMIN`/`VTIME` may not be applied, a read that returns 0
 //! immediately would hot-spin, so the retry is paced by
-//! [`LinuxUartDriver::IDLE_READ_RETRY_US`] (a documented addition — the C++
+//! [`PosixUartDriver::IDLE_READ_RETRY_US`] (a documented addition — the C++
 //! loop relies on the 1 s `VTIME` timeout for the same effect).
 //!
 //! Unlike C++, the device string is OWNED by the component (C++ stores the
@@ -78,12 +87,13 @@ use std::sync::{Arc, Mutex};
 /// UART event string arguments are declared `string size 40`.
 const EVENT_STRING_SIZE: usize = 40;
 
-/// C++ `LinuxUartDriver::UartBaudRate` — the constants ARE the baud numbers.
+/// C++ `PosixUartDriver::UartBaudRate` — the constants ARE the baud numbers.
 ///
-/// The conditionally-compiled high rates (`B460800`..`B4000000`) are all
-/// present here; whether the underlying tty supports one is discovered when
-/// the configuration is applied (or not applied at all — see the module
-/// documentation).
+/// Upstream compiles the rates above 230400 (`B460800`..`B4000000`) only
+/// where the platform's `<termios.h>` defines them ("platform-dependent" in
+/// the upstream SDD). They are all present here; whether the underlying tty
+/// supports one is discovered when the configuration is applied (or not
+/// applied at all — see the module documentation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum UartBaudRate {
@@ -129,7 +139,7 @@ impl UartBaudRate {
     }
 }
 
-/// C++ `LinuxUartDriver::UartFlowControl`.
+/// C++ `PosixUartDriver::UartFlowControl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum UartFlowControl {
     /// No hardware flow control (`-crtscts`).
@@ -139,7 +149,7 @@ pub enum UartFlowControl {
     HwFlow = 1,
 }
 
-/// C++ `LinuxUartDriver::UartParity`.
+/// C++ `PosixUartDriver::UartParity`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum UartParity {
     /// No parity bit (`-parenb`).
@@ -151,7 +161,7 @@ pub enum UartParity {
     ParityEven = 2,
 }
 
-/// How [`LinuxUartDriver::open`] deals with the settings it cannot apply
+/// How [`PosixUartDriver::open`] deals with the settings it cannot apply
 /// through `termios` (see the module documentation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UartConfigPolicy {
@@ -167,10 +177,22 @@ pub enum UartConfigPolicy {
     TrustExternal,
 }
 
+/// The `stty(1)` option naming the device: GNU coreutils and toybox (Linux,
+/// Android) use `-F`; the BSD `stty` (macOS, FreeBSD, NetBSD, OpenBSD) uses
+/// `-f`. Upstream's driver builds on any POSIX platform since
+/// nasa/fprime#5811, so the helper follows the host rather than assuming
+/// GNU.
+pub const STTY_DEVICE_FLAG: &str = if cfg!(any(target_os = "linux", target_os = "android")) {
+    "-F"
+} else {
+    "-f"
+};
+
 /// Build the `stty(1)` argument vector for a requested configuration.
 ///
 /// Exposed (and unit-tested) so a deployment can log or reproduce exactly
-/// what [`UartConfigPolicy::Stty`] runs:
+/// what [`UartConfigPolicy::Stty`] runs (`-F` is [`STTY_DEVICE_FLAG`], `-f`
+/// on BSD-derived hosts):
 ///
 /// ```text
 /// stty -F <device> <baud> cs8 clocal cread raw -echo min 0 time 10 \
@@ -188,7 +210,7 @@ pub fn stty_arguments(
     parity: UartParity,
 ) -> Vec<String> {
     let mut args = vec![
-        "-F".to_string(),
+        STTY_DEVICE_FLAG.to_string(),
         device.to_string(),
         baud.as_u32().to_string(),
         "cs8".to_string(),
@@ -258,7 +280,7 @@ pub trait SerialBackend: Send + Sync {
 /// Reads and writes go straight to the file, so the blocking behavior is
 /// whatever the tty's current `VMIN`/`VTIME` provide. On a port that was
 /// never put into raw mode, `read` can return 0 immediately and repeatedly —
-/// the component paces that with [`LinuxUartDriver::IDLE_READ_RETRY_US`].
+/// the component paces that with [`PosixUartDriver::IDLE_READ_RETRY_US`].
 #[derive(Default)]
 pub struct FileSerialBackend {
     /// `Arc` so a blocking read can happen outside the mutex while `send`
@@ -342,8 +364,8 @@ impl Default for UartState {
     }
 }
 
-/// `Drv::LinuxUartDriver` — passive byte-stream driver over a serial device.
-pub struct LinuxUartDriver {
+/// `Drv::PosixUartDriver` — passive byte-stream driver over a serial device.
+pub struct PosixUartDriver {
     /// Passive core (name / id_base / instance).
     pub base: PassiveBase,
     /// Event ports (`Log`/`LogText`) + `Time`.
@@ -373,7 +395,7 @@ pub struct LinuxUartDriver {
     no_buffers_throttle: EventThrottle,
 }
 
-impl LinuxUartDriver {
+impl PosixUartDriver {
     /// `OpenError(device: string size 40, error: I32, name: string size 40)`
     /// — WARNING_HI, id 0.
     ///
@@ -795,7 +817,7 @@ impl LinuxUartDriver {
 fprime_comp::input_port_adapter! {
     /// `send` — GUARDED `Drv.ByteStreamSend` input (caller's thread, under
     /// the component mutex).
-    component: LinuxUartDriver;
+    component: PosixUartDriver;
     adapter: SendAdapter;
     port: ByteStreamSendPort;
     input: pub send_in;
@@ -807,7 +829,7 @@ fprime_comp::input_port_adapter! {
 fprime_comp::input_port_adapter! {
     /// `recvReturnIn` — GUARDED `Fw.BufferSend` input: receive buffers come
     /// back here and are forwarded to `deallocate_out`.
-    component: LinuxUartDriver;
+    component: PosixUartDriver;
     adapter: RecvReturnAdapter;
     port: BufferSendPort;
     input: pub recv_return_in;
@@ -817,7 +839,7 @@ fprime_comp::input_port_adapter! {
 
 fprime_comp::input_port_adapter! {
     /// `run` — SYNC `Svc.Sched` input: telemetry only.
-    component: LinuxUartDriver;
+    component: PosixUartDriver;
     adapter: RunAdapter;
     port: SchedPort;
     input: pub run_in;
@@ -1032,7 +1054,7 @@ mod tests {
     }
 
     struct Harness {
-        driver: Arc<LinuxUartDriver>,
+        driver: Arc<PosixUartDriver>,
         fake: Arc<FakeSerial>,
         events: Arc<EventCollector>,
         tlm: Arc<TlmCollector>,
@@ -1043,7 +1065,7 @@ mod tests {
 
     fn harness() -> Harness {
         let fake = Arc::new(FakeSerial::default());
-        let driver = LinuxUartDriver::with_backend("uartDrv", Box::new(fake.clone()));
+        let driver = PosixUartDriver::with_backend("uartDrv", Box::new(fake.clone()));
         let events = Arc::new(EventCollector::default());
         let tlm = Arc::new(TlmCollector::default());
         let buffers = Arc::new(BufferStub::default());
@@ -1078,7 +1100,7 @@ mod tests {
                 UartParity::ParityNone
             ),
             vec![
-                "-F",
+                STTY_DEVICE_FLAG,
                 "/dev/ttyUSB0",
                 "115200",
                 "cs8",
@@ -1112,6 +1134,15 @@ mod tests {
     }
 
     #[test]
+    fn stty_device_flag_follows_the_host_stty() {
+        if cfg!(any(target_os = "linux", target_os = "android")) {
+            assert_eq!(STTY_DEVICE_FLAG, "-F");
+        } else {
+            assert_eq!(STTY_DEVICE_FLAG, "-f");
+        }
+    }
+
+    #[test]
     fn baud_enum_values_are_the_baud_numbers() {
         assert_eq!(UartBaudRate::Baud9600.as_u32(), 9600);
         assert_eq!(UartBaudRate::Baud115K.as_u32(), 115_200);
@@ -1138,7 +1169,7 @@ mod tests {
         assert!(!h.fake.opened.load(Ordering::SeqCst));
         let (_, severity, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_CONFIG_ERROR)
+            .find(PosixUartDriver::EVENTID_CONFIG_ERROR)
             .expect("ConfigError");
         assert_eq!(severity, LogSeverity::WarningHi);
         let mut expected = vec![0, 12];
@@ -1161,7 +1192,7 @@ mod tests {
         assert_eq!(*h.fake.opened_device.lock().unwrap(), "/dev/ttyUSB0");
         let (_, severity, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_PORT_OPENED)
+            .find(PosixUartDriver::EVENTID_PORT_OPENED)
             .expect("PortOpened");
         assert_eq!(severity, LogSeverity::ActivityHi);
         let mut expected = vec![0, 12];
@@ -1177,7 +1208,7 @@ mod tests {
         assert!(!h.driver.open_preconfigured("/dev/nope", 64));
         let (_, severity, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_OPEN_ERROR)
+            .find(PosixUartDriver::EVENTID_OPEN_ERROR)
             .expect("OpenError");
         assert_eq!(severity, LogSeverity::WarningHi);
         // [u16 len]"/dev/nope" [i32 -1] [u16 len]<os message>
@@ -1192,7 +1223,7 @@ mod tests {
     #[test]
     fn unconnected_ready_port_does_not_assert() {
         let fake = Arc::new(FakeSerial::default());
-        let driver = LinuxUartDriver::with_backend("noReady", Box::new(fake.clone()));
+        let driver = PosixUartDriver::with_backend("noReady", Box::new(fake.clone()));
         // ready_out deliberately left unconnected (C++
         // isConnected_ready_OutputPort guard).
         assert!(driver.open_preconfigured("/dev/ttyUSB0", 32));
@@ -1216,7 +1247,7 @@ mod tests {
         assert!(
             !h.events
                 .ids()
-                .contains(&LinuxUartDriver::EVENTID_WRITE_ERROR)
+                .contains(&PosixUartDriver::EVENTID_WRITE_ERROR)
         );
     }
 
@@ -1243,7 +1274,7 @@ mod tests {
             port.target.invoke(port.port_num, &mut invalid),
             ByteStreamStatus::OtherError
         );
-        assert_eq!(h.events.count_of(LinuxUartDriver::EVENTID_WRITE_ERROR), 0);
+        assert_eq!(h.events.count_of(PosixUartDriver::EVENTID_WRITE_ERROR), 0);
         assert_eq!(h.driver.bytes_sent(), 0);
     }
 
@@ -1261,7 +1292,7 @@ mod tests {
         );
         let (_, _, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_WRITE_ERROR)
+            .find(PosixUartDriver::EVENTID_WRITE_ERROR)
             .expect("WriteError");
         let mut expected = vec![0, 12];
         expected.extend_from_slice(b"/dev/ttyUSB0");
@@ -1286,10 +1317,10 @@ mod tests {
         }
         // FPP `throttle 5`.
         assert_eq!(
-            h.events.count_of(LinuxUartDriver::EVENTID_WRITE_ERROR),
-            LinuxUartDriver::ERROR_EVENT_THROTTLE as usize
+            h.events.count_of(PosixUartDriver::EVENTID_WRITE_ERROR),
+            PosixUartDriver::ERROR_EVENT_THROTTLE as usize
         );
-        let (_, _, bytes) = h.events.find(LinuxUartDriver::EVENTID_WRITE_ERROR).unwrap();
+        let (_, _, bytes) = h.events.find(PosixUartDriver::EVENTID_WRITE_ERROR).unwrap();
         assert_eq!(&bytes[bytes.len() - 4..], &[0xFF, 0xFF, 0xFF, 0xFF]);
     }
 
@@ -1311,12 +1342,12 @@ mod tests {
         port.target.invoke(port.port_num, 0);
         let writes = h.tlm.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 4);
-        assert_eq!(writes[0].0, LinuxUartDriver::CHANID_BYTES_SENT);
+        assert_eq!(writes[0].0, PosixUartDriver::CHANID_BYTES_SENT);
         assert_eq!(writes[0].1, vec![0, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(writes[1].0, LinuxUartDriver::CHANID_BYTES_RECV);
+        assert_eq!(writes[1].0, PosixUartDriver::CHANID_BYTES_RECV);
         // Not on-change: the same values are written again.
-        assert_eq!(writes[2].0, LinuxUartDriver::CHANID_BYTES_SENT);
-        assert_eq!(writes[3].0, LinuxUartDriver::CHANID_BYTES_RECV);
+        assert_eq!(writes[2].0, PosixUartDriver::CHANID_BYTES_SENT);
+        assert_eq!(writes[3].0, PosixUartDriver::CHANID_BYTES_RECV);
     }
 
     #[test]
@@ -1384,7 +1415,7 @@ mod tests {
         assert_eq!(received[0].1, ByteStreamStatus::OtherError);
         let (_, severity, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_READ_ERROR)
+            .find(PosixUartDriver::EVENTID_READ_ERROR)
             .expect("ReadError");
         assert_eq!(severity, LogSeverity::WarningHi);
         let mut expected = vec![0, 12];
@@ -1409,14 +1440,14 @@ mod tests {
         assert!(received[0].0.is_empty());
         let (_, severity, bytes) = h
             .events
-            .find(LinuxUartDriver::EVENTID_NO_BUFFERS)
+            .find(PosixUartDriver::EVENTID_NO_BUFFERS)
             .expect("NoBuffers");
         assert_eq!(severity, LogSeverity::WarningHi);
         let mut expected = vec![0, 12];
         expected.extend_from_slice(b"/dev/ttyUSB0");
         assert_eq!(bytes, expected);
         // FPP `throttle 20` — never more than 20 however long it spins.
-        assert!(h.events.count_of(LinuxUartDriver::EVENTID_NO_BUFFERS) <= 20);
+        assert!(h.events.count_of(PosixUartDriver::EVENTID_NO_BUFFERS) <= 20);
     }
 
     #[test]
@@ -1478,7 +1509,7 @@ mod tests {
     fn driver_over_the_file_backend_sends_bytes_to_the_device() {
         let temp = TempPath::new("driver");
         std::fs::write(&temp.path, b"").unwrap();
-        let driver = LinuxUartDriver::with_backend("uart", Box::new(FileSerialBackend::new()));
+        let driver = PosixUartDriver::with_backend("uart", Box::new(FileSerialBackend::new()));
         assert!(driver.open_preconfigured(temp.as_str(), 64));
         let mut buffer = Buffer::allocate(5);
         buffer.data_mut().copy_from_slice(b"frame");
