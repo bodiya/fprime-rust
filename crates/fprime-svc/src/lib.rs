@@ -12,6 +12,7 @@ pub mod buffer_manager;
 pub mod ccsds;
 pub mod cmd_dispatcher;
 pub mod cmd_sequencer;
+pub mod com_aggregator;
 pub mod com_logger;
 pub mod com_queue;
 pub mod com_stub;
