@@ -323,6 +323,29 @@ subsystems, then the strategic changes.
   clippy, thumbv7em with both queue delegates and the optional features,
   MSRV, and the dependency trees.
 
+- **`Svc::Ccsds::CfdpManager`** (CFDP, CCSDS 727.0-B-5), whole: the
+  PDU codecs (header with minimal-width EIDs/sequence numbers, metadata,
+  file data, EOF, FIN, ACK, NAK, TLVs; literal-byte tests cross-checked
+  against the CFDP PDU encoders of `spacepackets` 0.32.0, which fprime-gds
+  4.3.1 installs — fprime-gds itself has no CFDP engine); the NASA CF
+  3.0.0-derived engine, channels and class 1/2 send and receive state
+  machines (chunk-list gap tracking and NAK generation, ACK/NAK/inactivity
+  timers, the sliced R2 checksum pass, the stateless late-FIN ACK); the
+  priority-sorted PEND/TXA/TXW/RX queues and the per-cycle PDU throttle;
+  directory playback and polling; the `fileIn`/`fileDoneOut` port path;
+  every command, event, telemetry channel and parameter at the upstream
+  ids (checked against `fpp-to-rust --dict` on the upstream model). Pools
+  are allocated once at `configure`. The upstream unit tests are ported
+  (about 130), plus an end-to-end test of two instances transferring files
+  to each other over a lossy link (class 1, class 2, dropped file data /
+  metadata / EOF / FIN). Upstream's Ref does not instantiate
+  `FileHandlingCfdp`, so neither does the Rust Ref. One deviation: a
+  metadata send without a buffer stops the cycle's transmit loop (CF's
+  behavior) instead of livelocking it as upstream does. The port also
+  documents two places where upstream departs from the standard on the
+  wire (the metadata closure-requested bit, the ACK(EOF) subtype); see
+  `docs/api-notes.md`.
+
 ## Strategic
 
 Nothing remains in this section: the `no_std` work it listed is done (see

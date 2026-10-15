@@ -50,8 +50,9 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   that needs no file system or console build without `std` (see "no_std"
   below). The file-based services, the drivers and the deployment crates
   stay `std`.
-- Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
-  CFDP. (`Fw/Sm` state machines are ported as the
+- Nothing in the pinned `Svc` tree remains unported (see the status
+  matrix in README.md and `docs/ROADMAP.md`); `Svc::Ccsds::CfdpManager`
+  (CFDP) was the last. (`Fw/Sm` state machines are ported as the
   `fpp_state_machine!` macro layer, which `fpp-to-rust` emits.)
   Everything  listed as a phase-1 gap in earlier revisions of this document
   (CmdSequencer, FpySequencer, file services, data products, TlmPacketizer, the CCSDS
@@ -194,7 +195,7 @@ The pieces:
   `CmdSequencer`, `FpySequencer` (both run sequence files; gating the file
   reads out would leave nothing to run), `SystemResources` (procfs and
   file-system usage), `SdlsFileKeyManager`, `ActiveTextLogger`'s log file
-  — and the CFDP components; `fprime-drv`, `fprime-ref`, `fprime-fpp` and
+  — and `CfdpManager` (CFDP); `fprime-drv`, `fprime-ref`, `fprime-fpp` and
   `fprime-fpp-demo` entirely.
 - **Proof**: `crates/fprime-comp/examples/no_std_component.rs` is a
   `#![no_std]` library crate that expands every exported framework macro

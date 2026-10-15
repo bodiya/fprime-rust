@@ -3284,3 +3284,110 @@ uplinks a `CMD_NO_OP` frame through the example deployment's comms stack
 and checks the dispatcher's `OpCodeDispatched`, `NoOpReceived` and
 `OpCodeCompleted` events and its `CommandsDispatched = 1` telemetry come
 back down as F Prime frames.
+
+### fprime-svc: `Svc::Ccsds::CfdpManager` (CFDP)
+
+Port of `Svc/Ccsds/CfdpManager` (component, `Engine`, `Channel`,
+`Transaction{,Rx,Tx}`, `Chunk`, `Clist`, `Timer`, `Utils`, `Types/`) and
+`default/config/CfdpCfg.{fpp,hpp}` (`fprime_config::cfdp`), as
+`fprime_svc::ccsds::cfdp_manager` (`std` only: it reads and writes files).
+The CF-derived modules carry NASA's CF 3.0.0 copyright and Apache-2.0
+notice, as upstream's `ATTRIBUTION.md` lists them.
+
+Surface:
+
+```
+CfdpManager::new(name) -> Arc<Self>; init(queue_depth); load_parameters();
+  configure(file_queue_depth); cleanup(); reg_commands()
+  ports: run_1hz(n) (Sched, async), ping_in(n) (async, drop), data_in(ch) /
+    data_return_in(ch) (BufferSend, async, escrowed), file_in(n)
+    (SendFileRequest, guarded), cmd_in(n);
+    out: data_out[ch], buffer_allocate[ch], buffer_deallocate[ch],
+    data_in_return[ch], file_done_out, ping_out, cmd/evt/tlm/prm glue
+  OPCODE_* (0..=0x1C, parameter set/save included), EVENTID_* (0..=76),
+  CHANID_CHANNEL_TELEMETRY, PARAMID_* (0..=9), param_get_<name>() ->
+    (value, ParamValid), get_<name>_param() (asserting FW_PARAM_OK)
+engine::Engine { channels, seq_num }: cycle, receive_pdu, tx_file,
+  playback_dir, start/stop_poll_dir, set_channel_flow_state,
+  set_suspend_resume_transaction, cancel_transaction_by_seq, abandon_transaction
+channel::Channel: the pools and queues; the C++ Engine/Transaction methods
+  that act on one transaction take its pool index (transaction::TxnIdx)
+pdu::{PduHeader, PduReader, Pdu, MetadataPdu, FileDataPdu<'a>, EofPdu, FinPdu,
+  AckPdu, NakPdu, SegmentRequest, Tlv, TlvList, peek_pdu_type}
+types::{Status, PduTypeEnum, Flow, Class, Keep, SuspendResume, QueueId,
+  ChannelParams, ChannelArrayParams, ChannelTelemetry(Array), FileDirective,
+  ConditionCode, AckTxnStatus, ChecksumType, TxnStatus, ...}
+chunk::ChunkList, clist::{CListLinks, traverse, traverse_r}, timer::Timer,
+utils::{get_txn_status, txn_status_is_error, txn_status_to_condition_code}
+```
+
+The checksum is `fprime_utils::cfdp::Checksum` (upstream's
+`CFDP::Checksum`, the same one `FileUplink`/`FileDownlink` use).
+
+Deviations:
+
+- Ownership: upstream's intrusive circular lists and back-pointers
+  (transaction → channel/engine/manager) become pool indices; a
+  `CListLinks` table per pool holds the links and the list algorithms are
+  CF's step for step, so queue order and scheduling are unchanged. The
+  engine sits in one `Mutex` locked only on the component thread; output
+  ports are invoked with it held (every input that could re-enter is
+  async). `configure` takes the `fileIn` queue depth only; the pools are
+  `Box<[T]>`s it allocates once (upstream uses an `Fw::MemAllocator`).
+  Each chunk list owns its `Box<[Chunk]>` (upstream slices one block).
+- The `CfdpStateData` / `CfdpStateFlags` unions are side-by-side send and
+  receive halves (only the half matching the direction is ever used).
+  Wire-valued enums (`FileDirective`, `ConditionCode`, `AckTxnStatus`,
+  `ChecksumType`, `TlvType`, `TxnStatus`) are newtypes: C++ stores any
+  received value in them.
+- Livelock fix: a metadata send that gets no buffer (throttle or
+  allocator) now sets the channel's current transaction, ending the
+  cycle's transmit loop as CF's `CF_CFDP_MsgOutGet` does. Upstream only
+  does this for file data, so `cycleTxFirstActive` spins forever on a
+  pending transaction whose metadata cannot be sent.
+- A buffer from `bufferAllocate` of the wrong size is dropped (upstream
+  leaks it; either way the allocator never sees it again).
+- `FileDataPdu::getMaxFileDataSize` uses a zeroed header (upstream reads
+  an uninitialized one); the default chunk size never reaches the bound.
+- Command string arguments are `CmdStringArg` (40 bytes), as the generated
+  C++ handlers are, though the dictionary says `string size 200`.
+  `PRM_SET` deserialization failures answer `FORMAT_ERROR` (the
+  workspace's generated-code convention); an undeclared enum value in an
+  async command answers `VALIDATION_ERROR`.
+- `fileIn`'s file names are the `SendFileRequest` port's `string` (100
+  bytes here), so its "names do not fit" check cannot fire.
+
+Upstream behavior kept on purpose (all covered by tests):
+
+- On the wire, upstream departs from CCSDS 727.0-B-5 twice (found by
+  cross-checking against `spacepackets` 0.32.0, the CFDP PDU library
+  fprime-gds 4.3.1 installs; fprime-gds ships no CFDP engine): the
+  metadata closure-requested flag is the MSB of its octet (0x80; the
+  standard and spacepackets use bit 6, 0x40), and ACK(EOF) carries
+  directive subtype 1 (standard: 0). Everything else matched byte for byte.
+- `insertSortPrio` puts a transaction with no equal-or-higher-priority
+  entry at the back of the queue (CF puts it at the front).
+- The move directory is a rename target: the sent file is renamed to the
+  `move_dir` path itself. `isPollingDir` matches a bare file name against
+  the empty source directory of unused poll slots.
+- The NAK segment count is truncated to `U8` before the
+  `NakMaxSegments` clamp; queue-depth telemetry wraps (upstream inserts
+  into FREE and RX without counting); a throttled NAK retransmission
+  during FILEDATA fails the transaction (`NAK_RESPONSE_ERROR`); a FIN
+  re-armed by the ACK timer can go out again after the FIN-ACK; an R1
+  whose file cannot be created reports `RxFileTransferCompleted`.
+- `Svc/Subtopologies/FileHandlingCfdp` calls `configure(allocator)`
+  without the `fileQueueDepth` argument the component requires; the Rust
+  Ref instantiates neither it nor upstream's `FileHandling`-less variant.
+
+Tests: 128 unit tests (`cfdp_manager/tests`: PDU codec with literal
+vectors, every PDU type's round trip and error statuses, helpers, the
+transaction tests of `CfdpManagerTester.cpp` — class 1/2 send and receive,
+NAK on both sides, port-initiated sends, the late FIN, zero-length and
+overflowing file data — command, event and parameter tests, and the
+dictionary ids) and `tests/cfdp_two_entities.rs`, two instances
+transferring files over a lossy link: class 1 and class 2 both ways,
+dropped file data (NAK, retransmission), dropped metadata (temporary file,
+metadata NAK, rename), dropped EOF and FIN, and a `fileIn` transfer.
+Not reproduced: the upstream event tests that need OS fault injection on
+an open file (write/seek/read/reopen failures) or a PDU encode failure.

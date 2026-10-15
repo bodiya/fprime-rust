@@ -164,6 +164,7 @@ adds `spin` (lock types only); the optional features work there too.
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
 | File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
+| CFDP | `Svc::Ccsds::CfdpManager` (CCSDS File Delivery Protocol, class 1 and class 2, send and receive): PDU codecs, the CF-derived engine and state machines with NAK-driven retransmission, directory playback and polling, `fileIn`/`fileDoneOut` |
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format) |
@@ -194,7 +195,10 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-`Svc::Ccsds::CfdpManager` (CFDP) is not ported. The SDLS security
+Nothing in the pinned upstream `Svc` tree is unported. `CfdpManager` is
+ported, but upstream's Ref uses `FileHandling` rather than
+`FileHandlingCfdp`, so neither Ref instantiates it (a two-instance
+transfer test stands in for it). The SDLS security
 layer is ported, but `AesGcmEncryptor`/`AesGcmDecryptor` are only compiled
 with `fprime-svc`'s `aes-gcm` feature, and the Rust Ref, like upstream's
 (which uses `ComCcsds`, not `ComCcsdsSdls`), does not instantiate SDLS or
