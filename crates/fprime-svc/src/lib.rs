@@ -6,6 +6,7 @@
 //! (see `crates/fprime-comp/tests/example_component.rs`).
 
 pub mod active_rate_group;
+pub mod buffer_accumulator;
 pub mod buffer_manager;
 pub mod ccsds;
 pub mod cmd_dispatcher;
