@@ -20,11 +20,15 @@
 //! along a path found in the same golden data, scripts the guards, sends
 //! the signal and compares.
 //!
-//! Machines: the upstream `Svc.FpySequencer` and `Svc.ComAggregator`
-//! machines, the hierarchical `FppTest/state_machine` ones, and `Probe`
+//! Machines: the upstream `Svc.ComAggregator` machine, the hierarchical
+//! `FppTest/state_machine` ones, and `Probe`
 //! (an inner guarded transition overriding an outer one, a transition to
 //! an ancestor, an internal transition on a typed signal with an untyped
-//! guard, nested initial transitions):
+//! guard, nested initial transitions; below). The upstream
+//! `Svc.FpySequencer` machine is checked against
+//! `sm_traces/FpySequencer.txt` by
+//! `crates/fprime-svc/tests/fpy_sequencer_sm_traces.rs`, on the definition
+//! the component uses, with the checker in `sm_trace_replay/`.
 //!
 //! ```text
 //! state machine Probe {
@@ -151,183 +155,10 @@ macro_rules! check_machine {
 }
 
 // ===========================================================================
-// Svc.FpySequencer.SequencerStateMachine
+// Svc.FpySequencer.SequencerStateMachine: checked in fprime-svc
+// (`tests/fpy_sequencer_sm_traces.rs`) against the machine the component
+// itself uses, with this file's checker and golden file `FpySequencer.txt`.
 // ===========================================================================
-
-/// Stand-ins for `Svc.FpySequencer.SequenceExecutionArgs` and
-/// `BreakpointArgs` (the values play no part in the transitions).
-type SequenceExecutionArgs = TestStruct;
-type BreakpointArgs = TestStruct;
-
-traced_machine! {
-    mod FpySequencer;
-    state machine SequencerStateMachine: u8 {
-        actions {
-            signalEntered => action_signalEntered,
-            setSequenceFilePath => action_setSequenceFilePath (ref SequenceExecutionArgs),
-            setSequenceBlockState => action_setSequenceBlockState (ref SequenceExecutionArgs),
-            setSequenceArguments => action_setSequenceArguments (ref SequenceExecutionArgs),
-            validate => action_validate,
-            report_seqSucceeded => action_report_seqSucceeded,
-            report_seqCancelled => action_report_seqCancelled,
-            report_seqFailed => action_report_seqFailed,
-            report_seqStarted => action_report_seqStarted,
-            setGoalState_RUNNING => action_setGoalState_RUNNING,
-            setGoalState_VALID => action_setGoalState_VALID,
-            setGoalState_IDLE => action_setGoalState_IDLE,
-            sendCmdResponse_OK => action_sendCmdResponse_OK,
-            sendCmdResponse_EXECUTION_ERROR => action_sendCmdResponse_EXECUTION_ERROR,
-            clearSequenceFile => action_clearSequenceFile,
-            clearBreakpoint => action_clearBreakpoint,
-            clearSequenceArguments => action_clearSequenceArguments,
-            checkShouldWake => action_checkShouldWake,
-            dispatchStatement => action_dispatchStatement,
-            resetRuntime => action_resetRuntime,
-            checkStatementTimeout => action_checkStatementTimeout,
-            incrementSequenceCounter => action_incrementSequenceCounter,
-            pushArgsToStack => action_pushArgsToStack,
-            report_seqBroken => action_report_seqBroken,
-            setBreakpoint => action_setBreakpoint (ref BreakpointArgs),
-            setBreakBeforeNextLine => action_setBreakBeforeNextLine,
-            clearBreakBeforeNextLine => action_clearBreakBeforeNextLine,
-        }
-        guards {
-            goalStateIs_RUNNING => guard_goalStateIs_RUNNING,
-            shouldBreak => guard_shouldBreak,
-            breakOnce => guard_breakOnce,
-        }
-        signals {
-            checkTimersIn = 1 => send_signal_checkTimersIn {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => do { checkStatementTimeout };
-                RUNNING_SLEEPING => do { checkShouldWake, checkStatementTimeout };
-            }
-            cmd_BREAK = 2 => send_signal_cmd_BREAK {
-                RUNNING => do { setBreakBeforeNextLine };
-            }
-            cmd_CANCEL = 3 => send_signal_cmd_CANCEL {
-                VALIDATING => do { report_seqCancelled, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-                AWAITING_CMD_RUN_VALIDATED => do { report_seqCancelled } enter IDLE;
-                RUNNING => do { report_seqCancelled, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            cmd_CLEAR_BREAKPOINT = 4 => send_signal_cmd_CLEAR_BREAKPOINT {
-                IDLE => do { clearBreakpoint };
-                VALIDATING => do { clearBreakpoint };
-                AWAITING_CMD_RUN_VALIDATED => do { clearBreakpoint };
-                RUNNING => do { clearBreakpoint };
-            }
-            cmd_CONTINUE = 5 => send_signal_cmd_CONTINUE {
-                RUNNING_PAUSED => enter RUNNING_DISPATCH_STATEMENT;
-            }
-            cmd_RUN = 6 => send_signal_cmd_RUN (ref SequenceExecutionArgs) {
-                IDLE => do {
-                    setGoalState_RUNNING, setSequenceFilePath, setSequenceBlockState,
-                    setSequenceArguments
-                } enter VALIDATING;
-            }
-            cmd_RUN_VALIDATED = 7 => send_signal_cmd_RUN_VALIDATED (ref SequenceExecutionArgs) {
-                AWAITING_CMD_RUN_VALIDATED => do { setSequenceBlockState } enter RUNNING;
-            }
-            cmd_SET_BREAKPOINT = 8 => send_signal_cmd_SET_BREAKPOINT (ref BreakpointArgs) {
-                IDLE => do { setBreakpoint };
-                VALIDATING => do { setBreakpoint };
-                AWAITING_CMD_RUN_VALIDATED => do { setBreakpoint };
-                RUNNING => do { setBreakpoint };
-            }
-            cmd_STEP = 9 => send_signal_cmd_STEP {
-                RUNNING_PAUSED => do { setBreakBeforeNextLine } enter RUNNING_DISPATCH_STATEMENT;
-            }
-            cmd_VALIDATE = 10 => send_signal_cmd_VALIDATE (ref SequenceExecutionArgs) {
-                IDLE => do {
-                    setGoalState_VALID, setSequenceFilePath, setSequenceArguments
-                } enter VALIDATING;
-            }
-            entered = 11 => send_signal_entered {
-                VALIDATING => do { validate };
-                RUNNING_PAUSED => if breakOnce do { clearBreakpoint };
-            }
-            result_checkShouldWake_keepSleeping = 12 => send_signal_result_checkShouldWake_keepSleeping {}
-            result_checkShouldWake_wakeup = 13 => send_signal_result_checkShouldWake_wakeup {
-                RUNNING_SLEEPING => enter RUNNING_BREAK_CHECK;
-            }
-            result_checkStatementTimeout_noTimeout = 14 => send_signal_result_checkStatementTimeout_noTimeout {}
-            result_checkStatementTimeout_statementTimeout = 15 => send_signal_result_checkStatementTimeout_statementTimeout {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-                RUNNING_SLEEPING => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            result_dispatchStatement_failure = 16 => send_signal_result_dispatchStatement_failure {
-                RUNNING_DISPATCH_STATEMENT => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            result_dispatchStatement_noMoreStatements = 17 => send_signal_result_dispatchStatement_noMoreStatements {
-                RUNNING_DISPATCH_STATEMENT => do { report_seqSucceeded, sendCmdResponse_OK } enter IDLE;
-            }
-            result_dispatchStatement_success = 18 => send_signal_result_dispatchStatement_success {
-                RUNNING_DISPATCH_STATEMENT => enter RUNNING_AWAITING_STATEMENT_RESPONSE;
-            }
-            result_failure = 19 => send_signal_result_failure {
-                VALIDATING => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            result_success = 20 => send_signal_result_success {
-                VALIDATING => enter VALID;
-            }
-            result_timeOpFailed = 21 => send_signal_result_timeOpFailed {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-                RUNNING_SLEEPING => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            stmtResponse_beginSleep = 22 => send_signal_stmtResponse_beginSleep {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => enter RUNNING_SLEEPING;
-            }
-            stmtResponse_failure = 23 => send_signal_stmtResponse_failure {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-            stmtResponse_keepWaiting = 24 => send_signal_stmtResponse_keepWaiting {}
-            stmtResponse_success = 25 => send_signal_stmtResponse_success {
-                RUNNING_AWAITING_STATEMENT_RESPONSE => enter RUNNING_BREAK_CHECK;
-            }
-            stmtResponse_unexpected = 26 => send_signal_stmtResponse_unexpected {
-                RUNNING => do { report_seqFailed, sendCmdResponse_EXECUTION_ERROR } enter IDLE;
-            }
-        }
-        initial enter IDLE;
-        states {
-            state AWAITING_CMD_RUN_VALIDATED = 1 {
-                entry do { sendCmdResponse_OK }
-            }
-            state IDLE = 2 {
-                entry do { clearBreakpoint, setGoalState_IDLE, clearSequenceFile, clearSequenceArguments }
-            }
-            state RUNNING {
-                initial enter RUNNING_BREAK_CHECK;
-                entry do { resetRuntime, incrementSequenceCounter, pushArgsToStack }
-            }
-            state RUNNING_AWAITING_STATEMENT_RESPONSE = 3 in RUNNING {}
-            state RUNNING_DISPATCH_STATEMENT = 4 in RUNNING {
-                entry do { dispatchStatement }
-            }
-            state RUNNING_PAUSED = 5 in RUNNING {
-                entry do { signalEntered, clearBreakBeforeNextLine }
-            }
-            state RUNNING_SLEEPING = 6 in RUNNING {}
-            state VALIDATING = 7 {
-                entry do { report_seqStarted, signalEntered }
-            }
-        }
-        choices {
-            choice VALID {
-                if goalStateIs_RUNNING enter RUNNING else enter AWAITING_CMD_RUN_VALIDATED
-            }
-            choice RUNNING_BREAK_CHECK in RUNNING {
-                if shouldBreak do { report_seqBroken } enter RUNNING_PAUSED
-                else enter RUNNING_DISPATCH_STATEMENT
-            }
-        }
-    }
-}
-
-check_machine!(
-    fpy_sequencer_matches_fpp_to_cpp,
-    FpySequencer,
-    "FpySequencer.txt"
-);
 
 // ===========================================================================
 // Svc.AggregationMachine (ComAggregator)
@@ -875,20 +706,3 @@ check_machine!(
     InitialNested,
     "Initial_Nested.txt"
 );
-
-/// The `State` discriminants of the FpySequencer machine are the
-/// `fpp-to-cpp` ones (sorted by name, not in definition order).
-#[test]
-fn fpy_sequencer_state_enum_matches_fpp_to_cpp() {
-    use FpySequencer::{Signal, State};
-    assert_eq!(State::AWAITING_CMD_RUN_VALIDATED as u8, 1);
-    assert_eq!(State::IDLE as u8, 2);
-    assert_eq!(State::RUNNING_AWAITING_STATEMENT_RESPONSE as u8, 3);
-    assert_eq!(State::RUNNING_DISPATCH_STATEMENT as u8, 4);
-    assert_eq!(State::RUNNING_PAUSED as u8, 5);
-    assert_eq!(State::RUNNING_SLEEPING as u8, 6);
-    assert_eq!(State::VALIDATING as u8, 7);
-    assert_eq!(State::NUM_CONSTANTS, 8);
-    assert_eq!(Signal::checkTimersIn.as_repr(), 1);
-    assert_eq!(Signal::stmtResponse_unexpected.as_repr(), 26);
-}
