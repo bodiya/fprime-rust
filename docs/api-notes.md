@@ -3394,3 +3394,112 @@ dropped file data (NAK, retransmission), dropped metadata (temporary file,
 metadata NAK, rename), dropped EOF and FIN, and a `fileIn` transfer.
 Not reproduced: the upstream event tests that need OS fault injection on
 an open file (write/seek/read/reopen failures) or a PDU encode failure.
+
+### fprime-svc: `AssertFatalAdapter`, `BufferRepeater`, `ChronoTime`, `CmdSplitter`, `ComRetry`, `OsTime` (from the "Not yet ported" list)
+
+Ports of the six upstream components of the same names (`Svc/<Name>/`), one
+`fprime-svc` module each. All six are passive and all build without `std`
+(nothing here needs files, a console or a host clock beyond
+`Os::RawTime`). New `fprime-config` constants (upstream
+`FpConstants.fpp` / `AcConstants.fpp`): `FW_ASSERT_COUNT_MAX` (10),
+`ASSERT_FATAL_ADAPTER_EVENT_FILE_SIZE` (= `FILE_NAME_STRING_SIZE`, 240),
+`BUFFER_REPEATER_OUTPUT_PORTS` (10), `CMD_SPLITTER_PORTS`
+(= `CMD_DISPATCHER_SEQUENCE_PORTS`, 5).
+
+```text
+assert_fatal_adapter::AssertFatalAdapter   (Log, LogText, Time = evt: EventGlue)
+  new(name) -> Arc<Self>      // registers the global Fw::AssertHook (newest adapter wins)
+  report_assert(&self, file: &str, line_no: FwSizeType, num_args: FwSizeType, args: [FwAssertArgType; 6])
+  EVENTID_AF_ASSERT_0..=6 = 0..=6, EVENTID_AF_UNEXPECTED_ASSERT = 7 (all FATAL)
+  EVENT_FILE_ARG_SIZE = min(ASSERT_FATAL_ADAPTER_EVENT_FILE_SIZE, FW_LOG_STRING_MAX_SIZE) = 200
+buffer_repeater::BufferRepeater
+  new(name); configure(BufferRepeaterFailureOption); port_in(n) (BufferSend, sync)
+  out: port_out[BUFFER_REPEATER_OUTPUT_PORTS], allocate (BufferGet), deallocate, evt
+  enum BufferRepeaterFailureOption : u8 { NoResponseOnOutOfMemory=0, WarningOnOutOfMemory=1,
+    FatalOnOutOfMemory=2, NumBufferRepeaterFailureOptions=3 }
+  EVENTID_ALLOCATION_SOFT_FAILURE = 0 (WARNING_HI), EVENTID_ALLOCATION_HARD_FAILURE = 1 (FATAL),
+    args (port: I32, size: FwSizeType)
+chrono_time::ChronoTime
+  new(name); time_get_port_in(n) (Fw.Time, sync)
+os_time::OsTime   (cmd: CmdGlue, evt: EventGlue)
+  new(name); reg_commands(); set_epoch(&Time, &RawTime)
+  time_get_port_in(n) (Fw.Time), set_epoch_in(n) (OsTimeEpoch), cmd_in(n)
+  trait OsTimeEpochPort { fn invoke(&self, port_num, fw_time: Time, os_time: RawTime) }  // serializable
+  OPCODE_SET_CURRENT_TIME = 0 (seconds_now: U32), EVENTID_SET_CURRENT_TIME_ERROR = 0 (status: U32)
+cmd_splitter::CmdSplitter
+  new(name); configure(remote_base_opcode); remote_base()
+  cmd_buff_in(n) (Fw.Com), seq_cmd_status_in(n) (Fw.CmdResponse), n < CMD_SPLITTER_PORTS
+  out: local_cmd[5], remote_cmd[5] (Com), forward_seq_cmd_status[5] (CmdResponse)
+com_retry::ComRetry   (the Svc.Framer interface)
+  new(name); configure(num_retries) (default DEFAULT_NUM_RETRIES = 3); retry_state()
+  data_in(n), data_return_in(n) (ComDataWithContext), com_status_in(n) (SuccessCondition)
+  out: data_out, data_return_out, com_status_out
+  enum RetryState : u8 { WaitingForStatus=0, WaitingForSend=1, Retrying=2 }
+```
+
+Behavior kept from upstream, all covered by tests:
+
+- `AssertFatalAdapter`: the assert message goes to `Fw::Logger` first
+  (empty for more than six arguments, as `defaultReportAssert` writes
+  nothing then); the file argument keeps the *last* 200 bytes; lines and
+  arguments are cast to `U32`; with `Log` unconnected, or more than
+  `FW_ASSERT_COUNT_MAX` reports nested (an assert in the event path), the
+  counter is released and the C `assert(false)` fallback runs (a panic);
+  the hook's `do_assert` does nothing, so execution continues after the
+  failed `fw_assert!` until the FATAL handler acts.
+- `BufferRepeater`: unusable until configured (`portIn` asserts on
+  `NumBufferRepeaterFailureOptions`); a failed allocation skips that port
+  (one event per port), a too-small allocation with storage is
+  deallocated; the original always goes to `deallocate`. The event text
+  names the port where it says "byte" ("Failed to allocate {port} byte
+  buffer for port {size}"): the FPP format takes the arguments in
+  declaration order.
+- `CmdSplitter`: opcode `< remote base` → local, else remote; a buffer
+  that is not a command packet → local; unconfigured, the base is
+  `0xFFFF_FFFF`. The packet is deserialized out of the caller's buffer, so
+  its read cursor is left at the end.
+- `ComRetry`: the protocol is asserted (status before the buffer came
+  back, a second send in flight, a stray return, `FAILURE` while
+  retrying, an invalid kept buffer). Statuses with nothing in flight pass
+  through.
+- `ChronoTime` keeps the caller's time context; `OsTime` returns
+  `ZERO_TIME` with no epoch or on any raw-time error, and uses the
+  absolute raw-time difference (a raw clock behind its epoch counts
+  forward).
+
+Deviations:
+
+- `AssertFatalAdapter`: the hook holds a `Weak` component reference (a
+  dropped component logs "not registered" and panics, upstream's null
+  pointer path) and the component keeps the hook it replaced; the
+  `NDEBUG` no-op `assert()` and the `FW_FILEID_ASSERT` / `FW_NO_ASSERT`
+  levels are not reproduced; `m_assertCount` is a relaxed atomic. Its
+  tests are an integration test binary of their own
+  (`tests/assert_fatal_adapter.rs`): the hook is process-wide and would
+  stop other tests' `should_panic` asserts from panicking.
+- `ChronoTime` reads `Os::RawTime::now` (`SystemTime` with `std`, the
+  platform clock without) instead of `std::chrono::system_clock`; a failed
+  read gives zero seconds/microseconds (`std::chrono` cannot fail).
+- `OsTime`'s unit tests script the raw clock through a test-only hook
+  (upstream swaps the `Os::RawTime` implementation at link time).
+- `ComRetry` moves the kept buffer out (`Option<Buffer>`) and releases its
+  state lock before calling out, because a synchronous adapter re-enters
+  from `dataOut`; every state change still precedes the call that can
+  re-enter. `BufferRepeater` treats a zero-capacity buffer as C++'s null
+  data. Plain configuration members (`m_remoteBase`,
+  `m_allocation_failure_response`) are relaxed atomics.
+
+Ref: upstream's `CdhCore` instantiates `fatalAdapter`
+(`Svc.AssertFatalAdapter`, `BASE_ID + 0x05000`); the Rust Ref does too, at
+`0x0100_6000` because its `tlmSend` holds `0x0100_5000`
+(`FATAL_ADAPTER_BASE_ID`), constructed first so the hook covers the rest of
+setup and pattern-wired like every event source (`events`, `textLogger`,
+`posixTime`). The dictionary gained its eight events and the
+`AssertFatalAdapterEventFileSize` constant (additions only), and
+`tests/upstream_ids.rs` has its row. `tests/fatal_adapter_test.rs` (alone in
+its binary for the same hook reason) asserts in a running Ref and sees
+`AF_ASSERT_1` downlinked with literal argument bytes and announced to
+`fatalHandler`. The other five are not in upstream's Ref or subtopologies,
+so not in the Rust Ref; `CmdSplitter` feeds hub A's `cmdDispIn` in
+`tests/generic_hub_pair.rs` (a local command stays on A, B's `NO_OP` goes
+through the hubs and its response comes back through the splitter).

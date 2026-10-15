@@ -345,6 +345,22 @@ subsystems, then the strategic changes.
   documents two places where upstream departs from the standard on the
   wire (the metadata closure-requested bit, the ACK(EOF) subtype); see
   `docs/api-notes.md`.
+- **Small `Svc` components: `AssertFatalAdapter`, `BufferRepeater`,
+  `ChronoTime`, `CmdSplitter`, `ComRetry`, `OsTime`** (from the "Not yet
+  ported" sweep), each a `fprime-svc` module with its upstream ids and
+  unit tests, all available without `std`. `AssertFatalAdapter` registers
+  the `Fw::AssertHook` on construction and turns failed `fw_assert!`s into
+  `AF_ASSERT_0..6` / `AF_UNEXPECTED_ASSERT` FATAL events (leading-truncated
+  file name, the cascading-assert guard, the `assert()` fallback); the Rust
+  Ref instantiates it as `CdhCore` does (`fatalAdapter`, at `0x01006000`
+  because `tlmSend` holds upstream's `0x5000` offset here; dictionary
+  regenerated, additions only), so an assert anywhere in the deployment is
+  a downlinked FATAL that reaches `fatalHandler`. `CmdSplitter` now feeds
+  the hub in `tests/generic_hub_pair.rs`. `ChronoTime` and `OsTime` (epoch
+  plus elapsed `Os::RawTime`, `setEpoch`, `SetCurrentTime`) read
+  `Os::RawTime::now`, i.e. the platform clock without `std`; `ComRetry` is
+  the `Svc.Framer`-shaped resend state machine and `BufferRepeater` the
+  allocate-copy-fan-out of one buffer. See `docs/api-notes.md`.
 
 ## Not yet ported
 
@@ -352,9 +368,7 @@ A sweep of the pinned upstream `Svc/` tree (every directory with a
 component model) against this workspace found sixteen components that were
 never on this roadmap and are not ported. Sizes are upstream's non-test C++.
 
-- **Small, self-contained** (under ~250 lines each): `AssertFatalAdapter`,
-  `BufferRepeater`, `ChronoTime`, `CmdSplitter` (the usual feeder of a
-  `GenericHub`'s `cmdDispIn`), `ComRetry`, `OsTime`, `PassThroughRouter`,
+- **Small, self-contained** (under ~250 lines each): `PassThroughRouter`,
   `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`.
 - **File services:** `BufferLogger` (with `Os::ValidatedFile`),
   `FileWorker` and `FileDispatcher`.

@@ -108,7 +108,7 @@ Configurations:
 | `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue` (both delegates), `task`, `mutex`, `condition`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
 | `fprime-comp` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | everything (passive/queued/active bases, ports, envelopes, escrow, serialize ports, glue, state machines, macros) |
 | `fprime-utils` | std prelude, every module | `#![no_std]` + `alloc`: `hash`, `types` (circular buffer, queue), `rate_limiter`, `token_bucket`, `cfdp`; not `crc_checker`, `validate_file` (files) |
-| `fprime-svc` | std prelude, every component | `#![no_std]` + `alloc`: rate groups (`RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`), `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime comms (`FprimeFramer`/`Deframer`, `FrameAccumulator` + detectors, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`), CCSDS (`SpacePacketFramer`/`Deframer`, `TmFramer`, `TcDeframer`, `ApidManager`, AOS, the SDLS framework, `ComAggregator`), `GenericHub`, `BufferAccumulator`, `DpManager`, `DpCompressProc`, `PassiveTextLogger`, `ActiveTextLogger` (no log file), `FatalHandler` (bare-metal impl), `PosixTime`, `LinuxTimer`; `DpZLibCompressor` / the AES-GCM pair with `zlib` / `aes-gcm` |
+| `fprime-svc` | std prelude, every component | `#![no_std]` + `alloc`: rate groups (`RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`), `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime comms (`FprimeFramer`/`Deframer`, `FrameAccumulator` + detectors, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`), CCSDS (`SpacePacketFramer`/`Deframer`, `TmFramer`, `TcDeframer`, `ApidManager`, AOS, the SDLS framework, `ComAggregator`), `GenericHub`, `BufferAccumulator`, `DpManager`, `DpCompressProc`, `PassiveTextLogger`, `ActiveTextLogger` (no log file), `FatalHandler` (bare-metal impl), `AssertFatalAdapter`, `PosixTime`, `ChronoTime`, `OsTime`, `LinuxTimer`, `CmdSplitter`, `ComRetry`, `BufferRepeater`; `DpZLibCompressor` / the AES-GCM pair with `zlib` / `aes-gcm` |
 
 `spin` is a separate, explicit feature because cargo cannot enable a
 dependency when a feature is turned *off*; building with neither `std` nor
@@ -169,9 +169,9 @@ The pieces:
   blocked receivers wake periodically; without interrupt senders the
   default delegate is the better choice.
 - **Services without `std`.** Components keep their behavior; what the
-  host OS provided comes from the seam: `PosixTime` reads
-  `Os::RawTime::now` (the platform clock; zero time without one, the
-  `clock_gettime` failure path), `LinuxTimer` measures with it and sleeps
+  host OS provided comes from the seam: `PosixTime` and `ChronoTime`
+  read `Os::RawTime::now` (the platform clock; zero time without one, the
+  `clock_gettime` failure path), `OsTime` offsets its epoch by it, `LinuxTimer` measures with it and sleeps
   with `Os::Task::delay`, and `FatalHandler` is upstream's bare-metal
   implementation (`FatalHandlerComponentBaremetalImpl.cpp`): log
   `FATAL <id>handled.`, then the terminal action, by default spinning
