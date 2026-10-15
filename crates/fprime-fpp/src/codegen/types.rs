@@ -1,7 +1,7 @@
 //! Emission of constants, enums, structs, arrays and type aliases onto the
 //! `fprime_fw` macro layer.
 
-use super::{Generator, names};
+use super::{ArgKind, Generator, names};
 use crate::analysis::{Def, SymId, Type, TypeDef, Value};
 use crate::ast::{FloatKind, IntKind};
 use crate::error::{Diagnostic, Result};
@@ -147,6 +147,11 @@ impl Generator<'_, '_> {
                     let helper = self.helper_array(&sname, &m.name, elt, *n);
                     names::ident(&helper)
                 }
+                // An `Fw.Buffer` member cannot be copied into a queue
+                // message: it travels escrowed (see `EscrowedBuffer`).
+                other if self.arg_kind(other) == ArgKind::Owned => {
+                    "::fprime_comp::EscrowedBuffer".to_string()
+                }
                 other => self.rust_type(other)?,
             };
             member_types.push(t);
@@ -156,7 +161,9 @@ impl Generator<'_, '_> {
         self.line("::fprime_fw::fpp_struct! {");
         self.indent();
         self.doc(&docs);
-        self.line(&format!("#[derive({derives})]"));
+        if !derives.is_empty() {
+            self.line(&format!("#[derive({derives})]"));
+        }
         self.line(&format!("pub struct {name} {{"));
         self.indent();
         for (m, t) in members.iter().zip(member_types.iter()) {
@@ -180,6 +187,9 @@ impl Generator<'_, '_> {
                 .map(|(_, v)| v.clone())
                 .expect("default has every member");
             let rendered = match (&m.ty, &v) {
+                // A hand-written (bound) type's own default: its `Default`
+                // (its constants need not be named as in FPP).
+                _ if self.is_bound_default(&m.ty, &v) => format!("<{t} as Default>::default()"),
                 (Type::AnonArray(..), Value::Array(_, elts)) => {
                     let mut parts = Vec::new();
                     for e in elts {
@@ -277,7 +287,42 @@ impl Generator<'_, '_> {
 
     /// Derives for a generated named array/struct type. The macros derive
     /// `Debug` and `PartialEq` themselves.
+    /// Whether `v` is the default value of `t`, a bound (hand-written)
+    /// named type.
+    fn is_bound_default(&self, t: &Type, v: &Value) -> bool {
+        let (Type::Enum(sym) | Type::Struct(sym) | Type::Array(sym)) = t else {
+            return false;
+        };
+        if !self.is_bound_type(*sym) {
+            return false;
+        }
+        match (self.a.type_defs.get(sym), v) {
+            (Some(TypeDef::Enum { default, .. }), Value::Enum(_, name, _)) => default == name,
+            (Some(TypeDef::Struct { default, .. }), _) => default == v,
+            (Some(TypeDef::Array { default, .. }), _) => default == v,
+            _ => false,
+        }
+    }
+
+    /// Whether a struct (transitively) has an `Fw.Buffer` member, which
+    /// the generated struct holds as a `fprime_comp::EscrowedBuffer`.
+    pub(super) fn holds_buffer(&self, t: &Type) -> bool {
+        match self.a.underlying(t) {
+            Type::Struct(s) if !self.is_bound_type(s) => match self.a.type_defs.get(&s) {
+                Some(TypeDef::Struct { members, .. }) => members
+                    .iter()
+                    .any(|m| self.arg_kind(&m.ty) == ArgKind::Owned || self.holds_buffer(&m.ty)),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     fn derives_for(&self, t: &Type) -> String {
+        // A value holding an escrowed buffer is moved, never cloned.
+        if self.holds_buffer(t) {
+            return String::new();
+        }
         let mut d = vec!["Clone"];
         if self.is_copy(t) {
             d.push("Copy");
@@ -354,6 +399,9 @@ impl Generator<'_, '_> {
                     crate::error::Loc::none(),
                     "anonymous struct values cannot be rendered in Rust",
                 ));
+            }
+            Value::Abs(s) if self.arg_kind(&Type::Abs(*s)) == ArgKind::Owned => {
+                "<::fprime_comp::EscrowedBuffer as Default>::default()".to_string()
             }
             Value::Abs(s) => format!("<{} as Default>::default()", self.type_path(*s)?),
         })

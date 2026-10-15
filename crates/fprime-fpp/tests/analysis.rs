@@ -543,3 +543,185 @@ fn state_enum_numbers_leaf_states_in_name_order() {
     assert_eq!(value(&mut a, "M.Sm.State.A_B"), 2);
     assert_eq!(value(&mut a, "M.Sm.State.Z"), 3);
 }
+
+/// The state machine model: scoping of transition targets, choice types
+/// inferred from the transitions into them, every state and choice with
+/// its parent.
+#[test]
+fn state_machine_model_resolves_targets_and_infers_choice_types() {
+    let src = r#"
+      module M {
+        state machine Sm {
+          action a: U32
+          action b
+          guard g: U32
+          guard h
+          signal s1: U16
+          signal s2: U32
+          signal t
+          signal u
+          initial do { b } enter S
+          state S {
+            initial enter A
+            state A {
+              on s1 enter C
+              on s2 if g do { a } enter C
+              on t do { b }
+              on u enter T.U
+            }
+            choice C { if g do { a } enter A else enter D }
+            choice D { if h enter A else enter T }
+          }
+          state T {
+            initial enter U
+            state U { on t enter S.A }
+          }
+        }
+      }"#;
+    let mut session = Session::new();
+    let a = analyze(&mut session, &[("m.fpp", src)]);
+    let sym = a
+        .symbols
+        .resolve_absolute(NameGroup::StateMachine, &["M", "Sm"])
+        .unwrap();
+    let m = &a.state_machines[&sym];
+    let names: Vec<String> = m.states.iter().map(|s| s.flat_name()).collect();
+    assert_eq!(names, ["S", "S_A", "T", "T_U"]);
+    let choices: Vec<String> = m.choices.iter().map(|c| c.flat_name()).collect();
+    assert_eq!(choices, ["S_C", "S_D"]);
+    // C: U16 and U32 transitions in -> U32; D: from C -> U32 as well.
+    assert_eq!(
+        m.choices[0].ty,
+        Some(Type::Int(fprime_fpp::ast::IntKind::U32))
+    );
+    assert_eq!(
+        m.choices[1].ty,
+        Some(Type::Int(fprime_fpp::ast::IntKind::U32))
+    );
+    // `enter T.U` from inside S resolves outwards; `enter S.A` from U too.
+    assert_eq!(m.target_name(m.choices[1].else_transition.target), "T");
+    assert_eq!(
+        m.target_name(m.states[1].transitions[3].target.unwrap()),
+        "T_U"
+    );
+    assert_eq!(
+        m.target_name(m.states[3].transitions[0].target.unwrap()),
+        "S_A"
+    );
+    // An internal transition has no target.
+    assert!(m.states[1].transitions[2].target.is_none());
+    assert_eq!(m.states[1].parent, Some(0));
+    let leaves = m.leaf_numbers();
+    assert_eq!((leaves[&1], leaves[&3]), (1, 2));
+    let signals: Vec<(usize, &str)> = m
+        .signals_by_name()
+        .iter()
+        .map(|(k, s)| (*k, s.name.as_str()))
+        .collect();
+    assert_eq!(signals, [(1, "s1"), (2, "s2"), (3, "t"), (4, "u")]);
+}
+
+#[test]
+fn state_machine_errors_follow_the_reference_rules() {
+    // Members are separated by newlines; `|` stands for one here.
+    let sm = |body: &str| {
+        format!(
+            "module M {{ state machine Sm {{\n{}\n}} }}",
+            body.replace('|', "\n")
+        )
+    };
+    let err = |body: &str| analyze_err(&[("m.fpp", &sm(body))]);
+    assert!(err("signal s|state A").contains("must have initial transition"));
+    assert!(err("initial enter A|initial enter A|state A").contains("2 initial transitions"));
+    assert!(
+        err("initial enter A|state A { state B }")
+            .contains("state with substates must have initial")
+    );
+    assert!(
+        err("initial enter B|state A { initial enter B|state B }")
+            .contains("undefined state or choice symbol B")
+    );
+    assert!(
+        err("initial enter A.B|state A { initial enter B|state B }")
+            .contains("may not go to a state or choice defined in a substate")
+    );
+    assert!(
+        err("initial enter A|state A { initial enter C|state B }|state C")
+            .contains("must go to state or choice defined in the same state")
+    );
+    assert!(
+        err("signal s|initial enter A|state A { on s enter A|on s enter A }")
+            .contains("duplicate use of signal s")
+    );
+    assert!(err("initial enter A|state A|state B").contains("state B is unreachable"));
+    assert!(
+        err("guard g|initial enter C|choice C { if g enter D else enter A }|choice D { if g enter C else enter A }|state A")
+            .contains("choice cycle")
+    );
+    assert!(
+        err("action a: U32|initial do { a } enter A|state A").contains("type mismatch at action a")
+    );
+    assert!(
+        err("action a: U32|signal s: I32|initial enter A|state A { on s do { a } }")
+            .contains("type mismatch at action a")
+    );
+    assert!(
+        err("guard g|signal s1: U32|signal s2: F32|initial enter A|state A { on s1 enter C|on s2 enter C }|choice C { if g enter A else enter A }")
+            .contains("type mismatch at choice C")
+    );
+    assert!(err("action a|action a|initial enter A|state A").contains("redefinition of action a"));
+    assert!(
+        err("guard g|initial enter A|state A|choice A { if g enter A else enter A }")
+            .contains("redefinition of state or choice A")
+    );
+    assert!(
+        analyze_err(&[(
+            "m.fpp",
+            "module M { queued component C {\nasync input port p: Svc.Ping\nstate machine instance s: C\n} }"
+        )])
+        .contains("is not a state machine")
+    );
+}
+
+/// Init specifiers: the phase is evaluated (an enum constant in practice),
+/// one specifier per phase.
+#[test]
+fn init_specifiers_are_evaluated_per_phase() {
+    let src = r#"
+      module Fpp { module ToCpp { enum Phases { configConstants, configObjects, instances, initComponents, configComponents } } }
+      passive component C { }
+      instance c: C base id 0x10 {
+        phase Fpp.ToCpp.Phases.configComponents "configure();"
+        phase 1 """
+        let x = 1;
+        """
+      }
+    "#;
+    let mut session = Session::new();
+    let a = analyze(&mut session, &[("m.fpp", src)]);
+    let sym = a
+        .symbols
+        .resolve_absolute(NameGroup::PortInterfaceInstance, &["c"])
+        .unwrap();
+    let specs = &a.instances[&sym].init_specs;
+    assert_eq!(specs.len(), 2);
+    assert_eq!(
+        (specs[0].phase, specs[0].code.as_str()),
+        (4, "configure();")
+    );
+    assert_eq!(specs[1].phase, 1);
+    assert!(specs[1].code.contains("let x = 1;"));
+    let dup = analyze_err(&[(
+        "m.fpp",
+        "passive component C { }\ninstance c: C base id 0x10 {\nphase 4 \"a\"\nphase 2 + 2 \"b\"\n}",
+    )]);
+    assert!(
+        dup.contains("duplicate initialization for phase 4"),
+        "{dup}"
+    );
+    let bad = analyze_err(&[(
+        "m.fpp",
+        "passive component C { }\ninstance c: C base id 0x10 { phase \"x\" \"a\" }",
+    )]);
+    assert!(bad.contains("phase must be an integer"), "{bad}");
+}

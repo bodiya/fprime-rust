@@ -697,7 +697,7 @@ impl<'a> Analysis<'a> {
     }
 
     /// Structural type identity after alias stripping.
-    fn same_type(&self, a: &Type, b: &Type) -> bool {
+    pub(crate) fn same_type(&self, a: &Type, b: &Type) -> bool {
         let (a, b) = (self.underlying(a), self.underlying(b));
         match (&a, &b) {
             (Type::Int(x), Type::Int(y)) => x == y,

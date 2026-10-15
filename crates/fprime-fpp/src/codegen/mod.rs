@@ -14,13 +14,17 @@
 //! | `type T` | a `pub use` of the bound Rust type (abstract types must be bound) |
 //! | `port P` | `pub trait PPort: Send + Sync { fn invoke(&self, port_num, ..) }` |
 //! | `component C` | `CBase` (the autocoded base: ports, glue, queue, ids), `CHandlers` (the handler trait the implementation provides), `CComponent` (base access), generated adapters, dispatch, event/telemetry/parameter helpers |
-//! | `topology T` | `TTopology`: instance fields, `set_id_bases`, `connect`, `reg_commands`, `load_parameters`, task start/exit/join |
+//! | `topology T` | `TTopology`: instance fields, the phases (`new`, `init`, `config_components`, `set_id_bases`, `connect`, `reg_commands`, `read_parameters`, `load_parameters`, task start/exit/join, tear down, `setup`/`teardown`) with the instances' init specifier code |
+//! | `state machine M` | `fprime_comp::fpp_state_machine!` in module `M` (internal machines); an external machine is bound to a Rust `ExternalStateMachine` type |
+//! | `state machine instance` | base fields, `SM_ID_*`, `<m>_get_state`, `<m>_send_signal_<s>` / `<m>_state_machine_invoke`, the handlers and the dispatch (see [`sm_instances`]) |
 //! | `telemetry packets S` (in topology `T`) | `T_STlmPackets`: the `TlmPacketizer` packet table (`PACKET_LIST`, `OMITTED_CHANNELS`) |
 //! | `serial` port | `fprime_comp::SerializePort` inputs and `OutputPort<dyn SerializePort>` outputs; `serializable_port!` per port definition; typed <-> serial connections with `connect_serial` / `connect_typed` |
 //!
 //! Framework definitions the port already hand-writes (`Fw.Time`,
 //! `Fw.Cmd`, config aliases, ...) are *bound* to their existing Rust items
-//! instead of being regenerated; see [`Bindings`].
+//! instead of being regenerated, and so are hand-written components (such
+//! as `Svc.TlmPacketizer`) a generated topology instantiates; see
+//! [`Bindings`].
 //!
 //! Every path in the output is absolute (`::fprime_fw::...`) or relative
 //! to the generated module tree (`super::super::Fw::X`), so the output can
@@ -33,6 +37,8 @@ pub mod names;
 pub mod packets;
 pub mod ports;
 pub mod serial;
+pub mod sm_instances;
+pub mod state_machine;
 pub mod topology;
 pub mod types;
 
@@ -77,13 +83,34 @@ pub struct PortBinding {
     pub modes: Option<Vec<String>>,
 }
 
+/// A hand-written component bound to an FPP component definition, so a
+/// generated topology can hold instances of it. The Rust type must follow
+/// the workspace's hand-written component conventions (those of
+/// `fprime-svc`): `new(name) -> Arc<Self>`; the kind's core in a field
+/// `base` / `queued` / `active` (`PassiveBase` / `QueuedBase` /
+/// `ActiveBase`); the special-port glue in `cmd` / `evt` / `tlm` / `prm`;
+/// each output port `p` (and data-product port) in a field
+/// `snake_case(p)`; each input port `p` from a factory
+/// `snake_case(p)` + `_in` (unless it already ends in `_in`) taking
+/// `self: &Arc<Self>, port_num`; and `init(queue_depth)`,
+/// `reg_commands()`, `load_parameters()` where the component has a queue,
+/// commands, parameters.
+#[derive(Debug, Clone)]
+pub struct ComponentBinding {
+    /// Absolute Rust path of the component type.
+    pub path: String,
+}
+
 /// The mapping from FPP framework definitions to existing Rust items.
 #[derive(Debug, Clone)]
 pub struct Bindings {
-    /// FPP qualified type name -> Rust type.
+    /// FPP qualified type name -> Rust type (also external state
+    /// machines -> their `ExternalStateMachine` type).
     pub types: HashMap<String, TypeBinding>,
     /// FPP qualified port name -> Rust trait.
     pub ports: HashMap<String, PortBinding>,
+    /// FPP qualified component name -> hand-written Rust component.
+    pub components: HashMap<String, ComponentBinding>,
 }
 
 impl Default for Bindings {
@@ -98,6 +125,7 @@ impl Bindings {
         Self {
             types: HashMap::new(),
             ports: HashMap::new(),
+            components: HashMap::new(),
         }
     }
 
@@ -275,7 +303,23 @@ impl Bindings {
             "::fprime_comp::ComDataWithContextPort",
             &["owned", "ref"],
         );
+        // Hand-written components a generated topology may instantiate
+        // (checked against their FPP models by fprime-fpp-demo).
+        b.bind_component(
+            "Svc.TlmPacketizer",
+            "::fprime_svc::tlm_packetizer::TlmPacketizer",
+        );
         b
+    }
+
+    /// Bind an FPP component to a hand-written Rust component type.
+    pub fn bind_component(&mut self, fpp: &str, rust: &str) {
+        self.components.insert(
+            fpp.to_string(),
+            ComponentBinding {
+                path: rust.to_string(),
+            },
+        );
     }
 
     /// Bind an FPP type to a Rust path.
@@ -477,6 +521,14 @@ impl<'g, 'a> Generator<'g, 'a> {
             .contains_key(&self.a.symbols.sym(sym).qualified_name())
     }
 
+    /// Whether a component is bound to a hand-written Rust component.
+    pub fn is_bound_component(&self, sym: SymId) -> bool {
+        self.opts
+            .bindings
+            .components
+            .contains_key(&self.a.symbols.sym(sym).qualified_name())
+    }
+
     /// Whether a port is bound.
     pub fn is_bound_port(&self, sym: SymId) -> bool {
         self.opts
@@ -491,6 +543,9 @@ impl<'g, 'a> Generator<'g, 'a> {
         for &sym in &self.a.order {
             let s = self.a.symbols.sym(sym);
             let generated = match s.def {
+                // The implicit `State` enum of a state machine is defined
+                // by `fpp_state_machine!`.
+                Def::Enum(_) if self.is_sm_state_enum(sym) => false,
                 Def::AbsType(_)
                 | Def::AliasType(_)
                 | Def::Array(_)
@@ -498,18 +553,24 @@ impl<'g, 'a> Generator<'g, 'a> {
                 | Def::Enum(_)
                 | Def::Struct(_) => !self.is_bound_type(sym),
                 Def::Port(_) => !self.is_bound_port(sym),
-                Def::Component(_) | Def::Topology(_) => true,
+                Def::Component(_) => !self.is_bound_component(sym),
+                Def::Topology(_) => true,
+                // Internal machines; external ones are bound types.
+                Def::StateMachine(n) => n.data.members.is_some() && !self.is_bound_type(sym),
                 Def::Module
                 | Def::ComponentInstance(_)
                 | Def::EnumConstant(..)
                 | Def::Interface(_)
-                | Def::StateMachine(_)
                 | Def::System(_) => false,
             };
             if !generated || !self.is_target(sym) {
                 continue;
             }
-            let path = self.module_of(sym);
+            let path = match s.def {
+                // A state machine is emitted inside its own module.
+                Def::StateMachine(_) => self.sm_module(sym),
+                _ => self.module_of(sym),
+            };
             let mut node = &mut tree;
             for part in &path {
                 node = node.children.entry(part.clone()).or_default();
@@ -586,6 +647,7 @@ impl<'g, 'a> Generator<'g, 'a> {
             Def::Port(_) => self.emit_port(sym),
             Def::Component(_) => self.emit_component(sym),
             Def::Topology(_) => self.emit_topology(sym),
+            Def::StateMachine(_) => self.emit_state_machine(sym),
             _ => Ok(()),
         }
     }
@@ -784,6 +846,14 @@ impl<'g, 'a> Generator<'g, 'a> {
     pub fn size_expr(&self, t: &Type) -> Result<String> {
         if let Type::Abs(s) | Type::Alias(s) | Type::Array(s) | Type::Struct(s) | Type::Enum(s) = t
         {
+            // A type defined in an imported file and not bound has no Rust
+            // item in this output (e.g. a channel of a hand-written
+            // component's FPP model): its size is a number.
+            if !self.is_bound_type(*s) && !self.is_target(*s) {
+                if let Some(n) = self.static_size(t) {
+                    return Ok(format!("{n}usize"));
+                }
+            }
             if let Some(b) = self
                 .opts
                 .bindings
@@ -799,6 +869,46 @@ impl<'g, 'a> Generator<'g, 'a> {
             "<{} as ::fprime_fw::FppSized>::SERIALIZED_SIZE",
             self.rust_type(t)?
         ))
+    }
+
+    /// The serialized size of a type computed from the model (`None`
+    /// for abstract types).
+    pub fn static_size(&self, t: &Type) -> Option<u64> {
+        Some(match self.a.underlying(t) {
+            Type::Int(k) => u64::from(k.bits() / 8),
+            Type::Integer => 8,
+            Type::Float(crate::ast::FloatKind::F32) => 4,
+            Type::Float(crate::ast::FloatKind::F64) => 8,
+            Type::Bool => 1,
+            Type::String(n) => 2 + n.unwrap_or(crate::analysis::types::DEFAULT_STRING_SIZE),
+            Type::Abs(_) | Type::Alias(_) => return None,
+            Type::Enum(s) => match self.a.type_defs.get(&s)? {
+                TypeDef::Enum { repr, .. } => u64::from(repr.bits() / 8),
+                _ => return None,
+            },
+            Type::Array(s) => match self.a.type_defs.get(&s)? {
+                TypeDef::Array { size, elt, .. } => size * self.static_size(elt)?,
+                _ => return None,
+            },
+            Type::Struct(s) => match self.a.type_defs.get(&s)? {
+                TypeDef::Struct { members, .. } => {
+                    let mut total = 0;
+                    for m in members {
+                        total += self.static_size(&m.ty)?;
+                    }
+                    total
+                }
+                _ => return None,
+            },
+            Type::AnonArray(n, e) => n.unwrap_or(0) * self.static_size(&e)?,
+            Type::AnonStruct(ms) => {
+                let mut total = 0;
+                for (_, t) in ms {
+                    total += self.static_size(&t)?;
+                }
+                total
+            }
+        })
     }
 
     /// Find a symbol by qualified name in a group.

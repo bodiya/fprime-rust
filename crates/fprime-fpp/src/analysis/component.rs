@@ -191,6 +191,19 @@ pub struct InternalPortDef {
     pub loc: Loc,
 }
 
+/// A state machine instance of a component
+/// (`state machine instance m: M priority p policy`).
+#[derive(Debug, Clone)]
+pub struct StateMachineInstanceDef {
+    pub name: String,
+    /// The state machine symbol (internal or external).
+    pub state_machine: SymId,
+    pub priority: Option<i128>,
+    pub queue_full: QueueFull,
+    pub docs: Vec<String>,
+    pub loc: Loc,
+}
+
 /// A resolved component.
 #[derive(Debug, Clone)]
 pub struct ComponentModel {
@@ -218,8 +231,8 @@ pub struct ComponentModel {
     pub internal_ports: Vec<InternalPortDef>,
     /// `match p1 with p2` specifiers.
     pub port_matchings: Vec<(String, String)>,
-    /// State machine instances (name, state machine symbol).
-    pub state_machine_instances: Vec<(String, SymId)>,
+    /// State machine instances, in declaration order.
+    pub state_machine_instances: Vec<StateMachineInstanceDef>,
     /// Annotation lines.
     pub docs: Vec<String>,
 }
@@ -274,7 +287,22 @@ pub struct InstanceModel {
     pub cpu: Option<i128>,
     /// The `type "..."` clause: the implementation type.
     pub impl_type: Option<String>,
+    /// Init specifiers (`phase e "code"`), in declaration order, phases
+    /// distinct.
+    pub init_specs: Vec<InitSpecDef>,
     pub docs: Vec<String>,
+}
+
+/// An init specifier of a component instance: the code a back end emits
+/// for one topology phase (`Fpp.ToCpp.Phases`) instead of, or in addition
+/// to, its default code.
+#[derive(Debug, Clone)]
+pub struct InitSpecDef {
+    /// The phase number.
+    pub phase: i128,
+    /// The code, verbatim.
+    pub code: String,
+    pub loc: Loc,
 }
 
 impl<'a> Analysis<'a> {
@@ -845,9 +873,37 @@ impl<'a> Analysis<'a> {
                     port_matchings.push((pm.data.port1.data.clone(), pm.data.port2.data.clone()));
                 }
                 ComponentMemberNode::SpecStateMachineInstance(smi) => {
+                    let d = &smi.data;
                     let ssym =
-                        self.resolve_use(&stack, NameGroup::StateMachine, &smi.data.state_machine)?;
-                    state_machine_instances.push((smi.data.name.clone(), ssym));
+                        self.resolve_use(&stack, NameGroup::StateMachine, &d.state_machine)?;
+                    if !matches!(self.symbols.sym(ssym).def, Def::StateMachine(_)) {
+                        return Err(Diagnostic::semantic(
+                            d.state_machine.loc.clone(),
+                            format!(
+                                "{} is not a state machine",
+                                self.symbols.sym(ssym).qualified_name()
+                            ),
+                        ));
+                    }
+                    if let Some(prev) = state_machine_instances
+                        .iter()
+                        .find(|s: &&StateMachineInstanceDef| s.name == d.name)
+                    {
+                        return Err(Diagnostic::semantic(
+                            smi.loc.clone(),
+                            format!("duplicate state machine instance {}", d.name),
+                        )
+                        .with_note(prev.loc.clone(), "previous instance is here"));
+                    }
+                    let priority = self.opt_int(&stack, &d.priority, "priority")?;
+                    state_machine_instances.push(StateMachineInstanceDef {
+                        name: d.name.clone(),
+                        state_machine: ssym,
+                        priority,
+                        queue_full: d.queue_full.unwrap_or(QueueFull::Assert),
+                        docs,
+                        loc: smi.loc.clone(),
+                    });
                 }
                 // Nested definitions were entered in pass 1 and resolve on demand.
                 ComponentMemberNode::DefAbsType(_)
@@ -1043,6 +1099,31 @@ impl<'a> Analysis<'a> {
                 format!("{kind} component instance may not specify stack size, priority or cpu"),
             ));
         }
+        // Init specifiers: the phase is an integer (an `Fpp.ToCpp.Phases`
+        // constant in practice), at most one specifier per phase.
+        let mut init_specs: Vec<InitSpecDef> = Vec::new();
+        for spec in &d.init_specs {
+            let n = &spec.node;
+            let v = self.eval(&stack, &n.data.phase)?;
+            let Some(phase) = v.as_int() else {
+                return Err(Diagnostic::semantic(
+                    n.data.phase.loc.clone(),
+                    "init specifier phase must be an integer",
+                ));
+            };
+            if let Some(prev) = init_specs.iter().find(|s| s.phase == phase) {
+                return Err(Diagnostic::semantic(
+                    n.loc.clone(),
+                    format!("duplicate initialization for phase {phase}"),
+                )
+                .with_note(prev.loc.clone(), "previous initialization is here"));
+            }
+            init_specs.push(InitSpecDef {
+                phase,
+                code: n.data.code.clone(),
+                loc: n.loc.clone(),
+            });
+        }
         let docs = self.symbols.sym(sym).docs.clone();
         self.instances.insert(
             sym,
@@ -1055,6 +1136,7 @@ impl<'a> Analysis<'a> {
                 priority,
                 cpu,
                 impl_type: d.impl_type.as_ref().map(|t| t.data.clone()),
+                init_specs,
                 docs,
             },
         );

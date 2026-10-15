@@ -10,6 +10,7 @@
 pub mod component;
 pub mod eval;
 pub mod format;
+pub mod state_machine;
 pub mod symbols;
 pub mod topology;
 pub mod types;
@@ -23,6 +24,9 @@ use std::collections::{HashMap, HashSet};
 pub use component::*;
 pub use eval::{StructMemberDef, TypeDef};
 pub use format::Format;
+pub use state_machine::{
+    SmChoice, SmState, SmStateTransition, SmTarget, SmTransition, SmTyped, StateMachineModel,
+};
 pub use symbols::{Def, NameGroup, ScopeId, SymId, Symbol, SymbolTable};
 pub use topology::*;
 pub use types::{Type, Value};
@@ -72,6 +76,8 @@ pub struct Analysis<'a> {
     pub instances: HashMap<SymId, InstanceModel>,
     /// Resolved topologies.
     pub topologies: HashMap<SymId, TopologyModel>,
+    /// Checked internal state machines (external machines have none).
+    pub state_machines: HashMap<SymId, StateMachineModel>,
     /// Cycle detection for on-demand resolution.
     in_progress: HashSet<SymId>,
     /// Enum representation types and constants, resolved ahead of the
@@ -92,6 +98,7 @@ pub fn analyze(session: &Session) -> Result<Analysis<'_>> {
         components: HashMap::new(),
         instances: HashMap::new(),
         topologies: HashMap::new(),
+        state_machines: HashMap::new(),
         in_progress: HashSet::new(),
         enum_constants: HashMap::new(),
         enum_in_progress: HashSet::new(),
@@ -125,6 +132,12 @@ pub fn analyze(session: &Session) -> Result<Analysis<'_>> {
         if let Def::Interface(_) = a.symbols.sym(sym).def {
             let loc = a.symbols.sym(sym).loc.clone();
             a.ensure_interface(sym, &loc)?;
+        }
+    }
+    for i in 0..a.order.len() {
+        let sym = a.order[i];
+        if let Def::StateMachine(_) = a.symbols.sym(sym).def {
+            a.resolve_state_machine(sym)?;
         }
     }
     for i in 0..a.order.len() {

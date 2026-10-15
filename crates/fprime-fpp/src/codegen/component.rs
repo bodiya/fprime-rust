@@ -24,8 +24,11 @@
 //!   `load_parameters`, `cmd_dispatch` and `dispatch_message` (the queue
 //!   message decoder, byte-exact with the hand-written components).
 //! - `impl_<c>_component!` — a macro that implements `ComponentDispatch`
-//!   (and `ActiveComponent` for active components) for the implementation
-//!   type in one line.
+//!   (and `ActiveComponent` for active components, and the external state
+//!   machines' parent accessors) for the implementation type in one line.
+//!
+//! State machine instances add their fields, ids, senders, handlers,
+//! `init` and dispatch arms (see [`super::sm_instances`]).
 //!
 //! The wire formats are exactly those of the hand-written components:
 //! queue envelopes are `[msg_type i32][port_num i16][args]`, command
@@ -85,6 +88,10 @@ enum MsgKind {
     /// An async serial input port (port name): the message carries the
     /// serialized call as a length-prefixed buffer.
     Serial(String),
+    /// A signal to an internal state machine instance.
+    SmInternal,
+    /// A signal to an external state machine instance.
+    SmExternal,
 }
 
 /// What the generator knows about the component being emitted.
@@ -121,15 +128,7 @@ impl Generator<'_, '_> {
         let docs = s.docs.clone();
         let loc = s.loc.clone();
 
-        // Unsupported constructs.
-        if let Some((smi, _)) = m.state_machine_instances.first() {
-            return Err(Diagnostic::codegen(
-                loc,
-                format!(
-                    "component {name}: state machine instance {smi} is not supported by the Rust back end yet"
-                ),
-            ));
-        }
+        let _ = loc;
 
         let has = |k: SpecialPortKind| m.special_port(k).is_some();
         let dp_recv = m.ports.iter().find_map(|p| match p {
@@ -291,6 +290,27 @@ impl Generator<'_, '_> {
                 params: self.plain_params(&ip.params),
                 priority: ip.priority.unwrap_or(0),
                 queue_full: ip.queue_full,
+            });
+        }
+        // State machine signals come after every other message type (C++
+        // order: external, then internal).
+        let sms = &m.state_machine_instances;
+        if sms.iter().any(|i| !self.sm_is_internal(i.state_machine)) {
+            ctx.msgs.push(AsyncMsg {
+                const_name: "MSG_TYPE_EXTERNAL_STATE_MACHINE_SIGNAL".into(),
+                kind: MsgKind::SmExternal,
+                params: Vec::new(),
+                priority: 0,
+                queue_full: QueueFull::Assert,
+            });
+        }
+        if sms.iter().any(|i| self.sm_is_internal(i.state_machine)) {
+            ctx.msgs.push(AsyncMsg {
+                const_name: "MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL".into(),
+                kind: MsgKind::SmInternal,
+                params: Vec::new(),
+                priority: 0,
+                queue_full: QueueFull::Assert,
             });
         }
         for msg in &ctx.msgs {
@@ -574,6 +594,7 @@ impl Generator<'_, '_> {
             self.line("/// Queue message scratch for async serial calls, sized at `init` to the runtime message size (C++ `m_msgSize`).");
             self.line("pub serial_msg: ::std::sync::Mutex<::std::boxed::Box<[u8]>>,");
         }
+        self.emit_sm_fields(ctx.m)?;
         self.dedent();
         self.line("}");
         Ok(())
@@ -679,6 +700,17 @@ impl Generator<'_, '_> {
             }
             let mut sizes: Vec<String> = Vec::new();
             for msg in &ctx.msgs {
+                match &msg.kind {
+                    MsgKind::SmInternal => {
+                        sizes.extend(self.sm_msg_sizes(ctx.m, true));
+                        continue;
+                    }
+                    MsgKind::SmExternal => {
+                        sizes.extend(self.sm_msg_sizes(ctx.m, false));
+                        continue;
+                    }
+                    _ => {}
+                }
                 let mut parts = vec!["6usize".to_string()];
                 match &msg.kind {
                     MsgKind::Cmd => {
@@ -703,6 +735,7 @@ impl Generator<'_, '_> {
         }
         self.dedent();
         self.line("}");
+        self.emit_sm_ids(ctx.m, base);
         Ok(())
     }
 
@@ -818,6 +851,7 @@ impl Generator<'_, '_> {
         if ctx.serial_async {
             self.line("serial_msg: ::std::sync::Mutex::new(::std::boxed::Box::new([])),");
         }
+        self.emit_sm_field_inits(ctx.m)?;
         self.dedent();
         self.line("}");
         self.dedent();
@@ -992,6 +1026,8 @@ impl Generator<'_, '_> {
         }
         // data products
         self.emit_dp_fns(ctx)?;
+        // state machines
+        self.emit_sm_base_methods(ctx.m);
         self.dedent();
         self.line("}");
         Ok(())
@@ -1487,6 +1523,8 @@ impl Generator<'_, '_> {
                 snake(&ip.name)
             ));
         }
+        // State machine actions, guards and overflow hooks.
+        self.emit_sm_handler_decls(ctx.m)?;
         // Parameter hooks.
         if !ctx.m.params.is_empty() {
             self.line(
@@ -1507,8 +1545,22 @@ impl Generator<'_, '_> {
         let (handlers, comp, base) = (ctx.handlers.clone(), ctx.comp.clone(), ctx.base.clone());
         self.line("");
         self.line(&format!("/// Generated operations on any `{}` implementation: input-port factories, internal-port invocations, parameter loading and queue dispatch.", ctx.name));
-        self.line(&format!("pub trait {comp}: {handlers} + Sized {{"));
+        let parents = if self.sm_has_external(ctx.m) {
+            format!(" + {}SmParents", ctx.name)
+        } else {
+            String::new()
+        };
+        self.line(&format!("pub trait {comp}: {handlers}{parents} + Sized {{"));
         self.indent();
+        if !ctx.m.state_machine_instances.is_empty() {
+            let n = super::sm_instances::SmNames {
+                name: &ctx.name,
+                base: &base,
+                handlers: &handlers,
+                kind: ctx.kind,
+            };
+            self.emit_sm_component_fns(ctx.m, &n, ctx.serial_async)?;
+        }
         // Input port factories.
         for p in &ctx.m.ports {
             match p {
@@ -1651,7 +1703,14 @@ impl Generator<'_, '_> {
         }
         self.dedent();
         self.line("}");
-        self.line(&format!("impl<T: {handlers}> {comp} for T {{}}"));
+        self.line(&format!("impl<T: {handlers}{parents}> {comp} for T {{}}"));
+        let n = super::sm_instances::SmNames {
+            name: &ctx.name,
+            base: &base,
+            handlers: &handlers,
+            kind: ctx.kind,
+        };
+        self.emit_sm_adapters(ctx.m, &n)?;
         Ok(())
     }
 
@@ -1885,6 +1944,24 @@ impl Generator<'_, '_> {
                         "self.{}_handler(port_num, &mut fpp_buffer);",
                         snake(name)
                     ));
+                }
+                MsgKind::SmInternal => {
+                    let n = super::sm_instances::SmNames {
+                        name: &ctx.name,
+                        base: &base,
+                        handlers: &ctx.handlers,
+                        kind: ctx.kind,
+                    };
+                    self.emit_sm_dispatch_internal(ctx.m, &n);
+                }
+                MsgKind::SmExternal => {
+                    let n = super::sm_instances::SmNames {
+                        name: &ctx.name,
+                        base: &base,
+                        handlers: &ctx.handlers,
+                        kind: ctx.kind,
+                    };
+                    self.emit_sm_dispatch_external(ctx.m, &n)?;
                 }
                 MsgKind::Internal(name) => {
                     let call = self.emit_deser_args("fpp_base", &msg.params)?;
@@ -2305,7 +2382,7 @@ impl Generator<'_, '_> {
         let mac = format!("impl_{}_component", snake(&ctx.name));
         // With a known include path the macro names its traits absolutely;
         // otherwise the traits must be in scope where it is invoked.
-        let (comp, handlers) = match &self.opts.include_path {
+        let (comp, handlers, item_prefix) = match &self.opts.include_path {
             Some(inc) => {
                 let mut prefix = format!("$crate::{inc}");
                 for part in self.module_path() {
@@ -2315,9 +2392,10 @@ impl Generator<'_, '_> {
                 (
                     format!("{prefix}::{}", ctx.comp),
                     format!("{prefix}::{}", ctx.handlers),
+                    format!("{prefix}::"),
                 )
             }
-            None => (ctx.comp.clone(), ctx.handlers.clone()),
+            None => (ctx.comp.clone(), ctx.handlers.clone(), String::new()),
         };
         self.line("");
         self.line(&format!("/// Implement the framework traits for an implementation of `{}` in one line: `{mac}!(MyImpl);`.", ctx.name));
@@ -2353,6 +2431,7 @@ impl Generator<'_, '_> {
             self.line("    }");
             self.line("}");
         }
+        self.emit_sm_parents_impl(ctx.m, &ctx.name, &item_prefix)?;
         self.dedent();
         self.line("};");
         self.dedent();

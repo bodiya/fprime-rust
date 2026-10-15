@@ -67,6 +67,8 @@ while IFS= read -r f; do IMPORTS+=(-i "$f"); done < <(
     -name '*.fpp' -not -path '*/test/*' | sort
 )
 IMPORTS+=(-i "$FPRIME/cmake/platform/unix/Platform/PlatformTypes.fpp")
+# The init specifiers of the upstream subtopologies name Fpp.ToCpp.Phases.
+IMPORTS+=(-i "$FPRIME/Fpp/ToCpp.fpp")
 cd "$ROOT"
 cargo run -q -p fprime-fpp --bin fpp-to-rust -- --dict "$OUT" \
   -p "$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')" -f "$VERSION" \

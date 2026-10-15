@@ -1,7 +1,9 @@
 //! The Rust back end on small inline models: serial ports (adapters,
 //! typed <-> serial wiring, the cases it refuses) and telemetry packet sets
-//! (table order and the dictionary's use/omit checks). The generated code
-//! itself is compiled and run by `fprime-fpp-demo`.
+//! (table order and the dictionary's use/omit checks), state machines and
+//! state machine instances, hand-written components in a topology, and
+//! instance init specifiers. The generated code itself is compiled and run
+//! by `fprime-fpp-demo`.
 
 use fprime_fpp::Session;
 use fprime_fpp::analysis;
@@ -18,12 +20,19 @@ module Fw {
   port Time(ref $time: Fw.Time)
   port Com(ref data: ComBuffer, context: U32)
 }
+module Svc {
+  port Sched(context: U32)
+}
 type FwIdType = U32
 type FwChanIdType = FwIdType
 type FwSizeType = U64
 "#;
 
 fn generate(src: &str) -> Result<String, String> {
+    generate_with(src, |_| {})
+}
+
+fn generate_with(src: &str, f: impl FnOnce(&mut Options)) -> Result<String, String> {
     let mut session = Session::new();
     session
         .parse_str(Path::new("framework.fpp"), FRAMEWORK)
@@ -32,10 +41,11 @@ fn generate(src: &str) -> Result<String, String> {
         .parse_str(Path::new("model.fpp"), src)
         .expect("model parses");
     let a = analysis::analyze(&session).map_err(|e| e.message)?;
-    let options = Options {
+    let mut options = Options {
         targets: vec!["model.fpp".into()],
         ..Default::default()
     };
+    f(&mut options);
     codegen::generate(&a, &options).map_err(|e| e.message)
 }
 
@@ -217,4 +227,250 @@ fn packet_sets_are_checked_like_the_dictionary() {
         err.contains("telemetry channel M.s1.A is both used and marked omitted in packet set P"),
         "{err}"
     );
+}
+
+/// Whitespace-insensitive containment.
+fn has(code: &str, needle: &str) -> bool {
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    squash(code).contains(&squash(needle))
+}
+
+const MACHINES: &str = r#"
+  state machine M {
+    action a: U32
+    action b
+    guard g: U32
+    signal zz: U16
+    signal aa: U32
+    signal s: string size 4
+    initial do { b } enter S
+    state S {
+      initial enter T
+      entry do { b }
+      state T {
+        on zz enter C
+        on aa if g do { a } enter C
+        on s do { b }
+      }
+      choice C { if g do { a } enter T else enter U }
+      state U
+    }
+  }
+  state machine E
+  queued component Q {
+    sync input port tick: Svc.Sched
+    state machine instance zeta: M priority 3 hook
+    state machine instance alpha: E priority 1 drop
+    state machine instance mid: M
+  }
+"#;
+
+#[test]
+fn state_machines_become_fpp_state_machine_invocations() {
+    let code = generate_with(MACHINES, |o| {
+        o.bindings
+            .bind_type("E", "crate::Ext", codegen::ArgKind::Ref)
+    })
+    .unwrap();
+    assert!(has(&code, "pub mod M { // ---- state machine M ----"));
+    assert!(has(
+        &code,
+        "::fprime_comp::fpp_state_machine! { state machine M: u8 {"
+    ));
+    assert!(has(
+        &code,
+        "actions { a => action_a (val u32), b => action_b, }"
+    ));
+    assert!(has(&code, "guards { g => guard_g (val u32), }"));
+    // Signals numbered by name; strings passed as `str`.
+    assert!(has(
+        &code,
+        "aa = 1 => send_signal_aa (val u32) { S_T => if g do { a } enter S_C; }"
+    ));
+    assert!(has(
+        &code,
+        "s = 2 => send_signal_s (str ::fprime_fw::FwString<4>) { S_T => do { b }; }"
+    ));
+    assert!(has(
+        &code,
+        "zz = 3 => send_signal_zz (val u16) { S_T => enter S_C; }"
+    ));
+    assert!(has(&code, "initial do { b } enter S;"));
+    // Leaves numbered by flattened name; composites carry their initial.
+    assert!(has(&code, "state S { initial enter S_T; entry do { b } }"));
+    assert!(has(&code, "state S_T = 1 in S {}"));
+    assert!(has(&code, "state S_U = 2 in S {}"));
+    // The choice is typed with the common type of U16 and U32.
+    assert!(has(
+        &code,
+        "choice S_C in S (val u32) { if g do { a } enter S_T else enter S_U }"
+    ));
+    // The implicit State enum is the macro's, not emitted separately.
+    assert!(!code.contains("pub enum State"));
+}
+
+#[test]
+fn state_machine_instances_follow_the_generator_contract() {
+    let code = generate_with(MACHINES, |o| {
+        o.bindings
+            .bind_type("E", "crate::Ext", codegen::ArgKind::Ref)
+    })
+    .unwrap();
+    // External before internal, after every other message type.
+    assert!(has(
+        &code,
+        "pub const MSG_TYPE_EXTERNAL_STATE_MACHINE_SIGNAL: ::fprime_config::FwEnumStoreType = 1;"
+    ));
+    assert!(has(
+        &code,
+        "pub const MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL: ::fprime_config::FwEnumStoreType = 2;"
+    ));
+    assert!(has(&code, "M::StateMachine::SIGNAL_MSG_SIZE"));
+    assert!(has(&code, "::fprime_comp::sm::EXTERNAL_SIGNAL_MSG_SIZE"));
+    // SmId: every instance sorted by name.
+    assert!(has(
+        &code,
+        "impl QBase { /// Instance `alpha`. SM_ID_ALPHA, /// Instance `mid`. SM_ID_MID, /// Instance `zeta`. SM_ID_ZETA, }"
+    ));
+    // init: machines in SmId order, then the queue.
+    assert!(has(
+        &code,
+        "<crate::Ext as ::fprime_comp::sm::ExternalStateMachine>::init(&fpp_base.alpha, self.__alpha_sm_parent(), QBase::SM_ID_ALPHA); fpp_base.mid.init(QBase::SM_ID_MID, &fpp_h); fpp_base.zeta.init(QBase::SM_ID_ZETA, &fpp_h); fpp_base.init(queue_depth);"
+    ));
+    // Senders with the instance's priority and policy (and hook).
+    assert!(has(&code, "fn zeta_send_signal_s(&self, value: &str)"));
+    assert!(has(
+        &code,
+        "QBase::SM_ID_ZETA, 3 as ::fprime_config::FwQueuePriorityType, ::fprime_comp::QueueFullPolicy::Hook).with_overflow_hook(&fpp_hook);"
+    ));
+    assert!(has(
+        &code,
+        "QBase::SM_ID_MID, 0 as ::fprime_config::FwQueuePriorityType, ::fprime_comp::QueueFullPolicy::Assert);"
+    ));
+    assert!(has(
+        &code,
+        "fn alpha_state_machine_invoke(&self, signal: <crate::Ext as ::fprime_comp::sm::ExternalStateMachine>::Signal, data: &::fprime_fw::SmSignalBuffer)"
+    ));
+    // Handlers: the machine's actions under its qualified name, once.
+    assert_eq!(code.matches("fn M_action_a(").count(), 1);
+    assert!(has(
+        &code,
+        "fn M_guard_g(&self, sm_id: ::fprime_config::FwEnumStoreType, signal: self::M::Signal, value: u32) -> bool;"
+    ));
+    assert!(has(
+        &code,
+        "fn zeta_state_machine_overflow_hook(&self, sm_id: ::fprime_config::FwEnumStoreType, signal: ::fprime_config::FwEnumStoreType, msg: &mut dyn ::fprime_fw::SerBufAny);"
+    ));
+    assert!(!code.contains("fn mid_state_machine_overflow_hook"));
+    // The external parent comes from the impl macro.
+    assert!(has(
+        &code,
+        "pub trait QComponent: QHandlers + QSmParents + Sized"
+    ));
+    assert!(has(
+        &code,
+        "fn __alpha_sm_parent(&self) -> &<crate::Ext as ::fprime_comp::sm::ExternalStateMachine>::Parent { self }"
+    ));
+    // Dispatch: internal ids assert, external ids are errors.
+    assert!(has(
+        &code,
+        "QBase::SM_ID_MID => fpp_base.mid.dispatch_signal(&fpp_h, fpp_signal, fpp_msg),"
+    ));
+    assert!(has(
+        &code,
+        "_ => ::fprime_fw::fw_assert!(false, fpp_sm_id),"
+    ));
+    assert!(has(&code, "_ => ::fprime_comp::MsgDispatchStatus::Error,"));
+}
+
+#[test]
+fn an_external_state_machine_needs_a_binding() {
+    let err = generate(MACHINES).unwrap_err();
+    assert!(
+        err.contains("external state machine E has no Rust binding"),
+        "{err}"
+    );
+}
+
+#[test]
+fn bound_components_and_init_specifiers_in_a_topology() {
+    let src = r#"
+      module Fpp { module ToCpp { enum Phases {
+        configConstants, configObjects, instances, initComponents, configComponents,
+        regCommands, readParameters, loadParameters, startTasks, stopTasks, freeThreads,
+        tearDownComponents, deinitComponents
+      } } }
+      module Svc {
+        active component Hand {
+          async input port Run: Svc.Sched
+          output port PktSend: [2] Fw.Com
+        }
+      }
+      passive component Sink {
+        sync input port comIn: Fw.Com
+        output port runOut: Svc.Sched
+      }
+      instance hand: Svc.Hand base id 0x100 queue size 4 {
+        phase Fpp.ToCpp.Phases.configConstants """
+        pub const LEVEL: u32 = 2;
+        """
+        phase Fpp.ToCpp.Phases.configComponents """
+        self.hand.configure(T_ConfigConstants::hand::LEVEL);
+        """
+        phase Fpp.ToCpp.Phases.stopTasks "self.hand.stop_now();"
+      }
+      instance sink: Sink base id 0x200 type "crate::Sink" {
+        phase Fpp.ToCpp.Phases.instances "crate::Sink::special()"
+      }
+      topology T {
+        instance hand
+        instance sink
+        connections C {
+          sink.runOut -> hand.Run
+          hand.PktSend[1] -> sink.comIn
+        }
+      }
+    "#;
+    let code = generate_with(src, |o| {
+        o.bindings.bind_component("Svc.Hand", "::hand::Hand")
+    })
+    .unwrap();
+    // The hand-written component is not generated ...
+    assert!(!code.contains("pub struct HandBase"));
+    // ... and is used through its own conventions.
+    assert!(has(&code, "pub hand: ::std::sync::Arc<::hand::Hand>,"));
+    assert!(has(&code, "hand: ::hand::Hand::new(\"hand\"),"));
+    assert!(has(
+        &code,
+        "self.hand.active.queued.base.set_id_base(0x100);"
+    ));
+    assert!(has(&code, "self.hand.init(4);"));
+    assert!(has(
+        &code,
+        ".run_out.connect_to(::hand::Hand::run_in(&self.hand, 0));"
+    ));
+    assert!(has(&code, "self.hand.pkt_send[1].connect_to("));
+    // Init specifiers: instances, configComponents, configConstants, and a
+    // replaced default (stopTasks).
+    assert!(has(&code, "sink: { crate::Sink::special() },"));
+    assert!(has(
+        &code,
+        "pub fn config_components(&self) { // hand (init specifier) { self.hand.configure(T_ConfigConstants::hand::LEVEL); } }"
+    ));
+    assert!(has(
+        &code,
+        "pub mod T_ConfigConstants { /// Instance `hand`. pub mod hand { use super::super::*; pub const LEVEL: u32 = 2; } }"
+    ));
+    assert!(has(
+        &code,
+        "pub fn exit_tasks(&self) { // hand (init specifier) { self.hand.stop_now(); } }"
+    ));
+    assert!(has(
+        &code,
+        "pub fn join_tasks(&self) { let _ = self.hand.active.join(); }"
+    ));
+    assert!(has(
+        &code,
+        "pub fn setup(&self) { self.init(); self.config_components(); self.set_id_bases(); self.connect(); self.reg_commands(); self.read_parameters(); self.load_parameters(); self.start_tasks(); }"
+    ));
 }

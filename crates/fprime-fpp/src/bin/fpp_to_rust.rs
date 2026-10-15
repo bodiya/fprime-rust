@@ -23,6 +23,10 @@
 //!   --bind-type FPP=RUST[:copy|ref|buf|owned]
 //!                         use an existing Rust type for an FPP type
 //!   --bind-port FPP=RUST  use an existing Rust trait for an FPP port
+//!   --bind-component FPP=RUST
+//!                         use a hand-written Rust component for an FPP
+//!                         component (its instances may be in generated
+//!                         topologies)
 //!   --no-framework-bindings
 //!                         start from an empty binding table
 //! ```
@@ -36,7 +40,8 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: fpp-to-rust [--syntax | --check | --dict DIR] [-i FILE]... [-o FILE] \
          [-p VERSION] [-f VERSION] [-l LIB,...] [--impl-prefix PATH] [--include-path PATH] \
-         [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... [--no-framework-bindings] \
+         [--bind-type FPP=RUST[:kind]]... [--bind-port FPP=RUST]... [--bind-component FPP=RUST]... \
+         [--no-framework-bindings] \
          FILE..."
     );
     ExitCode::FAILURE
@@ -132,6 +137,15 @@ fn main() -> ExitCode {
                     return usage();
                 };
                 options.bindings.bind_port(fpp, rust);
+            }
+            "--bind-component" => {
+                let Some(spec) = take(&mut i) else {
+                    return usage();
+                };
+                let Some((fpp, rust)) = spec.split_once('=') else {
+                    return usage();
+                };
+                options.bindings.bind_component(fpp, rust);
             }
             "-h" | "--help" => return usage(),
             a if a.starts_with('-') => return usage(),
