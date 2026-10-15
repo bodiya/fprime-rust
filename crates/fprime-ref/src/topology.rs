@@ -18,6 +18,7 @@
 //! | `textLogger`        | `Svc.PassiveTextLogger`| `0x0100_3000` | CdhCore       |
 //! | `fatalHandler`      | `Svc.FatalHandler`     | `0x0100_4000` | CdhCore       |
 //! | `tlmSend`           | `Svc.TlmChan`          | `0x0100_5000` | CdhCore       |
+//! | `fatalAdapter`      | `Svc.AssertFatalAdapter`| `0x0100_6000` | CdhCore      |
 //! | `comQueue`          | `Svc.ComQueue`         | `0x0200_0000` | ComFprime     |
 //! | `frameAccumulator`  | `Svc.FrameAccumulator` | `0x0200_1000` | ComFprime     |
 //! | `bufferManager`     | `Svc.BufferManager`    | `0x0200_2000` | ComFprime     |
@@ -95,6 +96,15 @@
 //!   framers here never allocate more than a 512-byte com buffer plus a
 //!   6-byte space-packet header, so the single 2048-byte bin serves both.
 //!
+//! ## `fatalAdapter`
+//!
+//! `CdhCore`'s `Svc.AssertFatalAdapter` is constructed first, so its
+//! assert hook is in place before anything else is built: a failed
+//! `fw_assert!` anywhere in the deployment becomes an `AF_ASSERT_*` FATAL
+//! event, which `events` announces to `fatalHandler`. Its id leaves
+//! upstream's `BASE_ID + 0x05000` (here `tlmSend`) for `0x06000`, the next
+//! free `CdhCore` offset.
+//!
 //! ## Command-port index map (cmdDisp `compCmdReg`/`compCmdSend`, matched)
 //!
 //! 0 `cmdDisp` (self), 1 `events`, 2 `health`, 3 `comQueue`, 4 `signalGen`,
@@ -170,6 +180,7 @@ use fprime_drv::socket_helper::SocketIpStatus;
 use fprime_drv::tcp_client::TcpClient;
 use fprime_fw::FileNameString;
 use fprime_svc::active_rate_group::ActiveRateGroup;
+use fprime_svc::assert_fatal_adapter::AssertFatalAdapter;
 use fprime_svc::buffer_accumulator::{BufferAccumulator, OpState};
 use fprime_svc::buffer_manager::{BufferBin, BufferManager};
 use fprime_svc::ccsds::apid_manager::ApidManager;
@@ -226,6 +237,9 @@ pub const TEXT_LOGGER_BASE_ID: FwIdType = 0x0100_3000;
 pub const FATAL_HANDLER_BASE_ID: FwIdType = 0x0100_4000;
 /// `tlmSend` base ID.
 pub const TLM_CHAN_BASE_ID: FwIdType = 0x0100_5000;
+/// `fatalAdapter` base ID. Upstream `CdhCore` uses `BASE_ID + 0x05000`,
+/// which this deployment's `tlmSend` occupies.
+pub const FATAL_ADAPTER_BASE_ID: FwIdType = 0x0100_6000;
 /// `comQueue` base ID.
 pub const COM_QUEUE_BASE_ID: FwIdType = 0x0200_0000;
 /// `frameAccumulator` base ID.
@@ -592,6 +606,8 @@ pub struct RefTopology {
     pub health: Arc<Health>,
     /// `fatalHandler` — FATAL announce sink.
     pub fatal_handler: Arc<FatalHandler>,
+    /// `fatalAdapter` — turns failed `fw_assert!`s into FATAL events.
+    pub fatal_adapter: Arc<AssertFatalAdapter>,
     /// `textLogger` — console text-event sink.
     pub text_logger: Arc<PassiveTextLogger>,
     /// `bufferManager` — comms buffer pool.
@@ -667,6 +683,8 @@ impl RefTopology {
         // ------------------------------------------------------------------
         // Phase 1: construct instances (C++ initComponents object part).
         // ------------------------------------------------------------------
+        // First, so its assert hook covers the rest of the setup.
+        let fatal_adapter = AssertFatalAdapter::new("fatalAdapter");
         let posix_time = PosixTime::new("posixTime");
         let linux_timer = LinuxTimer::new("linuxTimer");
         let rate_group_driver = RateGroupDriver::new("rateGroupDriverComp");
@@ -745,6 +763,7 @@ impl RefTopology {
         tlm_chan.active.queued.base.set_id_base(TLM_CHAN_BASE_ID);
         health.queued.base.set_id_base(HEALTH_BASE_ID);
         fatal_handler.base.set_id_base(FATAL_HANDLER_BASE_ID);
+        fatal_adapter.base.set_id_base(FATAL_ADAPTER_BASE_ID);
         text_logger.base.set_id_base(TEXT_LOGGER_BASE_ID);
         buffer_manager.base.set_id_base(BUFFER_MANAGER_BASE_ID);
         com_queue.active.queued.base.set_id_base(COM_QUEUE_BASE_ID);
@@ -1014,6 +1033,7 @@ impl RefTopology {
             &dp_catalog.evt,
             &dp_buffer_accumulator.evt,
             &com_logger.evt,
+            &fatal_adapter.evt,
         ];
         for evt in event_glues {
             evt.log_out.connect_to(event_manager.log_recv_in(0));
@@ -1611,6 +1631,7 @@ impl RefTopology {
             tlm_chan,
             health,
             fatal_handler,
+            fatal_adapter,
             text_logger,
             buffer_manager,
             com_queue,

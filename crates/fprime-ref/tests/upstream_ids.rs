@@ -158,6 +158,20 @@ fn rust_instances() -> Vec<Instance> {
             ],
         ),
         instance(
+            "fatalAdapter",
+            FATAL_ADAPTER_BASE_ID,
+            entries![
+                Event "AF_ASSERT_0" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_0,
+                Event "AF_ASSERT_1" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_1,
+                Event "AF_ASSERT_2" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_2,
+                Event "AF_ASSERT_3" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_3,
+                Event "AF_ASSERT_4" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_4,
+                Event "AF_ASSERT_5" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_5,
+                Event "AF_ASSERT_6" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_ASSERT_6,
+                Event "AF_UNEXPECTED_ASSERT" = fprime_svc::assert_fatal_adapter::AssertFatalAdapter::EVENTID_AF_UNEXPECTED_ASSERT,
+            ],
+        ),
+        instance(
             "comQueue",
             COM_QUEUE_BASE_ID,
             entries![

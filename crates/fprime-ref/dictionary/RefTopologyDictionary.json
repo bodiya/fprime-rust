@@ -1790,6 +1790,18 @@
   "constants": [
     {
       "kind": "constant",
+      "qualifiedName": "AssertFatalAdapterEventFileSize",
+      "type": {
+        "name": "U64",
+        "kind": "integer",
+        "size": 64,
+        "signed": false
+      },
+      "value": 240,
+      "annotation": "The size of a file name in an AssertFatalAdapter event (leading-truncation)\nNote: File names in assertion failures are also truncated by\nthe constants FwAssertTextSize (in this file) and FW_LOG_STRING_MAX_SIZE (set\nin FW_LOG_STRING_MAX_SIZE)\nSet much smaller than FwAssertTextSize so there's space for time stamp/assert\narguments in log message"
+    },
+    {
+      "kind": "constant",
       "qualifiedName": "ComCfg.SpacecraftId",
       "type": {
         "name": "U64",
@@ -3751,6 +3763,488 @@
         "count": 10,
         "every": null
       }
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_0",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        }
+      ],
+      "id": 16801792,
+      "format": "Assert in file {}, line {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_1",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        }
+      ],
+      "id": 16801793,
+      "format": "Assert in file {}, line {}: {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_2",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        },
+        {
+          "name": "arg2",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Second assert argument"
+        }
+      ],
+      "id": 16801794,
+      "format": "Assert in file {}, line {}: {} {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_3",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        },
+        {
+          "name": "arg2",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Second assert argument"
+        },
+        {
+          "name": "arg3",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Third assert argument"
+        }
+      ],
+      "id": 16801795,
+      "format": "Assert in file {}, line {}: {} {} {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_4",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        },
+        {
+          "name": "arg2",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Second assert argument"
+        },
+        {
+          "name": "arg3",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Third assert argument"
+        },
+        {
+          "name": "arg4",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Fourth assert argument"
+        }
+      ],
+      "id": 16801796,
+      "format": "Assert in file {}, line {}: {} {} {} {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_5",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        },
+        {
+          "name": "arg2",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Second assert argument"
+        },
+        {
+          "name": "arg3",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Third assert argument"
+        },
+        {
+          "name": "arg4",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Fourth assert argument"
+        },
+        {
+          "name": "arg5",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Fifth assert argument"
+        }
+      ],
+      "id": 16801797,
+      "format": "Assert in file {}, line {}: {} {} {} {} {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_ASSERT_6",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "arg1",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "First assert argument"
+        },
+        {
+          "name": "arg2",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Second assert argument"
+        },
+        {
+          "name": "arg3",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Third assert argument"
+        },
+        {
+          "name": "arg4",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Fourth assert argument"
+        },
+        {
+          "name": "arg5",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Fifth assert argument"
+        },
+        {
+          "name": "arg6",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Sixth assert argument"
+        }
+      ],
+      "id": 16801798,
+      "format": "Assert in file {}, line {}: {} {} {} {} {} {}",
+      "annotation": "An assert happened"
+    },
+    {
+      "name": "Ref.fatalAdapter.AF_UNEXPECTED_ASSERT",
+      "severity": "FATAL",
+      "formalParams": [
+        {
+          "name": "file",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 240
+          },
+          "ref": false,
+          "annotation": "The source file of the assert"
+        },
+        {
+          "name": "line",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Line number of the assert"
+        },
+        {
+          "name": "numArgs",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false,
+          "annotation": "Number of unexpected arguments"
+        }
+      ],
+      "id": 16801799,
+      "format": "Unexpected assert in file {}, line {}, args {}",
+      "annotation": "An unexpected assert happened"
     },
     {
       "name": "Ref.comQueue.QueueOverflow",
