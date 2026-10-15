@@ -135,7 +135,7 @@ Buffer model: replace `Fw::MemAllocator` + `ExternalSerializeBuffer` with an own
 
 File I/O: `fprime_os::File` open(OPEN_READ)/read(&mut [u8]) -> (Status, bytes_read)/close. Map `Status::DoesntExist` to CS_FileNotFound and everything else non-OK to CS_FileReadError on open; on read, pass the raw Status discriminant as the `error: I32` argument of CS_FileInvalid (Os::File::Status ordinals: OP_OK=0, DOESNT_EXIST=1, NO_SPACE=2, NO_PERMISSION=3, BAD_SIZE=4, NOT_OPENED=5, FILE_EXISTS=6, NOT_SUPPORTED=7, INVALID_MODE=8, INVALID_ARGUMENT=9, NO_MORE_RESOURCES=10, OTHER_ERROR=11, OUTSIDE_SANDBOX=12). For deserialize failures the `error` argument is the SerializeStatus discriminant (FormatError=1, NoRoomLeft=2, DeserBufferEmpty=3, DeserFormatError=4, DeserSizeMismatch=5) — reuse `SerializeStatus as i32`.
 
-Do NOT port `Os::ValidateFile` (it is a dead include) or `formats/AMPCSSequence` (optional alternate format, needs a `.CRC32` sidecar). Keep the `Sequence` trait (`load_file`, `has_more_records`, `next_record`, `reset`, `clear`, `header()`) so `set_sequence_format` is expressible, but ship only `FPrimeSequence`.
+Do NOT port `Os::ValidateFile` (it is a dead include) or `formats/AMPCSSequence` (optional alternate format, needs a `.CRC32` sidecar). *(Phase 2 update: `formats/AMPCSSequence` has since been ported as `cmd_sequencer::ampcs_sequence` — ROADMAP item 6; see `docs/api-notes.md`.)* Keep the `Sequence` trait (`load_file`, `has_more_records`, `next_record`, `reset`, `clear`, `header()`) so `set_sequence_format` is expressible, but ship only `FPrimeSequence`.
 
 Do NOT port the `#[repr]` inversion away: keep `StepMode { Auto = 0, Manual = 1 }` internal and a separate wire enum `SeqMode { Step = 0, Auto = 1 }` for CS_ModeSwitched.
 

@@ -101,17 +101,17 @@ Requires stable Rust (edition 2024). No external crates.
 | FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits, component bases with handler traits, and topology wiring, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary; `tools/gds-crosscheck.py` runs the stock `fprime-gds` against the Rust Ref binary and checks that commands sent through the GDS execute and that the Ref's events and telemetry decode (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
-| OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer |
+| OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
-| Sequencing | `CmdSequencer` with the `FPrimeSequence` binary sequence-file format |
+| Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
-| File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking), CFDP checksum |
-| Data products | `DpManager`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
-| Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`, `ComLogger` |
+| File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
+| Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
+| Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `LinuxGpioDriver`, `LinuxUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
-| Support | CRC-32 (`Utils::Hash`), CRC sidecar checker, circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
+| Support | CRC-32 (`Utils::Hash`), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
 ### Hardware drivers: what works without `unsafe`
 

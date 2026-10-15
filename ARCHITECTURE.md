@@ -54,7 +54,7 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 crates/
   fprime-config   # type aliases + constants from default/config (no deps)
   fprime-fw       # Fw: serialization, types, strings, time, buffers, packets, assert, logger
-  fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime
+  fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime, cpu, memory
   fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...

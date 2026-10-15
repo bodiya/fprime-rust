@@ -45,6 +45,24 @@ subsystems, then the strategic changes.
   `SystemResources` constants are still module-local (see
   `docs/api-notes.md`), and the CCSDS `ComCfg` values stay in
   `ccsds::types` by design.
+- **`FileManager` command-path sandbox** (item 2). Port of upstream
+  nasa/fprime#5850: `configure(sandboxDir)`, every command path resolved and
+  contained before use, `PathOutsideSandbox`, fail-closed when unconfigured.
+  The Ref configures `/`, as upstream's `FileHandling` subtopology does.
+- **`Os::ValidateFile`** (item 3), as `fprime_utils::validate_file`;
+  `ComLogger` uses it. Porting it showed that upstream's `CRCChecker` has
+  written big-endian `.CRC32` sidecars since nasa/fprime#5775, so
+  `crc_checker` was corrected to match: both now write the same bytes.
+- **`Os::Cpu` / `Os::Memory`** (item 4) in `fprime-os`, with a Linux procfs
+  backend and the upstream stubs; `SystemResources` samples through them.
+- **`ComStub` async driver path** (item 5). Upstream has no async
+  byte-stream driver at 4dee010 (`LinuxUartDriver`, now `PosixUartDriver`, is
+  synchronous), so the path is tested against test drivers, as upstream does.
+- **`CmdSequencer` `formats/AMPCSSequence`** (item 6), selectable with
+  `set_sequence_format`; the Ref still uses `FPrimeSequence`.
+- **`Svc::BufferAccumulator`** (item 7), restored between `dpMgr` and
+  `dpWriter` in the Ref as in upstream's DataProducts subtopology; the
+  dictionary and the GDS cross-check include it.
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
   and `PrmDb` all use the one implementation; `PrmDb`'s private `String`-based
@@ -57,35 +75,27 @@ subsystems, then the strategic changes.
   `FileChunkDataRecord` containers, and the `Ref` topology wiring on `dpMgr`
   index 1.
 
-## Next: small, unblocked
+## Next: small follow-ups found in phase 2
 
-(Item 1, the config-constant move, is done; see above.)
+These surfaced while porting items 2–7. None changes the wire format of the
+Ref deployment.
 
-2. **`FileManager` sandbox (`resolveInSandbox`).** Upstream now resolves every
-   command path through `Os::SandboxedFile` before use. Port the
-   `configureSandbox()` entry point and the resolve step onto the moved
-   `fprime-os` helpers; the `Ref` topology leaves it fail-open as upstream's
-   `FileHandling` subtopology does.
-3. **`Os::ValidateFile` in `fprime-os`.** `ComLogger` carries an inline copy
-   (`create_validation`, big-endian `HashBuffer` sidecar) and `CmdSequencer`
-   dropped a dead include of it. Move it next to `crc_checker`'s
-   native-endian sidecar so the two encodings are documented side by side.
-4. **`Os::Cpu` / `Os::Memory`.** `SystemResources` samples `/proc` behind a
-   `ResourceSampler` trait; lift the Linux sampler into `fprime-os` with the
-   C++ `Cpu`/`Memory` API shape.
-5. **`ComStub` async driver path** (`drvAsyncSendOut` /
-   `drvAsyncSendReturnIn`), gated on an async byte-stream driver existing;
-   the `LinuxUartDriver` is the natural first consumer.
-6. **`CmdSequencer` `formats/AMPCSSequence`.** The `Sequence` trait already
-   allows a second format; port the AMPCS record layout and its `.CRC32`
-   sidecar.
+- **`Utils::CRCChecker` catch-up.** Port `FAILED_FILE_NAME_TOO_LONG` and the
+  overlong-name check (nasa/fprime#5803), and open the sidecar without
+  truncating (`OPEN_WRITE`), as upstream does.
+- **`Drv::LinuxUartDriver` → `Drv::PosixUartDriver`.** Upstream renamed the
+  UART driver; the Rust module header still uses the old name.
+- **`Drv::AsyncByteStreamBufferAdapter`.** The only upstream client of the
+  async byte-stream interface besides `ComStub`.
+- **Restrict the Ref's `FileManager` sandbox** to the deployment's data
+  directory, as `prmDb`/`fileDownlink` already are, if fail-open-to-`/`
+  (the upstream `FileHandling` default) is not wanted.
+- **`cargo doc` warnings.** An ambiguous `[`file`]` link in `fprime-os` and
+  `Self::lock` in `tlm_packetizer.rs`; fix them and add `RUSTDOCFLAGS=-D
+  warnings` to the checks.
 
 ## Then: larger subsystems
 
-7. **`Svc::BufferAccumulator`.** The `Ref` data-product chain wires
-   `dpMgr.productSendOut` straight into `dpWriter`; upstream interposes a
-   `BufferAccumulator` with a fill/drain state machine and a
-   `BA_NumQueuedBuffers` channel. Port it and restore the upstream topology.
 8. **`Svc::ActiveTextLogger` file logging.** Only the console path exists.
    Port `LogFile` (`set_log_file`, max-size rotation, the `%d` suffixing).
 9. **`Svc::GenericHub`.** The serialize-port and `ObjRegistry` machinery it

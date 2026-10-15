@@ -198,7 +198,7 @@ Deviations from C++/ARCHITECTURE (each documented in code):
 2) OsMutex drops the C++ take()/release() raw pair in favor of the RAII ScopeLock (safe Rust cannot hold a std MutexGuard across unpaired calls); Status enum kept for parity/telemetry. Priority-inheritance/errorcheck pthread attributes are not reproduced by std (recursive lock deadlocks instead of asserting).
 3) Task priority/affinity are recorded no-ops with a one-time fw_log notice (the documented C++ EPERM-degrade equivalent); stack_size IS honored via thread::Builder. Task identifier defaults to -1 (C++ TASK_DEFAULT cast to FwTaskIdType). Queue::create drops the C++ `id` parameter (only used by the optional QueueRegistry, not ported). Task/Queue registries not ported.
 4) Queue::get_messages_available takes the lock (C++ reads unlocked, racy by design — locked read is semantically equivalent). Global queue/task counters are relaxed atomics instead of static-mutex-guarded counters.
-5) File::size uses metadata() instead of the C++ seek-dance; seek_absolute uses a single u64 SeekFrom::Start instead of the 3-seek trick (API shape kept). File::preallocate not ported (not required by the task; no framework consumer in phase 1). ValidateFile/SandboxedFile/CountingSemaphore/Cpu/Memory not ported (not in scope per task).
+5) File::size uses metadata() instead of the C++ seek-dance; seek_absolute uses a single u64 SeekFrom::Start instead of the 3-seek trick (API shape kept). File::preallocate not ported (not required by the task; no framework consumer in phase 1). CountingSemaphore not ported (not in scope per task). Later additions: SandboxedFile/FilePathUtils (phase 2), Cpu/Memory (ROADMAP item 4, see "Phase 2 roadmap items" below); ValidateFile lives in fprime-utils (item 3).
 6) errno mapping goes through io::ErrorKind, not raw errno: ELOOP (C++ -> DOESNT_EXIST) and ENAMETOOLONG (C++ -> INVALID_PATH) have no stable ErrorKind at the rust-version 1.85 floor and land in OtherError. ErrorKind::CrossesDevices (EXDEV, needed for the move_file fallback) and QuotaExceeded are believed stable as of 1.85; if the floor build ever fails there, those two arms are the place to look.
 7) The CRC32 table is duplicated privately in file.rs (fprime-os may not depend on fprime-utils per the dependency DAG); a later refactor can unify with utils::hash.
 8) RawTime stores u64 seconds internally (like timespec) and truncates to u32 only on serialization (exact C++ PosixRawTime behavior, including the truncate-then-borrow u32 arithmetic in get_time_interval).
@@ -221,7 +221,7 @@ hash:
 crc_checker:
   const CRC_FILE_READ_BLOCK: usize = 2048 /*re-export of fprime_config::crc_checker::FILE_READ_BLOCK*/
   #[must_use] #[repr(i32)] enum CrcStat { PassedFileCrcCheck=0, PassedFileCrcWrite=1, FailedFileSize=2, FailedFileSizeCast=3, FailedFileOpen=4, FailedFileRead=5, FailedFileCrcOpen=6, FailedFileCrcRead=7, FailedFileCrcWrite=8, FailedFileCrcCheck=9 }
-  fn create_checksum_file(fname: &str) -> CrcStat /*success = PassedFileCrcWrite; writes <fname>.CRC32 = 4 raw NATIVE-endian bytes of standard CRC-32*/
+  fn create_checksum_file(fname: &str) -> CrcStat /*success = PassedFileCrcWrite; writes <fname>.CRC32 = 4 BIG-endian bytes of standard CRC-32 (upstream #5775; was native-endian before phase 2)*/
   fn read_crc32_from_file(fname: &str, checksum_from_file: &mut u32) -> CrcStat /*success = PassedFileCrcCheck; out untouched on failure*/
   fn verify_checksum(fname: &str, expected: &mut u32, actual: &mut u32) -> CrcStat /*expected=sidecar, actual=recomputed, written on both pass and FailedFileCrcCheck; untouched on earlier failures*/
 
@@ -265,7 +265,7 @@ token_bucket:
 
 ### Implementation notes / deviations
 
-Deviations/gaps (all intentional): (1) The C++ Serializable/LinearBufferBase overloads of CircularBuffer::serialize/peek and Queue::enqueue/dequeue/popFront (staging-buffer object slots; default STAGING_BUFFER_SIZE=0 asserts on any wrapping slot) are not ported — the task scoped the byte-slice API, and phase-1 consumers (FrameAccumulator, ComQueue) use the byte-level paths; add later if a component needs them. (2) Types::SpscQueue not ported (no phase-1 consumer; listed as out of scope). (3) CONFIG_CRC_FILE_READ_BLOCK is configured as fprime_config::crc_checker::FILE_READ_BLOCK and re-exported as crc_checker::CRC_FILE_READ_BLOCK (moved in phase 2). (4) crc_checker uses std::fs directly per ARCHITECTURE.md (not fprime-os File); sidecar written with File::create (truncate) — equivalent to C++ OPEN_WRITE since the file is exactly 4 bytes at offset 0. (5) C++ overload pairs map to distinct names: RateLimiter::trigger() (arg-less) -> trigger_counter_only(); Hash::finalize(HashBuffer&) -> finalize_buffer(); TokenBucket 5-arg ctor -> with_state() (which, like C++, does NOT check MAX_TOKEN_BUCKET_TOKENS). (6) Queue::get_message_size() added (no C++ equivalent; trivial getter for downstream ComQueue). (7) Time-base semantics ported exactly: RateLimiter/TokenBucket build cycle/interval Times via Time::from_seconds_useconds (TbNone), so Time::add fw_asserts if a caller mixes bases and cross-base comparisons are false (Incomparable) — same crash/behavior as C++. Note for the orchestrator: mid-task `cargo build --workspace` failed transiently because a sibling agent was concurrently writing fprime-os; I waited until it stabilized and the final full-workspace build is green (fprime-utils itself never depended on it). Files: /home/user/fprime-rust/crates/fprime-utils/src/{lib.rs,hash.rs,crc_checker.rs,rate_limiter.rs,token_bucket.rs,types/mod.rs,types/circular_buffer.rs,types/queue.rs}.
+Deviations/gaps (all intentional): (1) The C++ Serializable/LinearBufferBase overloads of CircularBuffer::serialize/peek and Queue::enqueue/dequeue/popFront (staging-buffer object slots; default STAGING_BUFFER_SIZE=0 asserts on any wrapping slot) are not ported — the task scoped the byte-slice API, and phase-1 consumers (FrameAccumulator, ComQueue) use the byte-level paths; add later if a component needs them. (2) Types::SpscQueue not ported (no phase-1 consumer; listed as out of scope). (3a) The .CRC32 sidecar is BIG-endian since phase 2 (upstream nasa/fprime#5775), byte-identical to validate_file's. (3) CONFIG_CRC_FILE_READ_BLOCK is configured as fprime_config::crc_checker::FILE_READ_BLOCK and re-exported as crc_checker::CRC_FILE_READ_BLOCK (moved in phase 2). (4) crc_checker uses std::fs directly per ARCHITECTURE.md (not fprime-os File); sidecar written with File::create (truncate) — equivalent to C++ OPEN_WRITE since the file is exactly 4 bytes at offset 0. (5) C++ overload pairs map to distinct names: RateLimiter::trigger() (arg-less) -> trigger_counter_only(); Hash::finalize(HashBuffer&) -> finalize_buffer(); TokenBucket 5-arg ctor -> with_state() (which, like C++, does NOT check MAX_TOKEN_BUCKET_TOKENS). (6) Queue::get_message_size() added (no C++ equivalent; trivial getter for downstream ComQueue). (7) Time-base semantics ported exactly: RateLimiter/TokenBucket build cycle/interval Times via Time::from_seconds_useconds (TbNone), so Time::add fw_asserts if a caller mixes bases and cross-base comparisons are false (Incomparable) — same crash/behavior as C++. Note for the orchestrator: mid-task `cargo build --workspace` failed transiently because a sibling agent was concurrently writing fprime-os; I waited until it stabilized and the final full-workspace build is green (fprime-utils itself never depended on it). Files: /home/user/fprime-rust/crates/fprime-utils/src/{lib.rs,hash.rs,crc_checker.rs,rate_limiter.rs,token_bucket.rs,types/mod.rs,types/circular_buffer.rs,types/queue.rs}.
 
 ## fprime-comp
 
@@ -673,7 +673,7 @@ ComStub: new(name)->Arc; base; data_out, data_return_out: OutputPort<dyn ComData
 
 ### Implementation notes / deviations
 
-Deviations/decisions (all documented in module headers): (1) FprimeRouter context table keys on the buffer's data address (`data().as_ptr()`) exactly like the C++ `getData()` key — the Rust `Buffer` owns its `Box<[u8]>` storage, so the heap address is stable across port moves (and the async escrow) and unique among outstanding allocations; the buffer's context word is never touched, an un-tracked (table-full) buffer can never match another entry on return, and observable behavior (table-full events, restoration, BufferContextNotFound+default on miss) is identical. (2) ComQueue storage: com queues persist fixed 514-byte [u16 len][bytes][pad] records and buffer queues persist 8-byte BufferEscrow tokens (C++ serializes ComBuffer/Fw::Buffer objects; the token occupies the same 8-byte slot as the C++ pointer); DROP_OLDEST pre-emptive pop still returns ownership before overwrite. (3) ComQueue send path builds an owned Buffer from recycled BufferStorage instead of aliasing m_dequeued_com_buffer; com-buffer returns on dataReturnIn recycle the storage (C++ drops them) so steady state is allocation-free after the first send. (4) C++ casts the leading packet descriptor to Apid unchecked (ComQueue) — Rust maps unknown descriptors to Apid::InvalidUninitialized; the deframer's mapping matches C++ exactly. (5) ComStub implements only the synchronous driver path; the async ports (drvAsyncSendOut/drvAsyncSendReturnIn) are not ported in phase 1 (no async byte-stream driver exists) — noted in com_stub.rs. (6) ByteStreamStatus + ByteStream port traits are defined publicly in com_stub.rs because fprime-svc may not depend on fprime-drv; fprime-drv defines its own identical traits and fprime-ref glues them with tiny shims. (7) Deframer keeps the exact C++ handler order: APID extraction (and a possible PayloadTooShort WARNING_LO) happens BEFORE the CRC check, so a short-payload bad-CRC frame emits both events; drops always use the ORIGINAL context. (8) FrameAccumulator::configure drops the MemAllocator params (CircularBuffer owns its ring); C++'s unchecked peek into a smaller-than-requested allocation (UB) is a clean fw_assert here. (9) All three ComQueue commands (FLUSH_QUEUE, FLUSH_ALL_QUEUES, SET_QUEUE_PRIORITY) are implemented — nothing deferred; invalid QueueType enum args answer ValidationError, deser failures/residual bytes answer FormatError per the task's discipline (C++ generated code folds enum validity into FormatError). (10) Event ids follow FPP declaration order (0,1,2,...) per the .fpp files; ComQueue telemetry ids 0/1 are explicit in the fppi. No sibling-module breakage observed: full workspace build and test are green (504 passed / 0 failed), fprime-svc full-crate green seen repeatedly.
+Deviations/decisions (all documented in module headers): (1) FprimeRouter context table keys on the buffer's data address (`data().as_ptr()`) exactly like the C++ `getData()` key — the Rust `Buffer` owns its `Box<[u8]>` storage, so the heap address is stable across port moves (and the async escrow) and unique among outstanding allocations; the buffer's context word is never touched, an un-tracked (table-full) buffer can never match another entry on return, and observable behavior (table-full events, restoration, BufferContextNotFound+default on miss) is identical. (2) ComQueue storage: com queues persist fixed 514-byte [u16 len][bytes][pad] records and buffer queues persist 8-byte BufferEscrow tokens (C++ serializes ComBuffer/Fw::Buffer objects; the token occupies the same 8-byte slot as the C++ pointer); DROP_OLDEST pre-emptive pop still returns ownership before overwrite. (3) ComQueue send path builds an owned Buffer from recycled BufferStorage instead of aliasing m_dequeued_com_buffer; com-buffer returns on dataReturnIn recycle the storage (C++ drops them) so steady state is allocation-free after the first send. (4) C++ casts the leading packet descriptor to Apid unchecked (ComQueue) — Rust maps unknown descriptors to Apid::InvalidUninitialized; the deframer's mapping matches C++ exactly. (5) ComStub async state (`m_storedContext`, `m_retry_count`) sits under a mutex never held across port calls, so async drivers may complete re-entrantly or on their own thread. At upstream 4dee010 no driver implements `Drv.AsyncByteStreamDriver` (PosixUartDriver, formerly LinuxUartDriver, and the TCP drivers are synchronous), so none is ported; the interface adds no port types (send = `Fw.BufferSend`, sendReturnOut = `Drv.ByteStreamData`) and an async driver wires through the existing `DrvToSvcDataShim` (ROADMAP item 5). (6) ByteStreamStatus + ByteStream port traits are defined publicly in com_stub.rs because fprime-svc may not depend on fprime-drv; fprime-drv defines its own identical traits and fprime-ref glues them with tiny shims. (7) Deframer keeps the exact C++ handler order: APID extraction (and a possible PayloadTooShort WARNING_LO) happens BEFORE the CRC check, so a short-payload bad-CRC frame emits both events; drops always use the ORIGINAL context. (8) FrameAccumulator::configure drops the MemAllocator params (CircularBuffer owns its ring); C++'s unchecked peek into a smaller-than-requested allocation (UB) is a clean fw_assert here. (9) All three ComQueue commands (FLUSH_QUEUE, FLUSH_ALL_QUEUES, SET_QUEUE_PRIORITY) are implemented — nothing deferred; invalid QueueType enum args answer ValidationError, deser failures/residual bytes answer FormatError per the task's discipline (C++ generated code folds enum validity into FormatError). (10) Event ids follow FPP declaration order (0,1,2,...) per the .fpp files; ComQueue telemetry ids 0/1 are explicit in the fppi. No sibling-module breakage observed: full workspace build and test are green (504 passed / 0 failed), fprime-svc full-crate green seen repeatedly.
 
 ## lib.rs, byte_stream.rs, socket_helper.rs, tcp_client.rs, tcp_server.rs, tcp_loopback.rs
 
@@ -1046,8 +1046,8 @@ DEVIATIONS (each documented in code)
 8. State is held in a `Mutex<CmdSequencerState>` per workspace convention and the lock is held across output-port invocations. C++ has no mutex at all here; every input port is ASYNC so there is no re-entrancy and no guarded port, which makes this safe and semantically identical.
 
 NOT PORTED (per the analysis)
-- `formats/AMPCSSequence` (alternate format with a `.CRC32` sidecar) — the `Sequence` trait keeps it addable.
-- `Os::ValidateFile` — a dead include in `CmdSequencerImpl.hpp`.
+- `Os::ValidateFile` — a dead include in `CmdSequencerImpl.hpp` (it now exists as `fprime_utils::validate_file`, ROADMAP item 3, but CmdSequencer does not use it).
+- (`formats/AMPCSSequence` was later ported — ROADMAP item 6, see "Phase 2 roadmap items".)
 
 C++ PARITY QUIRKS DELIBERATELY KEPT (all tested)
 - `fileSize` includes the trailing CRC; CRC covers header(11)+records(fileSize-4) only.
@@ -1379,27 +1379,28 @@ Input factories: com_in -> PortRef<dyn ComPort> (async, msg 1); ping_in -> PortR
 Assoc consts: OPCODE_CLOSE_FILE=0x00; EVENTID_FILE_OPEN_ERROR=0x00, FILE_WRITE_ERROR=0x01,
   FILE_VALIDATION_ERROR=0x02, FILE_CLOSED=0x03, FILE_NOT_INITIALIZED=0x04 (FILE_NOT_INITIALIZED_THROTTLE=5);
   MSG_TYPE_COM_IN=1, MSG_TYPE_PING_IN=2, MSG_TYPE_CMD_IN=3
-Module items: pub const QUEUE_MSG_SIZE: usize = 524; pub const VFILE_HASH_CHUNK_SIZE: usize = 256;
-  pub enum ValidateStatus (repr u32, Os::ValidateFile ordinals 0..=9);
-  pub fn create_validation(file_name: &str, hash_file_name: &str) -> ValidateStatus  // BIG-endian .CRC32 sidecar
+Module items: pub const QUEUE_MSG_SIZE: usize = 524. Sidecars are written with
+  fprime_utils::validate_file::create_validation (phase 2; the inline ValidateStatus /
+  create_validation / VFILE_HASH_CHUNK_SIZE copy is gone). FileValidationError's status
+  argument is the validate_file::Status ordinal.
 Topology: new/with_log_file -> set_id_base -> connect -> init(depth) -> reg_commands -> active.start -> exit/join.
 ```
 
 ## SystemResources (fprime_svc::system_resources, PASSIVE)
 
 ```text
-SystemResources::new(name) -> Arc<Self>                             // default ProcSampler
+SystemResources::new(name) -> Arc<Self>                             // default OsSampler
 SystemResources::with_sampler(name, Box<dyn ResourceSampler>) -> Arc<Self>
 reg_commands(&self); cpu_count(&self) -> usize; is_enabled(&self) -> bool
 pub fields: base: PassiveBase; cmd: CmdGlue; evt: EventGlue (log/text/time); tlm: TlmGlue
 Input factories: run_in -> PortRef<dyn SchedPort> (GUARDED); cmd_in -> PortRef<dyn CmdPort> (GUARDED command)
 Public types: fpp_enum SystemResourceEnabled : u8 { Disabled=0, Enabled=1 };
-  enum GenericStatus { OpOk=0, Error=1 }; struct UsedTotal { used: FwSizeType, total: FwSizeType };
+  GenericStatus / UsedTotal = re-exports of fprime_os::generic::{Status, UsedTotal};
   trait ResourceSampler { cpu_count(&self,&mut FwSizeType)->GenericStatus;
       cpu_ticks(&self,&mut UsedTotal, cpu_index: FwSizeType)->GenericStatus;
       memory_usage(&self,&mut UsedTotal)->GenericStatus;
       free_space(&self, path:&str, total:&mut FwSizeType, free:&mut FwSizeType)->fprime_os::filesystem::Status }
-  struct ProcSampler (default impl)
+  struct OsSampler (default impl: fprime_os::cpu / memory singletons + filesystem::get_free_space)
 Module consts: CPU_COUNT=16; NON_VOLATILE_PATH="/"
 Assoc consts: OPCODE_ENABLE=0; CHANID_MEMORY_TOTAL=0, MEMORY_USED=1, NON_VOLATILE_TOTAL=2, NON_VOLATILE_FREE=3,
   CPU=4, CPU_00=5 (CPU_nn = CPU_00 + nn, up to 20)
@@ -1412,9 +1413,9 @@ Topology: new -> base.set_id_base -> connect cmd/evt/tlm/time ports -> reg_comma
 **Verification.** `cargo build --workspace` green; `cargo test -p fprime-svc` 616/616 green (58 of them mine: 33 tlm_packetizer, 14 com_logger, 11 system_resources); `cargo test --workspace` fully green (no sibling breakage observed at any point); `cargo clippy -p fprime-svc --all-targets -- -D warnings` clean; `cargo fmt -p fprime-svc --check` clean (verified 3 consecutive full-crate runs, no flakes). Nothing committed; only my three files were written (verified by mtime that `cargo fmt -p fprime-svc` did not touch sibling modules).
 
 **Deviations, each documented in code:**
-1. `Os::Cpu`/`Os::Memory` are not ported in fprime-os, so — as the task allows — the sampling lives INSIDE `system_resources.rs` behind the `ResourceSampler` trait: `ProcSampler` reads `/proc/stat` (a direct port of `getCpuData`, incl. the "cpu" prefix check, the CPU-index field check and USER+NICE+SYSTEM/+IDLE arithmetic) and `/proc/meminfo` (`MemTotal`/`MemFree` ×1024 — deliberately NOT `MemAvailable`, matching `sysinfo`'s `freeram`), with `std::thread::available_parallelism()` as the non-Linux core-count fallback.
+1. (Superseded by ROADMAP item 4: sampling now goes through the fprime-os `Os::Cpu` / `Os::Memory` port — Linux procfs backend, stubs elsewhere — with `ResourceSampler` kept as the injection seam. Original note follows.) `Os::Cpu`/`Os::Memory` were not ported in fprime-os, so — as the task allows — the sampling lives INSIDE `system_resources.rs` behind the `ResourceSampler` trait: `ProcSampler` reads `/proc/stat` (a direct port of `getCpuData`, incl. the "cpu" prefix check, the CPU-index field check and USER+NICE+SYSTEM/+IDLE arithmetic) and `/proc/meminfo` (`MemTotal`/`MemFree` ×1024 — deliberately NOT `MemAvailable`, matching `sysinfo`'s `freeram`), with `std::thread::available_parallelism()` as the non-Linux core-count fallback.
 2. Free space goes through `fprime_os::filesystem::get_free_space`, which is `NotSupported` in this workspace (no zero-dependency statvfs), so `NON_VOLATILE_TOTAL/FREE` are skipped by default — behaviorally identical to the C++ VxWorks path. A project supplies a real one through the OSAL seam or its own `ResourceSampler`.
-3. `Os::ValidateFile` is not ported either, so `com_logger::create_validation` + `ValidateStatus` + the status-translation table are implemented in the module (256-byte chunked hashing, BIG-endian `HashBuffer` sidecar — explicitly NOT the native-endian `Utils::CRCChecker` encoding).
+3. (Superseded by ROADMAP item 3: `fprime_utils::validate_file`; and CRCChecker is big-endian too since upstream #5775. Original note follows.) `Os::ValidateFile` was not ported either, so `com_logger::create_validation` + `ValidateStatus` + the status-translation table are implemented in the module (256-byte chunked hashing, BIG-endian `HashBuffer` sidecar — explicitly NOT the native-endian `Utils::CRCChecker` encoding).
 4. `GroupConfig` and `SectionEnabled` are hand-written instead of `fpp_struct!`/`fpp_array!`-generated because their members are `Fw::Enabled`, which has no `FppSized` impl in fprime-fw and cannot get one here (orphan rule). `GroupConfigs`/`SectionConfigs` DO use `fpp_array!` (I added `impl FppSized for GroupConfig`, a local type). Byte formats verified by test: 14/56/112 and 2 bytes.
 5. Lock scope: the C++ `m_lock` is reproduced exactly (per-packet in `TlmRecv`/`TlmGet`, twice per packet in `Run`, `has_value` written inside it). The channel table sits behind an `RwLock` (C++ reads it lock-free after init) and the `[section][group]` config/flags behind a second mutex; lock order is always table → packets → ctrl, so no inversion. In `Run` the flag/counter updates happen just before the port invocations rather than just after, so the ports are invoked outside the ctrl lock — nothing reads those fields in between. Same pattern in SystemResources (`run` samples under the mutex, writes telemetry after release, order preserved) and in the tlm_packetizer command handlers.
 6. Enum command args answer `ValidationError` (workspace discipline; stock C++ generated code would answer `FORMAT_ERROR` at deserialize) — including the SEND_PKT/ENABLE_* `TelemetrySection` and `RateLogic` args. Short/residual args are `FormatError`. `TelemetrySection::NumSections` is a declared FPP constant, so it deserializes fine and is rejected by the range check with `ValidationError`, exactly as in C++.
@@ -1423,7 +1424,7 @@ Topology: new -> base.set_id_base -> connect cmd/evt/tlm/time ports -> reg_comma
 
 **Test coverage highlights:** literal-byte packetized packets (descriptor 0x0004, packet id, the 11 time bytes rewritten in place, per-channel offsets, zeros for unwritten channels), the 112-byte `SectionConfigs` default, both async envelopes, packet-table lookup/missing-channel/ignore/oversize paths, `TlmGet` padding, `set_packet_list` re-entrancy and all four configuration asserts (`#[should_panic]`), every rate-logic branch (ON_CHANGE_MIN, EVERY_MAX, SILENCED counter freeze, section disable + force override, unconnected ports, the retained-REQUESTED-flag gotcha), all command status branches; ComLogger file naming, record bytes with and without length prefixes, rotation at the strict `>` boundary, the `.CRC32` sidecar (canonical `123456789` vector), destructor close-without-event, uninitialized throttle, one-shot open-error latch; SystemResources full channel order with an injected sampler, backwards-counter skip, zero-delta 100%, hard-coded "/" path, per-sampler error isolation, ENABLE gating and status branches.
 
-**Open questions / for the doc wave:** the config constants for all three components (`MAX_PACKETIZER_*`, `TELEMETRY_SEND_PORT_MAPPING`, `CPU_COUNT`, `VFILE_HASH_CHUNK_SIZE`, …) live as module consts because `fprime-config` has no slots for them and is owned by another wave — flagged for migration, same as `PassiveTextLoggerCfg`. `crate::tlm_chan::TlmGetPort` is reused for the `TlmGet` port rather than redeclaring it.
+**Open questions / for the doc wave:** the config constants for all three components (`MAX_PACKETIZER_*`, `TELEMETRY_SEND_PORT_MAPPING`, …; `CPU_COUNT` stays put — a private class constant tied to the 16 `CPU_nn` channels — and `VFILE_HASH_CHUNK_SIZE` moved to `validate_file`) live as module consts because `fprime-config` has no slots for them and is owned by another wave — flagged for migration, same as `PassiveTextLoggerCfg`. `crate::tlm_chan::TlmGetPort` is reused for the `TlmGet` port rather than redeclaring it.
 
 ## Linux hardware drivers (GPIO, UART, I2C, SPI)
 
@@ -1590,9 +1591,9 @@ response to `finishDpGeneration` (one chunk per `schedIn` tick via the
 `GENERATE_DP_MAX_CHUNK_SIZE` clamps to the maximum; `endOffset` 0 or past
 the end means end-of-file; an empty file (or empty range) reports
 `Started(0)` + `Complete(0)` with no containers; `CommandsExecuted`/`Errors`
-are untouched. Deviation: the newer upstream `resolveInSandbox` step is not
-ported (this `FileManager` has no sandbox — ROADMAP item 2), so the command
-opens the path as given.
+are untouched. The path goes through `resolveInSandbox` (ROADMAP item 2) after the
+busy/port checks and the chunk clamp; the resolved path is opened, while the
+events and `FileChunkHeader` carry the commanded name.
 
 `Ref` topology: `fileManager.productGetOut/productSendOut -> dpMgr[1]`, and
 `dpMgr.bufferGetOut[1]`/`productSendOut[1]` are wired to the same
@@ -1665,8 +1666,209 @@ ids) and the Rust SignalGen (which is not the upstream component: commands 0..3 
 `SignalType: U8 { Sine, Triangle }`); `generate-dictionary.sh <fprime checkout>`
 regenerates `crates/fprime-ref/dictionary/RefTopologyDictionary.json` from the upstream
 model (every other Rust component's opcodes/ids match upstream; `systemResources`
-declares fewer CPU channels and `fileManager` lacks `PathOutsideSandbox`, harmless
-supersets). `tools/gds-crosscheck.py` is the live check (fprime-gds 4.3.1: `-n -g none
+declares fewer CPU channels, a harmless superset). `tools/gds-crosscheck.py` is the live check (fprime-gds 4.3.1: `-n -g none
 --framing-selection fprime`, GDS as TCP server on 50000, Ref with `-a 127.0.0.1 -p 50000`;
 `fprime-cli events`/`channels` in text mode because `-j` crashes on enum arguments in
 4.3.1; command string arguments are capped at `FW_CMD_STRING_MAX_SIZE` = 40 on both sides).
+
+## Phase 2 roadmap items (2–7)
+
+Ported from upstream F Prime 4dee010. Each section records the public surface and
+the deliberate deviations; the code comments carry the detail.
+
+### fprime-svc: `FileManager` sandbox (ROADMAP item 2)
+
+Port of upstream `fd1c5517f1` (nasa/fprime#5850).
+
+```text
+FileManager::configure(&self, sandbox_dir: &str)   // REQUIRED before commanding: fail-closed until called; "/" = unrestricted
+FileManager::sandbox_directory(&self) -> Option<FileNameString>   // None while unconfigured
+EVENTID_PATH_OUTSIDE_SANDBOX = 0x23   // PathOutsideSandbox(path, sandboxDir), WARNING_HI
+Topology: new -> set_id_base -> connect -> init(depth) -> configure(sandbox_dir) -> reg_commands -> start
+```
+
+`configure` resolves the directory with `file_path_utils::resolve_from_cwd`, appends
+`/`, and `fw_assert!`s where C++ `FW_ASSERT`s (unresolvable, empty, too long); if an
+assert hook continues, the sandbox is left unchanged rather than widened. Every
+command path goes through `resolve_in_sandbox` (`resolve_from_cwd` +
+`check_containment`) before any OS call. The resolved path is used for the
+operation; events, the listing's entry paths and the data-product file name keep the
+commanded string. A rejection emits `PathOutsideSandbox`, increments `Errors` and
+answers `VALIDATION_ERROR` — also for `CalculateCrc`/`GenerateDp`, which otherwise
+never touch the counters. Order: MoveFile/AppendFile check source then destination
+and stop at the first rejection; ListDirectory checks busy first; GenerateDp checks
+busy, then the DP ports, then clamps the chunk size, then the sandbox.
+
+Unlike `Os::SandboxedFile`, the component is fail-CLOSED: unconfigured, it rejects
+every command with an empty `sandboxDir`. The Ref configures `"/"`
+(`FILE_MANAGER_SANDBOX_DIR` in `topology.rs`), mirroring the `configComponents` phase
+of upstream's `FileHandling` subtopology. Resolution is lexical, so a symlink inside
+the sandbox can point outside it, and an empty path is always rejected.
+Deviation: non-UTF-8 paths are rejected (the Rust path/file APIs take `&str`).
+
+### fprime-utils: `Os::ValidateFile` and the CRCChecker sidecar (ROADMAP item 3)
+
+```text
+validate_file (fprime_utils::validate_file — port of Os::ValidateFile; edge fprime-utils -> fprime-os):
+  const VFILE_HASH_CHUNK_SIZE: usize = 256   /*Os/ValidateFile.hpp #define, not a config/ header*/
+  #[must_use] #[repr(i32)] enum Status { ValidationOk=0, ValidationFail=1, FileDoesntExist=2,
+    FileNoPermission=3, FileBadSize=4, ValidationFileDoesntExist=5, ValidationFileNoPermission=6,
+    ValidationFileBadSize=7, NoSpace=8, OtherError=9 }
+  fn validate(file_name: &str, hash_file_name: &str) -> Status
+  fn validate_with_hash_buffer(file_name, hash_file_name, hash_buffer: &mut HashBuffer) -> Status
+      /*hash file read first; out-param written only on ValidationOk*/
+  fn create_validation(file_name, hash_file_name) -> Status
+  fn create_validation_with_hash_buffer(file_name, hash_file_name, hash_buffer: &mut HashBuffer) -> Status
+      /*out-param written once hashing succeeds, even if the hash-file write then fails*/
+  fn create_validation_from_hash_buffer(hash_file_name, hash_buffer: &HashBuffer) -> Status
+      /*C++ createValidation(hashFileName, const HashBuffer&)*/
+```
+
+Sidecar: 4 bytes, standard CRC-32, BIG-endian. Validation reads the first 4 bytes
+(short => `ValidationFileBadSize`, trailing bytes ignored); creation opens with
+`OPEN_WRITE` (no truncate). Byte-identical to `crc_checker`'s sidecar.
+
+`crc_checker::create_checksum_file` / `read_crc32_from_file` now write/read the
+sidecar BIG-endian, following upstream nasa/fprime#5775 (in 4dee010). Older CRCChecker
+builds wrote native-endian sidecars; such files read back byte-swapped.
+
+`ComLogger`'s inline `create_validation` / `ValidateStatus` / `VFILE_HASH_CHUNK_SIZE`
+are gone; it calls `validate_file::create_validation`, and `FileValidationError`'s
+status argument is the `validate_file::Status` ordinal.
+
+Deviations: C++ overloads get distinct names; the module lives in fprime-utils (it
+needs `Utils::Hash`, and this keeps fprime-os free of fprime-utils);
+`Os::ValidatedFile` is not ported (its only consumer, `BufferLogger`, is not ported).
+Still open in `crc_checker`: `FAILED_FILE_NAME_TOO_LONG` (nasa/fprime#5803), and it
+truncates its sidecar where upstream opens with `OPEN_WRITE`.
+
+### fprime-os: `Os::Cpu` / `Os::Memory` (ROADMAP item 4)
+
+```text
+generic: #[must_use] enum Status { OpOk=0, Error=1 }; struct UsedTotal { used: FwSizeType, total: FwSizeType }
+cpu:    pub use generic::Status; type Ticks = UsedTotal;
+        trait CpuInterface: Send+Sync { fn get_count(&self, &mut FwSizeType) -> Status;
+                                        fn get_ticks(&self, &mut Ticks, cpu_index: FwSizeType) -> Status }
+        type Cpu = linux::cpu::LinuxCpu (target_os = "linux") | stub::cpu::StubCpu (else)
+        fn init(); fn get_singleton() -> &'static Cpu;
+        fn get_count(&mut FwSizeType) -> Status; fn get_ticks(&mut Ticks, FwSizeType) -> Status
+memory: pub use generic::Status; type Usage = UsedTotal (bytes);
+        trait MemoryInterface: Send+Sync { fn get_usage(&self, &mut Usage) -> Status }
+        type Memory = linux::memory::LinuxMemory | stub::memory::StubMemory
+        fn init(); fn get_singleton() -> &'static Memory; fn get_usage(&mut Usage) -> Status
+Root re-exports: Cpu, CpuInterface, Memory, MemoryInterface. os::init() also initializes both singletons.
+```
+
+Backends: `LinuxCpu` reads `/proc/stat` via `File::readline` into a 255-byte stack
+buffer (a line-for-line port of `getCpuData`); the CPU count comes from
+`/sys/devices/system/cpu/online`, then the `cpuN` lines of `/proc/stat`, then
+`available_parallelism()` — the order glibc's `sysconf(_SC_NPROCESSORS_ONLN)` uses.
+`LinuxMemory` reads `/proc/meminfo` `MemTotal`/`MemFree` ×1024, with the C++
+overflow guard (1/1 + `Error`). `StubCpu` (count 0, ticks 1/1, `Error`) and
+`StubMemory` (0/0, `Error`) match `Os/Stub`. Sampling allocates nothing.
+
+Deviations: `sysconf`/`sysinfo` are replaced by the procfs/sysfs files libc reads; a
+`/proc/meminfo` failure is `Error` (C++ `FW_ASSERT`s on `sysinfo`); number parsing is
+a decimal-only subset of `string_to_number`; no `getHandle()`; no Darwin backend
+(non-Linux hosts get the stubs, so `SystemResources` reports 0 CPUs there).
+
+`SystemResources` samples through an `OsSampler` (the two fprime-os singletons plus
+`filesystem::get_free_space`); `ResourceSampler` stays as the test seam. `CPU_COUNT`
+stays a module constant: it is a private class constant upstream and is tied to the
+16 `CPU_nn` channels in the FPP model.
+
+### fprime-svc: `ComStub` async driver path (ROADMAP item 5)
+
+```text
+ComStub.drv_async_send_out: OutputPort<dyn BufferSendPort>   // drvAsyncSendOut (Fw.BufferSend; buffer moves to the driver)
+ComStub::drv_async_send_return_in(&Arc, port) -> PortRef<dyn ByteStreamDataPort>
+    // sync drvAsyncSendReturnIn; connect the driver's sendReturnOut here
+```
+
+`dataIn` takes the synchronous path if `drv_send_out` is connected, else the
+asynchronous one if `drv_async_send_out` is, else `fw_assert!`. Async: a SEND_RETRY
+callback resends the same buffer up to `RETRY_LIMIT` (10) times; exhaustion, or any
+non-OP_OK status, returns the buffer on `data_return_out` with the context stored at
+`dataIn`, emits FAILURE and re-arms the `drvConnected` handshake; OP_OK returns it and
+emits SUCCESS. One async send is in flight at a time (single stored context, C++
+parity).
+
+The async driver interface (`Drv.AsyncByteStreamDriver`) needs no new port types:
+`send` is `BufferSendPort` (by move) and `sendReturnOut` is `ByteStreamDataPort`. At
+upstream 4dee010 no driver implements it — `Drv/LinuxUartDriver` is now
+`Drv/PosixUartDriver` and, like the TCP drivers, is synchronous — so the async path is
+exercised against test drivers, as upstream does. `Drv/AsyncByteStreamBufferAdapter`
+(another client of the interface) is not ported.
+
+### fprime-svc: `CmdSequencer` AMPCS format (ROADMAP item 6)
+
+```text
+AMPCS FORMAT (module cmd_sequencer::ampcs_sequence; AMPCSSequence re-exported from cmd_sequencer)
+  pub struct AMPCSSequence : Sequence (Default) — fn new(); allocator_id(); stored_crc() -> u32;
+      sequence_header() -> [u8; 4]
+  consts: SEQUENCE_HEADER_SIZE = 4; CRC_FILE_EXTENSION = ".CRC32"; CRC_SIZE = 4
+  types:  RecordTime = u32; CmdLength = u16; Opcode = u16
+  pub enum TimeFlag { Absolute = 0x00, Relative = 0xFF }  (repr u8)
+  pub fn crc_file_name(&CmdStringArg) -> CmdStringArg   // name += ".CRC32", truncating at 40
+  Selection (C++ setSequenceFormat): set_sequence_format(Box::new(AMPCSSequence::new()))
+      BEFORE allocate_buffer(..).
+```
+
+Files: `<name>` = `[opaque header 4][records]`; `<name>.CRC32` = big-endian U32
+CRC-32 of the whole `<name>` file, read by the format itself (not via `crc_checker`).
+Record = `[timeFlag u8][seconds u32][cmdLength u16][opcode u16 + args]`; the emitted
+packet is `[u16 FW_PACKET_COMMAND=0][u16 0][cmdLength bytes]` (the opcode widened to
+`FwOpcodeType`); a record is rejected when `4 + cmdLength > FW_COM_BUFFER_MAX_SIZE`.
+`header().file_size` is the file length minus 4 (no CRC inside); `num_records` is
+counted at load; the time base/context are reset to don't-care on each load, then set
+to the live values.
+
+Quirks kept (tested): sidecar events name `<name>.CRC32`; a missing or short sequence
+file gives `CS_FileInvalid(READ_HEADER_SIZE, Os::FileSystem::Status)`; the sidecar read
+checks only the status (a short sidecar keeps stale buffer bytes); a 40-byte name is
+its own sidecar; there is no `CS_NoRecords` / `CS_RecordMismatch`, so a header-only
+file loads with 0 records and `CS_RUN` hits `next_record`'s `fw_assert!`.
+`FPrimeSequence` and `AMPCSSequence` share a private `SequenceBase` (the C++ `Sequence`
+base-class members). Not ported: the `Immediate.FileErrorsAMPCS` test, which needs
+upstream's OS fault injection.
+
+### fprime-svc: `Svc::BufferAccumulator` (ROADMAP item 7)
+
+```text
+BufferAccumulator (fprime_svc::buffer_accumulator, ACTIVE)
+  new(name) -> Arc<Self>; init(queue_depth);
+  allocate_queue(identifier: FwEnumStoreType, max_num_buffers: FwSizeType, initial_mode: OpState)
+      // configure phase; fw_asserts max_num_buffers > 0; OpState::Drain arms sending
+  deallocate_queue()   // teardown, after join
+  reg_commands()
+  Inputs:  buffer_send_in_fill(0), buffer_send_in_return(0) (async BufferSendPort, escrowed),
+           ping_in(0) (async, drop), cmd_in(0)
+  Outputs: buffer_send_out_drain, buffer_send_out_return, ping_out, + cmd/evt/tlm glue
+  fpp_enum OpState { Accumulate=0, Drain=1 } : u8; fpp_enum BlockMode { NoBlock=0, Block=1 } : u8
+  OPCODE_BA_SETMODE=0, OPCODE_BA_DRAINBUFFERS=1; EVENTID_BA_* 0..=6; CHANID_BA_NUMQUEUEDBUFFERS=0;
+  QUEUE_MSG_SIZE=522
+  Introspection: mode(), num_queued_buffers(), queue_capacity(), allocator_id()
+```
+
+Only one buffer is ever outstanding downstream; the next is sent when the previous
+comes back on `bufferSendInReturn`, which is forwarded upstream on
+`bufferSendOutReturn` (wire that to the allocator). A partial drain answers its
+command once its last buffer is sent. Kept C++ quirks: `m_numDrained` also counts
+full-DRAIN sends; `BA_QueueFull`/`BA_BufferAccepted` fire only on a drop-state change;
+`BA_SetMode` answers a pending `BA_DrainBuffers` with OK before answering itself; the
+busy check precedes the already-draining check.
+
+Ref: `dpBufferAccumulator`, base id `0x0400_4000`, queue 10, priority 21,
+`allocate_queue(301, 10, Drain)`, command dispatcher slot 14, health slot 13 (warn 3,
+fatal 5). `dpMgr.productSendOut -> bufferSendInFill`, `bufferSendOutDrain ->
+dpWriter.bufferSendIn`, `dpWriter.deallocBufferSendOut -> bufferSendInReturn`,
+`bufferSendOutReturn -> dpBufferManager.bufferSendIn`, as in upstream's DataProducts
+subtopology. The dictionary was regenerated (additions only) and
+`tools/gds-crosscheck.py` exercises `BA_SetMode` / `BA_DrainBuffers`.
+
+Deviations: no `Fw::MemAllocator` parameter (the FIFO is heap-allocated once, like
+`CmdSequencer::allocate_buffer`); `deallocate_queue` / a second `allocate_queue` reset
+the FIFO (C++ dangles / leaks); an undeclared enum command argument answers
+`VALIDATION_ERROR` (workspace convention). In the Ref, both `dpMgr.productSendOut[0]`
+and `[1]` feed the fill port — upstream wires only `[0]`, but this deployment's
+`fileManager` produces on index 1 and an unconnected output port would assert.

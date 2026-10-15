@@ -91,6 +91,8 @@ sendEndPacket(): EndPacket.initialize(m_sequenceIndex, checksum-from-file) then 
 
 ### Svc::FileManager — ports
 
+*Phase 2 update: this analysis predates upstream's command-path sandbox (nasa/fprime#5850: `configure(sandboxDir)`, `resolveInSandbox`, the `PathOutsideSandbox` event, fail-closed when unconfigured). It is ported (ROADMAP item 2); see the "Phase 2 roadmap items" section of `docs/api-notes.md`.*
+
 Files: `Svc/FileManager/FileManager.fpp`, `Fw/Interfaces/DataProductSync.fpp`
 
 active component. pingIn: async input Svc.Ping; pingOut: output Svc.Ping. schedIn: SYNC input Svc.Sched (arg context: U32). `internal port run drop` — an internal message with DROP queue-full policy used to hop schedIn onto the component thread. import Fw.DataProductSync -> productGetOut (product get, output) and productSendOut (product send, output). Role ports: cmdIn, cmdRegOut, cmdResponseOut, eventOut, LogText, timeCaller, tlmOut. Data products: product record FileChunkHeaderRecord: FileManager.FileChunkHeader id 0; product record FileChunkDataRecord: U8 array id 1; product container FileDpContainer id 0 default priority FileManagerCfg.DEFAULT_DP_PRIORITY = 10. struct FileChunkHeader { fileName: string size 240, offset: U64, dataSize: U32 }. Enums: GenerateDpStage { OPEN=0, SIZE=1, SEEK=2, READ=3, SERIALIZE=4, BUSY=5 }; GenerateDpMode { PACED=0, IMMEDIATE=1 }. Topology: base id 0x05002000, queue 10, stack 64KiB, priority 22.
