@@ -1,8 +1,8 @@
 //! # Svc::SystemResources — CPU / memory / disk telemetry (passive)
 //!
-//! C++ sources: `Svc/SystemResources/SystemResources.{cpp,hpp,fpp}` plus the
-//! OSAL sampling back ends `Os/Linux/Cpu.cpp`, `Os/Linux/Memory.cpp` and
-//! `Os/Posix/FileSystem.cpp`.
+//! C++ sources: `Svc/SystemResources/SystemResources.{cpp,hpp,fpp}`. The
+//! OSAL it samples (`Os::Cpu`, `Os::Memory`, `Os::FileSystem`) lives in
+//! `fprime-os` (`cpu`, `memory`, `filesystem`).
 //! Analysis: `docs/cpp-analysis/svc-misc.md` (SystemResources section).
 //!
 //! The component is PASSIVE with one GUARDED `run` (`Svc.Sched`) input and
@@ -13,32 +13,42 @@
 //!
 //! ## Sampling seam
 //!
-//! `fprime-os` does not port `Os::Cpu` / `Os::Memory` (see
-//! `docs/api-notes.md`, fprime-os deviation 5), so the sampling lives behind
-//! the [`ResourceSampler`] trait implemented here:
+//! The component samples through the [`ResourceSampler`] trait so tests
+//! (and projects with their own platform hooks) can inject deterministic
+//! readings:
 //!
-//! - [`ProcSampler`] (the default) reads `/proc/stat` and `/proc/meminfo`
-//!   with plain file I/O — a direct port of the Linux `Os::Cpu::getTicks` /
-//!   `Os::Memory::getUsage` implementations (note: `MemFree`, matching
-//!   `sysinfo`'s `freeram`, NOT `MemAvailable`). On a system without
-//!   `/proc` it reports [`GenericStatus::Error`], which makes the component
-//!   skip those channels exactly like the C++ error path.
-//! - free space is delegated to `fprime_os::filesystem::get_free_space`,
-//!   which is `NotSupported` in this workspace (statvfs has no
+//! - [`OsSampler`] (the default) is the C++ path verbatim: the
+//!   `fprime_os::cpu` / `fprime_os::memory` singletons (`Os::Cpu::getCount`,
+//!   `Os::Cpu::getTicks`, `Os::Memory::getUsage` — the Linux procfs backend
+//!   on Linux, the upstream stubs elsewhere) and
+//!   `fprime_os::filesystem::get_free_space`. The OSAL backends read into
+//!   fixed stack buffers, so a sampling pass allocates nothing.
+//! - free space is `NotSupported` in this workspace (statvfs has no
 //!   zero-dependency std equivalent), so `NON_VOLATILE_*` are skipped —
-//!   the same behavior the C++ code has on VxWorks. A project supplies a
-//!   real implementation through the OSAL seam or a custom sampler.
+//!   the same behavior the C++ code has on VxWorks.
 //! - tests inject a deterministic sampler with
 //!   [`SystemResources::with_sampler`].
 
 use fprime_comp::{CmdGlue, CmdPort, EventGlue, PassiveBase, PortRef, SchedPort, TlmGlue};
 use fprime_config::{FwChanIdType, FwIndexType, FwOpcodeType, FwSizeType};
 use fprime_fw::{CmdArgBuffer, CmdResponse, SerBuf, fpp_enum, fw_assert};
-use fprime_os::filesystem;
+use fprime_os::{cpu, filesystem, memory};
 use std::sync::{Arc, Mutex};
+
+/// Port of `Os::Generic::Status` (the CPU/memory sampling status), re-exported
+/// from `fprime-os` under the name this module has always used.
+pub use fprime_os::generic::Status as GenericStatus;
+/// Port of `Os::Generic::UsedTotal` (C++ `Os::Cpu::Ticks` /
+/// `Os::Memory::Usage`), re-exported from `fprime-os`.
+pub use fprime_os::generic::UsedTotal;
 
 /// C++ `SystemResources::CPU_COUNT` — maximum number of cores reported as
 /// telemetry.
+///
+/// Deliberately NOT in `fprime-config`: in C++ it is a private class
+/// constant (not a `*Cfg.hpp` knob) and it is fixed by the FPP model, which
+/// declares exactly the 16 channels `CPU_00`..`CPU_15`; changing it without
+/// changing the dictionary would break the channel-id contract.
 pub const CPU_COUNT: usize = 16;
 
 /// Hard-coded free-space path (C++ `PhysMem()` passes `"/"` literally).
@@ -55,27 +65,6 @@ fpp_enum! {
     default Disabled
 }
 
-/// Port of `Os::Generic::Status` (the CPU/memory sampling status).
-#[must_use]
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenericStatus {
-    /// Sample taken.
-    OpOk = 0,
-    /// Sample unavailable; the caller skips the affected channels.
-    Error = 1,
-}
-
-/// Port of `Os::Generic::UsedTotal` (aliased in C++ as `Os::Cpu::Ticks` and
-/// `Os::Memory::Usage`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UsedTotal {
-    /// Used ticks / used bytes.
-    pub used: FwSizeType,
-    /// Total ticks / total bytes.
-    pub total: FwSizeType,
-}
-
 /// The `Os::Cpu` / `Os::Memory` / `Os::FileSystem::getFreeSpace` seam used by
 /// [`SystemResources`]. Implementors must be cheap enough for a rate-group
 /// tick and must never block.
@@ -84,11 +73,11 @@ pub trait ResourceSampler: Send + Sync {
     /// cores (constructor parity).
     fn cpu_count(&self, count: &mut FwSizeType) -> GenericStatus;
 
-    /// C++ `Os::Cpu::getTicks(ticks, index)`.
-    fn cpu_ticks(&self, ticks: &mut UsedTotal, cpu_index: FwSizeType) -> GenericStatus;
+    /// C++ `Os::Cpu::getTicks(ticks, index)` — cumulative ticks.
+    fn cpu_ticks(&self, ticks: &mut cpu::Ticks, cpu_index: FwSizeType) -> GenericStatus;
 
     /// C++ `Os::Memory::getUsage` — byte-valued totals.
-    fn memory_usage(&self, usage: &mut UsedTotal) -> GenericStatus;
+    fn memory_usage(&self, usage: &mut memory::Usage) -> GenericStatus;
 
     /// C++ `Os::FileSystem::getFreeSpace(path, total, free)`.
     fn free_space(
@@ -99,150 +88,22 @@ pub trait ResourceSampler: Send + Sync {
     ) -> filesystem::Status;
 }
 
-/// Default sampler: `/proc/stat` + `/proc/meminfo` + the OSAL free-space
-/// call. See the module header for the divergences.
+/// Default sampler: the `fprime-os` OSAL singletons, exactly the calls the
+/// C++ component makes.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ProcSampler;
+pub struct OsSampler;
 
-/// Number of tick fields parsed out of a `/proc/stat` `cpu` line
-/// (C++ `MAX_CPU_TICK_TYPES`).
-const MAX_CPU_TICK_TYPES: usize = 8;
-/// Index of the CPU number field in a `/proc/stat` line.
-const PROC_CPU_NUMBER: usize = 0;
-/// Index of the USER field.
-const PROC_CPU_USER: usize = 1;
-/// Index of the NICE field.
-const PROC_CPU_NICE: usize = 2;
-/// Index of the SYSTEM field.
-const PROC_CPU_SYSTEM: usize = 3;
-/// Index of the IDLE field.
-const PROC_CPU_IDLE: usize = 4;
-
-impl ProcSampler {
-    /// Parse one `/proc/stat` line into the 8 leading tick fields.
-    ///
-    /// C++ parity (`Os/Linux/Cpu.cpp getCpuData`): the line must start with
-    /// `"cpu"`, the first field after that prefix is the CPU index and must
-    /// equal `cpu_index`, and every one of the 8 fields must parse.
-    fn parse_cpu_line(
-        line: &str,
-        cpu_index: FwSizeType,
-    ) -> Option<[FwSizeType; MAX_CPU_TICK_TYPES]> {
-        let rest = line.strip_prefix("cpu")?;
-        let mut data = [0 as FwSizeType; MAX_CPU_TICK_TYPES];
-        let mut fields = rest.split_whitespace();
-        for (i, slot) in data.iter_mut().enumerate() {
-            let token = fields.next()?;
-            *slot = token.parse::<FwSizeType>().ok()?;
-            if i == PROC_CPU_NUMBER && *slot != cpu_index {
-                return None;
-            }
-        }
-        Some(data)
-    }
-
-    /// Count the per-core `cpuN` lines of `/proc/stat`.
-    ///
-    /// The C++ code calls `sysconf(_SC_NPROCESSORS_ONLN)`; counting the
-    /// `/proc/stat` lines keeps `cpu_count` consistent with what
-    /// [`Self::cpu_ticks`] can actually read (see the analysis's
-    /// "Rust feasibility" note).
-    fn count_from_proc() -> Option<FwSizeType> {
-        let stat = std::fs::read_to_string("/proc/stat").ok()?;
-        let mut count: FwSizeType = 0;
-        for line in stat.lines() {
-            match line.strip_prefix("cpu") {
-                // The aggregate "cpu " line is not a core.
-                Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => count += 1,
-                Some(_) => {}
-                None => break,
-            }
-        }
-        Some(count)
-    }
-
-    /// Read a `kB`-valued `/proc/meminfo` field.
-    fn meminfo_field(meminfo: &str, key: &str) -> Option<FwSizeType> {
-        for line in meminfo.lines() {
-            if let Some(rest) = line.strip_prefix(key) {
-                let value = rest.trim_start_matches(':').split_whitespace().next()?;
-                return value.parse::<FwSizeType>().ok();
-            }
-        }
-        None
-    }
-}
-
-impl ResourceSampler for ProcSampler {
+impl ResourceSampler for OsSampler {
     fn cpu_count(&self, count: &mut FwSizeType) -> GenericStatus {
-        let cpus = Self::count_from_proc().or_else(|| {
-            // Non-Linux fallback (the analysis's recommended substitute for
-            // sysconf(_SC_NPROCESSORS_ONLN)).
-            std::thread::available_parallelism()
-                .ok()
-                .map(|n| n.get() as FwSizeType)
-        });
-        match cpus {
-            Some(n) if n > 0 => {
-                *count = n;
-                GenericStatus::OpOk
-            }
-            _ => {
-                *count = 0;
-                GenericStatus::Error
-            }
-        }
+        cpu::get_count(count)
     }
 
-    fn cpu_ticks(&self, ticks: &mut UsedTotal, cpu_index: FwSizeType) -> GenericStatus {
-        // C++ parity: _getTicks re-checks the count and rejects an index
-        // beyond it before touching the file.
-        let mut count: FwSizeType = 0;
-        if self.cpu_count(&mut count) != GenericStatus::OpOk || cpu_index >= count {
-            return GenericStatus::Error;
-        }
-        let Ok(stat) = std::fs::read_to_string("/proc/stat") else {
-            return GenericStatus::Error;
-        };
-        // The file starts with the aggregate cpu line, then one per core.
-        let Some(line) = stat.lines().nth(cpu_index as usize + 1) else {
-            return GenericStatus::Error;
-        };
-        match Self::parse_cpu_line(line, cpu_index) {
-            Some(data) => {
-                ticks.used = data[PROC_CPU_USER]
-                    .wrapping_add(data[PROC_CPU_NICE])
-                    .wrapping_add(data[PROC_CPU_SYSTEM]);
-                ticks.total = ticks.used.wrapping_add(data[PROC_CPU_IDLE]);
-                GenericStatus::OpOk
-            }
-            None => GenericStatus::Error,
-        }
+    fn cpu_ticks(&self, ticks: &mut cpu::Ticks, cpu_index: FwSizeType) -> GenericStatus {
+        cpu::get_ticks(ticks, cpu_index)
     }
 
-    fn memory_usage(&self, usage: &mut UsedTotal) -> GenericStatus {
-        let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") else {
-            return GenericStatus::Error;
-        };
-        // sysinfo(2) parity: freeram, not MemAvailable.
-        let (Some(total_kb), Some(free_kb)) = (
-            Self::meminfo_field(&meminfo, "MemTotal"),
-            Self::meminfo_field(&meminfo, "MemFree"),
-        ) else {
-            return GenericStatus::Error;
-        };
-        // C++ overflow guard: report 1/1 and ERROR rather than wrapping.
-        let (Some(total), Some(used)) = (
-            total_kb.checked_mul(1024),
-            total_kb.saturating_sub(free_kb).checked_mul(1024),
-        ) else {
-            usage.total = 1;
-            usage.used = 1;
-            return GenericStatus::Error;
-        };
-        usage.total = total;
-        usage.used = used;
-        GenericStatus::OpOk
+    fn memory_usage(&self, usage: &mut memory::Usage) -> GenericStatus {
+        memory::get_usage(usage)
     }
 
     fn free_space(
@@ -263,11 +124,11 @@ struct SysResState {
     /// C++ `m_cpu_count`, already clamped to [`CPU_COUNT`].
     cpu_count: usize,
     /// C++ `m_cpu`.
-    cpu: [UsedTotal; CPU_COUNT],
+    cpu: [cpu::Ticks; CPU_COUNT],
     /// C++ `m_cpu_prev`.
-    cpu_prev: [UsedTotal; CPU_COUNT],
+    cpu_prev: [cpu::Ticks; CPU_COUNT],
     /// C++ `m_mem`.
-    mem: UsedTotal,
+    mem: memory::Usage,
 }
 
 /// One telemetry write produced by a sampling pass: `(channel id, value)`.
@@ -344,9 +205,9 @@ impl SystemResources {
     /// Telemetry `CPU_00: F32`; `CPU_nn` is `CHANID_CPU_00 + nn`.
     pub const CHANID_CPU_00: FwChanIdType = 5;
 
-    /// Construct with the default `/proc`-based sampler.
+    /// Construct with the default [`OsSampler`] (the OSAL singletons).
     pub fn new(name: &str) -> Arc<Self> {
-        Self::with_sampler(name, Box::new(ProcSampler))
+        Self::with_sampler(name, Box::new(OsSampler))
     }
 
     /// Construct with an injected sampler (used by tests and by projects
@@ -369,9 +230,9 @@ impl SystemResources {
             state: Mutex::new(SysResState {
                 enable: true,
                 cpu_count,
-                cpu: [UsedTotal::default(); CPU_COUNT],
-                cpu_prev: [UsedTotal::default(); CPU_COUNT],
-                mem: UsedTotal::default(),
+                cpu: [cpu::Ticks::default(); CPU_COUNT],
+                cpu_prev: [cpu::Ticks::default(); CPU_COUNT],
+                mem: memory::Usage::default(),
             }),
         })
     }
@@ -444,7 +305,7 @@ impl SystemResources {
 
     /// C++ `compCpuUtil`: 100% when the total tick delta is zero (fast
     /// sampling) and when the division produces NaN.
-    fn comp_cpu_util(current: UsedTotal, previous: UsedTotal) -> f32 {
+    fn comp_cpu_util(current: cpu::Ticks, previous: cpu::Ticks) -> f32 {
         let mut util = 100.0f32;
         let total_delta = current.total.wrapping_sub(previous.total);
         if total_delta != 0 {
@@ -462,7 +323,7 @@ impl SystemResources {
         let mut count: u32 = 0;
         let mut cpu_avg = 0.0f32;
         for i in 0..std::cmp::min(state.cpu_count, CPU_COUNT) {
-            let mut ticks = UsedTotal::default();
+            let mut ticks = cpu::Ticks::default();
             if self.sampler.cpu_ticks(&mut ticks, i as FwSizeType) != GenericStatus::OpOk {
                 continue;
             }
@@ -494,7 +355,7 @@ impl SystemResources {
 
     /// C++ `Mem()` — bytes divided down to KiB with integer division.
     fn sample_mem(&self, state: &mut SysResState, writes: &mut TlmWrites) {
-        let mut usage = UsedTotal::default();
+        let mut usage = memory::Usage::default();
         if self.sampler.memory_usage(&mut usage) == GenericStatus::OpOk {
             state.mem = usage;
             writes.push(TlmWrite::Size(
@@ -949,30 +810,106 @@ mod tests {
         );
     }
 
-    #[test]
-    fn proc_sampler_parses_a_stat_line() {
-        let data = ProcSampler::parse_cpu_line("cpu0 1 2 3 4 5 6 7 8", 0).unwrap();
-        assert_eq!(data, [0, 1, 2, 3, 4, 5, 6, 7]);
-        // Field 0 must equal the requested index.
-        assert!(ProcSampler::parse_cpu_line("cpu1 1 2 3 4 5 6 7 8", 0).is_none());
-        // A line outside the cpu section is rejected.
-        assert!(ProcSampler::parse_cpu_line("intr 1 2 3 4 5 6 7 8", 0).is_none());
-        // Too few fields.
-        assert!(ProcSampler::parse_cpu_line("cpu0 1 2 3", 0).is_none());
+    /// Port of `SystemResourcesTester::test_tlm` against the real OSAL
+    /// (`OsSampler`): one tick writes one channel per sampled core, the
+    /// average, and the memory / non-volatile pairs whenever the OSAL can
+    /// read them — or nothing at all when disabled.
+    fn check_os_tlm(comp: &Arc<SystemResources>, ground: &Ground, enabled: bool) {
+        ground.tlm.lock().unwrap().clear();
+        let mut count: FwSizeType = 0;
+        if cpu::get_count(&mut count) != GenericStatus::OpOk {
+            // C++ parity: the upstream test checks nothing in this case.
+            return;
+        }
+        tick(comp);
+        let cores = std::cmp::min(count as usize, CPU_COUNT);
+        let tlm = ground.tlm.lock().unwrap();
+        let size_of =
+            |id: FwChanIdType| tlm.iter().filter(|(chan, _)| *chan == ID_BASE + id).count();
+        let per_enabled = usize::from(enabled);
+        for core in 0..cores {
+            assert_eq!(
+                size_of(SystemResources::CHANID_CPU_00 + core as FwChanIdType),
+                per_enabled,
+                "CPU_{core:02}"
+            );
+        }
+        assert_eq!(size_of(SystemResources::CHANID_CPU), per_enabled);
+        let mut expected = cores;
+        let mut usage = memory::Usage::default();
+        if enabled && memory::get_usage(&mut usage) == GenericStatus::OpOk {
+            assert_eq!(size_of(SystemResources::CHANID_MEMORY_USED), 1);
+            assert_eq!(size_of(SystemResources::CHANID_MEMORY_TOTAL), 1);
+            expected += 2;
+        } else {
+            assert_eq!(size_of(SystemResources::CHANID_MEMORY_USED), 0);
+            assert_eq!(size_of(SystemResources::CHANID_MEMORY_TOTAL), 0);
+        }
+        let (mut total, mut free) = (0, 0);
+        if enabled
+            && filesystem::get_free_space(NON_VOLATILE_PATH, &mut total, &mut free)
+                == filesystem::Status::OpOk
+        {
+            assert_eq!(size_of(SystemResources::CHANID_NON_VOLATILE_FREE), 1);
+            assert_eq!(size_of(SystemResources::CHANID_NON_VOLATILE_TOTAL), 1);
+            expected += 2;
+        } else {
+            assert_eq!(size_of(SystemResources::CHANID_NON_VOLATILE_FREE), 0);
+            assert_eq!(size_of(SystemResources::CHANID_NON_VOLATILE_TOTAL), 0);
+        }
+        // CPU channels + average + memory pair + non-volatile pair.
+        let total_writes = if enabled { expected + 1 } else { 0 };
+        assert_eq!(tlm.len(), total_writes);
+    }
+
+    fn build_os() -> (Arc<SystemResources>, Arc<Ground>) {
+        let ground = Arc::new(Ground::default());
+        let comp = SystemResources::new("sysRes");
+        comp.base.set_id_base(ID_BASE);
+        comp.cmd.cmd_reg_out.connect(ground.clone(), 0);
+        comp.cmd.cmd_response_out.connect(ground.clone(), 0);
+        comp.evt.time_out.connect(Arc::new(TimeStub), 0);
+        comp.tlm.tlm_out.connect(ground.clone(), 0);
+        (comp, ground)
     }
 
     #[test]
-    fn proc_sampler_parses_meminfo_fields() {
-        let meminfo = "MemTotal:       16316000 kB\nMemFree:         2624936 kB\n";
-        assert_eq!(
-            ProcSampler::meminfo_field(meminfo, "MemTotal"),
-            Some(16_316_000)
+    fn nominal_telemetry_with_the_os_sampler() {
+        // Upstream TEST(Nominal, Telemetry).
+        let (comp, ground) = build_os();
+        check_os_tlm(&comp, &ground, true);
+    }
+
+    #[test]
+    fn disable_enable_with_the_os_sampler() {
+        // Upstream TEST(OffNominal, Disabled).
+        let (comp, ground) = build_os();
+        let opcode = ID_BASE + SystemResources::OPCODE_ENABLE;
+        send_cmd(
+            &comp,
+            opcode,
+            0,
+            &[SystemResourceEnabled::Disabled.as_repr()],
         );
-        assert_eq!(
-            ProcSampler::meminfo_field(meminfo, "MemFree"),
-            Some(2_624_936)
+        check_os_tlm(&comp, &ground, false);
+        send_cmd(
+            &comp,
+            opcode,
+            0,
+            &[SystemResourceEnabled::Enabled.as_repr()],
         );
-        assert_eq!(ProcSampler::meminfo_field(meminfo, "MemAvailable"), None);
+        check_os_tlm(&comp, &ground, true);
+    }
+
+    #[test]
+    fn os_sampler_core_count_matches_the_osal() {
+        let mut count: FwSizeType = 0;
+        let expected = if cpu::get_count(&mut count) == GenericStatus::OpOk {
+            std::cmp::min(count as usize, CPU_COUNT)
+        } else {
+            0
+        };
+        assert_eq!(SystemResources::new("sysRes").cpu_count(), expected);
     }
 
     #[test]
