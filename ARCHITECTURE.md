@@ -560,8 +560,9 @@ normative reference for what the macros expand to.
 - `hash`: CRC32 (IEEE 802.3: table 0xEDB88320 reflected, init `0xFFFFFFFF`,
   `finalize = !register`), `HashBuffer` (4 bytes, `as_big_endian_u32`).
   Test vector: `crc32(b"123456789") == 0xCBF43926`.
-- `crc_checker`: file sidecar `.CRC32` (4 raw **native-endian** bytes — do
-  not "fix" this; C++ parity), 2048-byte read blocks.
+- `crc_checker`: file sidecar `.CRC32` (4 **big-endian** bytes since
+  upstream nasa/fprime#5775; older CRCChecker builds wrote native-endian),
+  2048-byte read blocks.
 - `types::CircularBuffer`: byte ring over owned storage; `serialize` refuses
   overwrite (`NoRoomLeft`), `peek`(u8/u32-BE/range at offset), `rotate`
   (consume front), `trim` (drop back), high-water mark.

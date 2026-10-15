@@ -5,11 +5,17 @@
 //! Analysis: `docs/cpp-analysis/utils-misc.md` (Utils::CRCChecker section).
 //!
 //! Sidecar format (`<name>.CRC32`): exactly 4 bytes — the standard
-//! complemented CRC-32 of the whole target file, written via a raw copy of
-//! the `u32` in NATIVE machine endianness (`to_ne_bytes`). This is C++
-//! parity: `CRCChecker.cpp` `reinterpret_cast`s the `U32`, so the sidecar is
-//! little-endian on typical targets, NOT F Prime big-endian serialization.
-//! Do not "fix" it.
+//! complemented CRC-32 of the whole target file, serialized BIG-ENDIAN
+//! (`to_be_bytes`). This is the same file [`crate::validate_file`]
+//! (`Os::ValidateFile`) writes and reads; the two encodings are compared
+//! side by side in that module's documentation.
+//!
+//! C++ parity: upstream serializes the `U32` through `Fw::SerialBuffer`
+//! since nasa/fprime#5775 (in the 4dee010 model this port tracks). Older
+//! CRCChecker builds `reinterpret_cast` the `U32`, i.e. wrote NATIVE-endian
+//! sidecars that were not interchangeable with `Utils::Hash` /
+//! `Os::ValidateFile` on little-endian hosts; this port used to reproduce
+//! that and now follows the fix.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -92,7 +98,7 @@ fn sidecar_name(fname: &str) -> String {
 }
 
 /// Compute the CRC-32 of the file at `fname` and write the 4-byte
-/// native-endian sidecar `<fname>.CRC32`
+/// big-endian sidecar `<fname>.CRC32`
 /// (port of `Utils::create_checksum_file`).
 ///
 /// Returns [`CrcStat::PassedFileCrcWrite`] on success.
@@ -106,16 +112,17 @@ pub fn create_checksum_file(fname: &str) -> CrcStat {
         Ok(f) => f,
         Err(_) => return CrcStat::FailedFileCrcOpen,
     };
-    // C++ parity gotcha: raw memcpy of the U32 -> NATIVE endianness.
-    if crc_file.write_all(&checksum.to_ne_bytes()).is_err() {
+    // C++ parity: serialized (big-endian), so the file does not depend on
+    // the host's byte order.
+    if crc_file.write_all(&checksum.to_be_bytes()).is_err() {
         return CrcStat::FailedFileCrcWrite;
     }
 
     CrcStat::PassedFileCrcWrite
 }
 
-/// Read the stored CRC-32 out of the sidecar `<fname>.CRC32` (4 raw
-/// native-endian bytes) into `checksum_from_file`
+/// Read the stored CRC-32 out of the sidecar `<fname>.CRC32` (4
+/// big-endian bytes) into `checksum_from_file`
 /// (port of `Utils::read_crc32_from_file`).
 ///
 /// Returns [`CrcStat::PassedFileCrcCheck`] on success; on failure
@@ -130,8 +137,8 @@ pub fn read_crc32_from_file(fname: &str, checksum_from_file: &mut u32) -> CrcSta
     if crc_file.read_exact(&mut bytes).is_err() {
         return CrcStat::FailedFileCrcRead;
     }
-    // C++ parity gotcha: raw read into the U32 -> NATIVE endianness.
-    *checksum_from_file = u32::from_ne_bytes(bytes);
+    // C++ parity: deserialized to match create_checksum_file (big-endian).
+    *checksum_from_file = u32::from_be_bytes(bytes);
     CrcStat::PassedFileCrcCheck
 }
 
@@ -164,6 +171,7 @@ pub fn verify_checksum(fname: &str, expected: &mut u32, actual: &mut u32) -> Crc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fprime_fw::SerBuf;
     use std::path::PathBuf;
 
     /// A per-test scratch file under the system temp dir, removed (with its
@@ -210,17 +218,18 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_holds_native_endian_standard_crc32() {
+    fn sidecar_holds_big_endian_standard_crc32() {
         let f = TempFile::create("endian.bin", b"123456789");
         assert_eq!(
             create_checksum_file(f.path_str()),
             CrcStat::PassedFileCrcWrite
         );
 
-        // C++ parity gotcha: NATIVE endianness, not big-endian.
+        // Literal bytes: the serialized (big-endian) CRC, identical to the
+        // Utils::Hash digest (upstream ChecksumFileMatchesFrameworkFormat).
         let sidecar = fs::read(sidecar_name(f.path_str())).unwrap();
-        assert_eq!(sidecar, 0xCBF4_3926u32.to_ne_bytes());
-        assert_eq!(sidecar.len(), 4);
+        assert_eq!(sidecar, [0xCB, 0xF4, 0x39, 0x26]);
+        assert_eq!(sidecar, Hash::hash(b"123456789").as_slice());
 
         let mut stored = 0u32;
         assert_eq!(
