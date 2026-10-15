@@ -23,6 +23,12 @@
 //! - [`console`] — `Os::Console`, an [`fprime_fw::FwLogger`] backend.
 //! - [`rawtime`] / [`interval_timer`] — `Os::RawTime` (CLOCK_REALTIME
 //!   semantics, 8-byte wire format) and `Os::IntervalTimer`.
+//! - [`cpu`] / [`memory`] — `Os::Cpu` (per-CPU cumulative ticks) and
+//!   `Os::Memory` (system RAM usage) singletons over the shared
+//!   [`generic`] `Os::Generic::Status` / `UsedTotal` types. These are the
+//!   facilities with more than one shipped backend: [`linux`] (procfs /
+//!   sysfs, the default on Linux) and [`stub`] (the upstream stubs, the
+//!   default elsewhere), selected by `cfg` type alias.
 //!
 //! Not here: `Os::ValidateFile` is `fprime_utils::validate_file`. It is
 //! built on `Utils::Hash`, and the crate graph runs `fprime-utils ->
@@ -30,22 +36,29 @@
 
 pub mod condition;
 pub mod console;
+pub mod cpu;
 pub mod directory;
 pub mod file;
 pub mod file_path_utils;
 pub mod filesystem;
+pub mod generic;
 pub mod interval_timer;
+pub mod linux;
+pub mod memory;
 pub mod mutex;
 pub mod queue;
 pub mod rawtime;
 pub mod sandboxed_file;
+pub mod stub;
 pub mod task;
 
 pub use condition::ConditionVariable;
 pub use console::{CONSOLE, Console, ConsoleStream};
+pub use cpu::{Cpu, CpuInterface};
 pub use directory::Directory;
 pub use file::File;
 pub use interval_timer::IntervalTimer;
+pub use memory::{Memory, MemoryInterface};
 pub use mutex::{OsMutex, ScopeLock};
 pub use queue::{BlockingType, Queue};
 pub use rawtime::RawTime;
@@ -54,11 +67,15 @@ pub use task::Task;
 
 /// Port of `Os::init()` (Os/Os.cpp). The C++ version force-initializes the
 /// Console, FileSystem, Cpu, Memory, and Task singletons; the load-bearing
-/// side effect is the Console registering itself as the global `Fw::Logger`.
+/// side effect is the Console registering itself as the global `Fw::Logger`
+/// (the Cpu and Memory singletons are constant-initialized statics, so
+/// their `init` calls are kept only for parity).
 /// Call once at deployment startup, before any `fw_log!` output matters
 /// (C++ parity: log output before this call is silently dropped).
 pub fn init() {
     console::init();
+    cpu::init();
+    memory::init();
 }
 
 #[cfg(test)]
