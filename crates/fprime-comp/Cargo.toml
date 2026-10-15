@@ -10,7 +10,16 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+# Hosted build (std::sync locks, std::thread tasks, the full fprime-os).
+std = ["fprime-fw/std", "fprime-os/std"]
+# `no_std` + `alloc` build (ROADMAP item 13): spin locks, and the fprime-os
+# subset whose tasks / clock / blocking waits a platform supplies. Build
+# with `--no-default-features --features spin`.
+spin = ["fprime-fw/spin", "fprime-os/spin"]
+
 [dependencies]
 fprime-config.workspace = true
-fprime-fw.workspace = true
-fprime-os.workspace = true
+fprime-fw = { path = "../fprime-fw", default-features = false }
+fprime-os = { path = "../fprime-os", default-features = false }

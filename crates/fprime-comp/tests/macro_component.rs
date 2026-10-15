@@ -12,6 +12,8 @@
 //! `pre_msg_hook`, sync/guarded inputs including one with a return value,
 //! and the `<name>_deserialize` helper matching the adapter's write side.
 
+mod no_std_platform;
+
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdPort, ComponentDispatch, MsgDispatchStatus, PrmGetPort,
     QueueFullPolicy, SchedPort, SuccessConditionPort, async_input_port_adapter,
@@ -505,6 +507,7 @@ fn sync_input_with_return_value() {
 /// generated adapters is dispatched by the generated deserializers.
 #[test]
 fn full_lifecycle_through_the_component_thread() {
+    no_std_platform::install();
     let comp = build();
     comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);
 

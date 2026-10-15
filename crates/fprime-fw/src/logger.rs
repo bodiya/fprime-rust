@@ -4,8 +4,8 @@
 //! framework diagnostic text. Messages are silently dropped while no logger
 //! is registered. This is distinct from the event (`Fw.Log`) path.
 
+use crate::sync::RwLock;
 use fprime_config::FW_FIXED_LENGTH_STRING_SIZE;
-use std::sync::RwLock;
 
 /// A diagnostic log writer (port of the `Fw::Logger` virtual interface).
 pub trait FwLogger: Send + Sync {
@@ -18,18 +18,12 @@ static LOGGER: RwLock<Option<&'static dyn FwLogger>> = RwLock::new(None);
 /// Register the global diagnostic logger (`Fw::Logger::registerLogger`).
 /// Expected at init, before tasks start.
 pub fn register_logger(logger: &'static dyn FwLogger) {
-    let mut guard = LOGGER
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = Some(logger);
+    *LOGGER.write() = Some(logger);
 }
 
 /// Deregister the global diagnostic logger (subsequent messages are dropped).
 pub fn deregister_logger() {
-    let mut guard = LOGGER
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    *guard = None;
+    *LOGGER.write() = None;
 }
 
 /// Log one diagnostic message; silently dropped when no logger is
@@ -37,9 +31,7 @@ pub fn deregister_logger() {
 /// `Fw::String` (256 chars), so it is truncated to
 /// `FW_FIXED_LENGTH_STRING_SIZE` bytes here as well.
 pub fn log_message(message: &str) {
-    let guard = LOGGER
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = LOGGER.read();
     if let Some(logger) = *guard {
         if message.len() > FW_FIXED_LENGTH_STRING_SIZE {
             let mut cut = FW_FIXED_LENGTH_STRING_SIZE;
@@ -58,14 +50,16 @@ pub fn log_message(message: &str) {
 #[macro_export]
 macro_rules! fw_log {
     ($($t:tt)*) => {
-        $crate::logger::log_message(&format!($($t)*))
+        $crate::logger::log_message(&$crate::__private::format!($($t)*))
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::{String, ToString};
     use std::sync::Mutex;
+    use std::vec::Vec;
 
     struct TestLogger {
         messages: Mutex<Vec<String>>,
@@ -101,6 +95,12 @@ mod tests {
             .messages
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // In a `no_std` build the default assert print also goes to the
+        // logger, so a concurrently failing test assert may land here.
+        let messages: Vec<&String> = messages
+            .iter()
+            .filter(|m| !m.starts_with("Assert: "))
+            .collect();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0], "value = 42");
         assert_eq!(messages[1].len(), FW_FIXED_LENGTH_STRING_SIZE);

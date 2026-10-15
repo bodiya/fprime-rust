@@ -58,6 +58,7 @@ mod tests {
 
     #[test]
     fn measures_a_sleep() {
+        crate::test_platform::install();
         let mut timer = IntervalTimer::new();
         timer.start();
         std::thread::sleep(std::time::Duration::from_millis(10));

@@ -25,14 +25,23 @@
 //! mutability throughout — every method (including `create`) takes `&self`,
 //! so a `Queue` is shared as `Arc<Queue>` across sender and receiver threads
 //! with no external locking.
+//!
+//! `no_std` (ROADMAP item 13): the data mutex is the `fprime_fw::sync` spin
+//! lock and there is no condition variable — a blocking send/receive
+//! releases the lock, takes one `platform::Platform::queue_wait`
+//! backoff step and re-checks (the polling shape of upstream's
+//! `Os::Generic::LocklessPriorityQueue`). Everything else, including the
+//! status flow and FIFO-within-priority order, is identical.
 
+use alloc::boxed::Box;
+use alloc::collections::BinaryHeap;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cmp::Reverse;
 use fprime_config::{FW_QUEUE_NAME_BUFFER_SIZE, FwQueuePriorityType, FwSizeType};
 use fprime_fw::fw_assert;
+use fprime_fw::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
 use fprime_fw::{FwString, SerBuf, SerBufAny};
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 /// Queue name string (C++ `Os::QueueString`, capacity
 /// `FW_QUEUE_NAME_BUFFER_SIZE`).
@@ -125,16 +134,67 @@ static QUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 pub struct Queue {
     state: Mutex<QueueState>,
     /// Senders wait here while the queue is full (C++ `m_full`).
-    not_full: Condvar,
+    not_full: Signal,
     /// Receivers wait here while the queue is empty (C++ `m_empty`).
-    not_empty: Condvar,
+    not_empty: Signal,
 }
 
-fn lock_state<'a>(mutex: &'a Mutex<QueueState>) -> MutexGuard<'a, QueueState> {
+fn lock_state(mutex: &Mutex<QueueState>) -> MutexGuard<'_, QueueState> {
     // A poisoned lock means another thread panicked mid-operation; the C++
-    // equivalent is a crashed FW_ASSERT. Recover the guard so remaining
-    // threads see consistent-enough state to shut down.
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    // equivalent is a crashed FW_ASSERT. The `fprime_fw::sync` mutex
+    // recovers the guard so remaining threads see consistent-enough state
+    // to shut down.
+    mutex.lock()
+}
+
+/// One wait condition of the queue: a `std::sync::Condvar` in the `std`
+/// build.
+#[cfg(feature = "std")]
+#[derive(Default)]
+struct Signal(std::sync::Condvar);
+
+#[cfg(feature = "std")]
+impl Signal {
+    /// Atomically release `guard` and wait for a notification, then
+    /// re-acquire the lock (spurious wakeups allowed; callers loop).
+    fn wait<'a>(
+        &self,
+        _mutex: &'a Mutex<QueueState>,
+        guard: MutexGuard<'a, QueueState>,
+    ) -> MutexGuard<'a, QueueState> {
+        self.0
+            .wait(guard)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wake one waiter.
+    fn notify_one(&self) {
+        self.0.notify_one();
+    }
+}
+
+/// One wait condition of the queue: polling over the platform seam in the
+/// `no_std` build (see the module docs).
+#[cfg(not(feature = "std"))]
+#[derive(Default)]
+struct Signal;
+
+#[cfg(not(feature = "std"))]
+impl Signal {
+    /// Release the lock, take one platform backoff step, re-acquire. The
+    /// caller re-checks its condition, exactly as after a condvar wakeup.
+    fn wait<'a>(
+        &self,
+        mutex: &'a Mutex<QueueState>,
+        guard: MutexGuard<'a, QueueState>,
+    ) -> MutexGuard<'a, QueueState> {
+        drop(guard);
+        crate::platform::queue_wait();
+        lock_state(mutex)
+    }
+
+    /// Nothing to wake: waiters poll.
+    fn notify_one(&self) {}
 }
 
 impl Queue {
@@ -204,10 +264,7 @@ impl Queue {
             if block_type == BlockingType::NonBlocking {
                 return Status::Full;
             }
-            state = self
-                .not_full
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+            state = self.not_full.wait(&self.state, state);
         }
         // find_index(): pop the free-index ring at start_index.
         let index = state.indices[state.start_index];
@@ -259,10 +316,7 @@ impl Queue {
             if block_type == BlockingType::NonBlocking {
                 return Status::Empty;
             }
-            state = self
-                .not_empty
-                .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+            state = self.not_empty.wait(&self.state, state);
         }
         // Pop cannot fail: non-empty was just checked under the same lock
         // (C++ asserts the pop succeeded).

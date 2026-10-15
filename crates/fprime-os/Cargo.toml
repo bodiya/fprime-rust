@@ -10,6 +10,15 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+# Hosted OSAL: every facility, over std (threads, files, SystemTime).
+std = ["fprime-fw/std"]
+# `no_std` + `alloc` subset (ROADMAP item 13): queue, task, raw time,
+# interval timer, stub cpu/memory, over the `platform` seam. Build with
+# `--no-default-features --features spin`.
+spin = ["fprime-fw/spin"]
+
 [dependencies]
 fprime-config.workspace = true
-fprime-fw.workspace = true
+fprime-fw = { path = "../fprime-fw", default-features = false }

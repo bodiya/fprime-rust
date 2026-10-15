@@ -30,38 +30,78 @@
 //!   sysfs, the default on Linux) and [`stub`] (the upstream stubs, the
 //!   default elsewhere), selected by `cfg` type alias.
 //!
+//! `no_std` (ROADMAP item 13): with the default `std` feature off (and
+//! `spin` on) the crate is the `no_std` + `alloc` subset [`queue`],
+//! [`task`], [`rawtime`], [`interval_timer`], [`generic`] and the [`stub`]
+//! [`cpu`] / [`memory`] backends; task start/join/delay, `RawTime::now`
+//! and the blocking-queue wait go through the `platform` seam, which the
+//! deployment implements (`platform::Platform`, registered with
+//! `register_platform`). Files, directories, the console, the `Os::Mutex`
+//! / `Os::ConditionVariable` wrappers and the Linux cpu/memory backends
+//! are `std`-only.
+//!
 //! Not here: `Os::ValidateFile` is `fprime_utils::validate_file`. It is
 //! built on `Utils::Hash`, and the crate graph runs `fprime-utils ->
 //! fprime-os`, not the reverse (rationale in that module's docs).
 
+// Unlike fprime-fw / fprime-comp (always `#![no_std]`, std linked back in
+// by the feature), most of this crate is std-only OS backend code, so the
+// std build keeps the std prelude and only the `no_std` build drops it.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+// Unit tests always run on a hosted target, so they get `std` even in a
+// `no_std` build.
+#[cfg(all(test, not(feature = "std")))]
+extern crate std;
+
+#[cfg(feature = "std")]
 pub mod condition;
+#[cfg(feature = "std")]
 pub mod console;
 pub mod cpu;
+#[cfg(feature = "std")]
 pub mod directory;
+#[cfg(feature = "std")]
 pub mod file;
+#[cfg(feature = "std")]
 pub mod file_path_utils;
+#[cfg(feature = "std")]
 pub mod filesystem;
 pub mod generic;
 pub mod interval_timer;
+#[cfg(feature = "std")]
 pub mod linux;
 pub mod memory;
+#[cfg(feature = "std")]
 pub mod mutex;
+#[cfg(not(feature = "std"))]
+pub mod platform;
 pub mod queue;
 pub mod rawtime;
+#[cfg(feature = "std")]
 pub mod sandboxed_file;
 pub mod stub;
 pub mod task;
 
+#[cfg(feature = "std")]
 pub use condition::ConditionVariable;
+#[cfg(feature = "std")]
 pub use console::{CONSOLE, Console, ConsoleStream};
 pub use cpu::{Cpu, CpuInterface};
+#[cfg(feature = "std")]
 pub use directory::Directory;
+#[cfg(feature = "std")]
 pub use file::File;
 pub use interval_timer::IntervalTimer;
 pub use memory::{Memory, MemoryInterface};
+#[cfg(feature = "std")]
 pub use mutex::{OsMutex, ScopeLock};
+#[cfg(not(feature = "std"))]
+pub use platform::{Platform, TaskHandle, register_platform};
 pub use queue::{BlockingType, Queue};
 pub use rawtime::RawTime;
+#[cfg(feature = "std")]
 pub use sandboxed_file::SandboxedFile;
 pub use task::Task;
 
@@ -72,13 +112,91 @@ pub use task::Task;
 /// their `init` calls are kept only for parity).
 /// Call once at deployment startup, before any `fw_log!` output matters
 /// (C++ parity: log output before this call is silently dropped).
+#[cfg(feature = "std")]
 pub fn init() {
     console::init();
     cpu::init();
     memory::init();
 }
 
+/// `no_std` `Os::init()`: initializes the (stub) Cpu and Memory singletons.
+/// There is no console backend without `std` — the deployment registers
+/// its own `fprime_fw::FwLogger` — and the [`platform`] is registered
+/// separately with [`register_platform`].
+#[cfg(not(feature = "std"))]
+pub fn init() {
+    cpu::init();
+    memory::init();
+}
+
+/// The unit tests' platform: in a `no_std` test build (which still runs on
+/// a hosted target), [`install`](test_platform::install) registers a
+/// `std::thread` / `SystemTime` [`platform::Platform`] so the task, raw-time
+/// and interval-timer tests exercise the seam; with `std` it is a no-op.
 #[cfg(test)]
+pub(crate) mod test_platform {
+    /// Register the test platform (idempotent).
+    pub fn install() {
+        #[cfg(not(feature = "std"))]
+        let _ = crate::register_platform(&imp::StdThreads);
+    }
+
+    #[cfg(not(feature = "std"))]
+    mod imp {
+        use crate::platform::{Platform, TaskHandle};
+        use crate::rawtime::{self, RawTime};
+        use crate::task::{self, Arguments};
+        use alloc::boxed::Box;
+        use fprime_fw::TimeInterval;
+
+        pub struct StdThreads;
+
+        struct Handle(std::thread::JoinHandle<()>);
+
+        impl TaskHandle for Handle {
+            fn join(self: Box<Self>) -> task::Status {
+                match self.0.join() {
+                    Ok(()) => task::Status::OpOk,
+                    Err(_) => task::Status::JoinError,
+                }
+            }
+        }
+
+        impl Platform for StdThreads {
+            fn start_task(
+                &self,
+                arguments: Arguments,
+            ) -> Result<Box<dyn TaskHandle>, task::Status> {
+                std::thread::Builder::new()
+                    .name(arguments.name)
+                    .spawn(arguments.routine)
+                    .map(|handle| Box::new(Handle(handle)) as Box<dyn TaskHandle>)
+                    .map_err(|_| task::Status::ErrorResources)
+            }
+
+            fn delay(&self, interval: TimeInterval) -> task::Status {
+                std::thread::sleep(std::time::Duration::new(
+                    u64::from(interval.get_seconds()),
+                    interval.get_useconds() * 1000,
+                ));
+                task::Status::OpOk
+            }
+
+            fn raw_time_now(&self) -> Result<RawTime, rawtime::Status> {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| rawtime::Status::OtherError)?;
+                Ok(RawTime::from_parts(now.as_secs(), now.subsec_nanos()))
+            }
+
+            fn queue_wait(&self) {
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
 pub(crate) mod test_util {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};

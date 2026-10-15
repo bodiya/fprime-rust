@@ -471,7 +471,7 @@ macro_rules! fpp_array {
         $crate::__fpp_array_impl! {
             $(#[$meta])*
             $vis array $name = [$elem; $n]
-            default { ::std::array::from_fn(|_| $fill) }
+            default { ::core::array::from_fn(|_| $fill) }
         }
     };
 
@@ -522,7 +522,7 @@ macro_rules! __fpp_array_impl {
             /// single-value fill constructor).
             pub fn fill(value: $elem) -> Self
             {
-                Self(::std::array::from_fn(|_| value.clone()))
+                Self(::core::array::from_fn(|_| value.clone()))
             }
 
             /// Borrow the backing element array.
@@ -543,7 +543,7 @@ macro_rules! __fpp_array_impl {
             }
 
             /// Iterate over the elements in index order.
-            pub fn iter(&self) -> ::std::slice::Iter<'_, $elem> {
+            pub fn iter(&self) -> ::core::slice::Iter<'_, $elem> {
                 self.0.iter()
             }
         }
@@ -554,14 +554,14 @@ macro_rules! __fpp_array_impl {
             }
         }
 
-        impl ::std::ops::Index<usize> for $name {
+        impl ::core::ops::Index<usize> for $name {
             type Output = $elem;
             fn index(&self, index: usize) -> &$elem {
                 &self.0[index]
             }
         }
 
-        impl ::std::ops::IndexMut<usize> for $name {
+        impl ::core::ops::IndexMut<usize> for $name {
             fn index_mut(&mut self, index: usize) -> &mut $elem {
                 &mut self.0[index]
             }
@@ -581,7 +581,7 @@ macro_rules! __fpp_array_impl {
 
         impl<'a> IntoIterator for &'a $name {
             type Item = &'a $elem;
-            type IntoIter = ::std::slice::Iter<'a, $elem>;
+            type IntoIter = ::core::slice::Iter<'a, $elem>;
             fn into_iter(self) -> Self::IntoIter {
                 self.0.iter()
             }

@@ -140,9 +140,9 @@ impl Time {
             return TimeComparison::Incomparable;
         }
         match (time1.seconds, time1.useconds).cmp(&(time2.seconds, time2.useconds)) {
-            std::cmp::Ordering::Less => TimeComparison::Lt,
-            std::cmp::Ordering::Greater => TimeComparison::Gt,
-            std::cmp::Ordering::Equal => TimeComparison::Eq,
+            core::cmp::Ordering::Less => TimeComparison::Lt,
+            core::cmp::Ordering::Greater => TimeComparison::Gt,
+            core::cmp::Ordering::Equal => TimeComparison::Eq,
         }
     }
 
@@ -266,11 +266,11 @@ impl PartialEq for Time {
 
 /// Ordering via [`Time::compare`]; `None` for incomparable (differing bases).
 impl PartialOrd for Time {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         match Time::compare(self, other) {
-            TimeComparison::Lt => Some(std::cmp::Ordering::Less),
-            TimeComparison::Eq => Some(std::cmp::Ordering::Equal),
-            TimeComparison::Gt => Some(std::cmp::Ordering::Greater),
+            TimeComparison::Lt => Some(core::cmp::Ordering::Less),
+            TimeComparison::Eq => Some(core::cmp::Ordering::Equal),
+            TimeComparison::Gt => Some(core::cmp::Ordering::Greater),
             TimeComparison::Incomparable => None,
         }
     }
@@ -363,9 +363,9 @@ impl TimeInterval {
     /// [`TimeComparison::Incomparable`] is never returned.
     pub fn compare(t1: &TimeInterval, t2: &TimeInterval) -> TimeComparison {
         match (t1.seconds, t1.useconds).cmp(&(t2.seconds, t2.useconds)) {
-            std::cmp::Ordering::Less => TimeComparison::Lt,
-            std::cmp::Ordering::Greater => TimeComparison::Gt,
-            std::cmp::Ordering::Equal => TimeComparison::Eq,
+            core::cmp::Ordering::Less => TimeComparison::Lt,
+            core::cmp::Ordering::Greater => TimeComparison::Gt,
+            core::cmp::Ordering::Equal => TimeComparison::Eq,
         }
     }
 
@@ -401,12 +401,12 @@ impl TimeInterval {
 }
 
 impl PartialOrd for TimeInterval {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 impl Ord for TimeInterval {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         (self.seconds, self.useconds).cmp(&(other.seconds, other.useconds))
     }
 }

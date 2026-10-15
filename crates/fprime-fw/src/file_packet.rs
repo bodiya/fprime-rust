@@ -502,6 +502,8 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
     use crate::serial::LinearBuffer;
+    use std::vec;
+    use std::vec::Vec;
 
     fn ser(packet: &FilePacket<'_>) -> Vec<u8> {
         let mut buf = LinearBuffer::<1024>::new();

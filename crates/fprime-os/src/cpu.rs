@@ -54,13 +54,13 @@ pub trait CpuInterface: Send + Sync {
 
 /// The front type: the build-time-selected default backend (C++
 /// `Os/Linux/DefaultCpu.cpp`).
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 pub type Cpu = crate::linux::cpu::LinuxCpu;
 
 /// The front type: the build-time-selected default backend (C++
 /// `Os/Stub/DefaultCpu.cpp` — no zero-dependency, `unsafe`-free CPU tick
 /// source exists off Linux).
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(feature = "std", target_os = "linux")))]
 pub type Cpu = crate::stub::cpu::StubCpu;
 
 /// The process-wide CPU instance (C++ `Cpu::getSingleton()`'s
@@ -98,7 +98,7 @@ mod tests {
     // Port of Os/test/ut/cpu/CommonCpuTests.cpp (Basic.Count / Basic.Ticks)
     // against the default backend. The stub backend deliberately fails
     // these, so they only run where the real backend is selected.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     #[test]
     fn default_backend_reports_a_positive_count() {
         let mut count: FwSizeType = 0;
@@ -106,7 +106,7 @@ mod tests {
         assert!(count > 0);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     #[test]
     fn default_backend_reports_ticks_for_every_cpu() {
         let mut count: FwSizeType = 0;

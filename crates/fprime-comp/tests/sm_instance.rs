@@ -13,6 +13,7 @@
 //! component) is a separate machine from the module-level one.
 #![allow(non_snake_case)]
 
+mod no_std_platform;
 mod sm_harness;
 
 use fprime_comp::config::{FwEnumStoreType, FwQueuePriorityType, FwSizeType};
@@ -643,6 +644,7 @@ fn guard_abs_short_signal_data_asserts() {
 /// for real).
 #[test]
 fn guard_abs_dispatches_on_the_component_thread() {
+    no_std_platform::install();
     use SmState_BasicGuardTestAbsType::State;
     let c = GuardAbs::new();
     c.g.set_return_value(true);

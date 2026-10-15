@@ -44,12 +44,12 @@ use crate::port::{
     WatchDogPort,
 };
 use fprime_config::{FwChanIdType, FwEventIdType, FwIndexType, FwOpcodeType, FwPrmIdType};
+use fprime_fw::sync::Arc;
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, ComBuffer, LogBuffer, LogSeverity, ParamBuffer, SerBufAny,
     SerializeStatus, Success, TextLogString, Time, TlmBuffer,
 };
 use fprime_os::RawTime;
-use std::sync::Arc;
 
 /// The FPP `serial` port type: a port call carried as bytes (C++
 /// `Fw::InputPortBase::invokeSerial(LinearBufferBase&)`).
@@ -246,6 +246,8 @@ mod tests {
     use super::*;
     use fprime_fw::{LinearBuffer, SerBuf, TimeBase};
     use std::sync::Mutex;
+    use std::vec;
+    use std::vec::Vec;
 
     /// A component `serial` input: records each call's bytes.
     #[derive(Default)]

@@ -10,12 +10,12 @@
 
 use crate::msg;
 use crate::queued::{ComponentDispatch, MsgDispatchStatus, QueuedBase};
+use alloc::boxed::Box;
 use fprime_config::{FwSizeType, FwTaskPriorityType};
 use fprime_fw::fw_assert;
+use fprime_fw::sync::{Arc, AtomicI32, Ordering};
 use fprime_os::queue::BlockingType;
 use fprime_os::task::{Arguments, Status as TaskStatus, TASK_IDENTIFIER_DEFAULT, Task};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
 
 /// C++ `ActiveComponentBase::Lifecycle` — exact discriminants.
 #[repr(i32)]
@@ -88,7 +88,7 @@ impl ActiveBase {
     ) {
         // Wiring sanity: the loop below dispatches into `component`, which
         // must own this very base.
-        fw_assert!(std::ptr::eq(component.active_base(), self));
+        fw_assert!(core::ptr::eq(component.active_base(), self));
         let comp = Arc::clone(component);
         let name = self.queued.base.get_obj_name();
         let routine = Box::new(move || {
@@ -149,7 +149,11 @@ mod tests {
     use fprime_fw::{LinearBuffer, SerBuf, SerBufAny};
     use fprime_os::queue::Status as QueueStatus;
     use fprime_os::task::TASK_DEFAULT;
+    use std::format;
+    use std::string::String;
     use std::sync::Mutex;
+    use std::vec;
+    use std::vec::Vec;
 
     /// Records lifecycle callbacks and dispatched values in order.
     struct LifeComp {
@@ -234,6 +238,7 @@ mod tests {
 
     #[test]
     fn lifecycle_runs_preamble_messages_finalizer_in_order() {
+        crate::test_platform::install();
         let comp = LifeComp::new();
         assert_eq!(comp.active.lifecycle(), Lifecycle::Created);
         // Enqueue work BEFORE start: it must run after preamble.
@@ -261,6 +266,7 @@ mod tests {
 
     #[test]
     fn dispatch_error_does_not_exit_the_loop() {
+        crate::test_platform::install();
         // C++ parity: DISPATCHING stays in stage for anything != EXIT.
         let comp = LifeComp::new();
         // A malformed message (envelope only, missing the u32 arg).
@@ -290,6 +296,7 @@ mod tests {
 
     #[test]
     fn task_is_named_after_object() {
+        crate::test_platform::install();
         let comp = LifeComp::new();
         comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);
         assert_eq!(comp.active.task().get_name(), "life");

@@ -18,12 +18,12 @@
 use fprime_config::{
     FwChanIdType, FwEventIdType, FwIndexType, FwOpcodeType, FwPrmIdType, FwSizeType,
 };
+use fprime_fw::sync::{Arc, OnceLock};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, ComBuffer, FrameContext, LogBuffer, LogSeverity,
     ParamBuffer, ParamValid, Success, TextLogString, Time, TlmBuffer, fw_assert,
 };
 use fprime_os::RawTime;
-use std::sync::{Arc, OnceLock};
 
 /// A connection endpoint: the target port object plus the port number the
 /// target knows itself by (C++ `InputPortBase::m_portNum`).
@@ -50,8 +50,8 @@ impl<P: ?Sized> Clone for PortRef<P> {
     }
 }
 
-impl<P: ?Sized> std::fmt::Debug for PortRef<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<P: ?Sized> core::fmt::Debug for PortRef<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PortRef")
             .field("port_num", &self.port_num)
             .finish_non_exhaustive()
@@ -68,8 +68,8 @@ pub struct OutputPort<P: ?Sized> {
     conn: OnceLock<PortRef<P>>,
 }
 
-impl<P: ?Sized> std::fmt::Debug for OutputPort<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<P: ?Sized> core::fmt::Debug for OutputPort<P> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("OutputPort")
             .field("connected", &self.is_connected())
             .field("port_num", &self.try_get().map(|p| p.port_num))
@@ -272,6 +272,8 @@ mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Mutex;
+    use std::vec;
+    use std::vec::Vec;
 
     struct Recorder {
         calls: Mutex<Vec<(FwIndexType, u32)>>,

@@ -9,9 +9,7 @@
 
 use fprime_config::{FwEnumStoreType, FwIdType};
 use fprime_fw::ObjectName;
-use std::sync::Mutex;
-use std::sync::PoisonError;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use fprime_fw::sync::{AtomicI32, AtomicU32, Mutex, Ordering};
 
 /// State every component kind carries: object name, runtime id base, and
 /// instance number.
@@ -47,19 +45,13 @@ impl PassiveBase {
 
     /// The object name (a copy; the internal copy can be renamed later).
     pub fn get_obj_name(&self) -> ObjectName {
-        self.name
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.name.lock().clone()
     }
 
     /// Set (rename) the object name — C++ `setObjName`, used by topology
     /// code. Truncates silently to the `ObjectName` capacity.
     pub fn set_obj_name(&self, name: &str) {
-        self.name
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .set(name);
+        self.name.lock().set(name);
     }
 
     /// C++ `setIdBase`.

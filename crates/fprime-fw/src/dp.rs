@@ -293,7 +293,7 @@ impl DpContainer {
     /// borrowed storage).
     pub fn take_buffer(&mut self) -> Buffer {
         self.data_size = 0;
-        std::mem::take(&mut self.buffer)
+        core::mem::take(&mut self.buffer)
     }
 
     /// Shrink the packet buffer to the packet size implied by the header

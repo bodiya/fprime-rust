@@ -18,12 +18,13 @@
 use crate::serial::{
     Deserialize, Endianness, LengthMode, SerBuf, SerBufAny, Serialize, SerializeStatus,
 };
+use alloc::string::String;
+use core::fmt;
 use fprime_config::{
     FILE_NAME_STRING_SIZE, FW_CMD_STRING_MAX_SIZE, FW_FIXED_LENGTH_STRING_SIZE,
     FW_INTERNAL_INTERFACE_STRING_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FW_LOG_TEXT_BUFFER_SIZE,
     FW_OBJ_NAME_BUFFER_SIZE, FW_PARAM_STRING_MAX_SIZE, FW_TLM_STRING_MAX_SIZE, FwSizeStoreType,
 };
-use std::fmt;
 
 /// Effective C-string length of `bytes`: index of the first NUL, or the full
 /// slice length (the C++ `StringUtils::string_length` bounded scan).
@@ -117,7 +118,7 @@ impl<const N: usize> FwString<N> {
 
     /// The content as `&str` when it is valid UTF-8.
     pub fn as_str(&self) -> Option<&str> {
-        std::str::from_utf8(self.as_bytes()).ok()
+        core::str::from_utf8(self.as_bytes()).ok()
     }
 
     /// Replace the content with formatted text, truncating at capacity

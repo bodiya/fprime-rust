@@ -11,6 +11,8 @@
 
 use crate::fw_assert;
 use crate::serial::ExtBuf;
+use alloc::boxed::Box;
+use alloc::vec;
 use fprime_config::FwSignedSizeType;
 
 /// Owned backing storage for a [`Buffer`], recycled through pools.

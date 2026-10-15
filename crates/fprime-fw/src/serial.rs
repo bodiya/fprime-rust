@@ -819,6 +819,7 @@ pub type SmSignalBuffer = LinearBuffer<FW_SM_SIGNAL_BUFFER_MAX_SIZE>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     // ------------------------------------------------------------ primitives
 

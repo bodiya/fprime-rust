@@ -35,6 +35,8 @@
 //! 5. Topology order: construct -> set_id_base -> wire ports ->
 //!    create_queue -> reg_commands -> start -> ... -> exit -> join.
 
+mod no_std_platform;
+
 use fprime_comp::msg;
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, CmdRegPort, CmdResponsePort, ComponentDispatch,
@@ -561,6 +563,7 @@ fn run_in_drop_policy_counts_overflow() {
 /// exit, join — then assert the complete observable behavior.
 #[test]
 fn full_lifecycle_end_to_end() {
+    no_std_platform::install();
     let (comp, ground) = build();
 
     // Phase: reg_commands (before tasks start).
@@ -656,6 +659,7 @@ fn full_lifecycle_end_to_end() {
 /// A failed command must not touch state (response-then-return discipline).
 #[test]
 fn format_error_leaves_state_untouched() {
+    no_std_platform::install();
     let (comp, ground) = build();
     comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);
     let opcode = ID_BASE + OPCODE_SET_VALUE;

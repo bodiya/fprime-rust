@@ -132,6 +132,7 @@ name = "fprime-fw"
 version = "0.1.0"
 dependencies = [
  "fprime-config",
+ "spin",
 ]
 
 [[package]]
@@ -252,6 +253,12 @@ dependencies = [
  "opaque-debug",
  "universal-hash",
 ]
+
+[[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
 
 [[package]]
 name = "subtle"

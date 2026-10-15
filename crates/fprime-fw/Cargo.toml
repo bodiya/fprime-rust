@@ -10,5 +10,17 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+# Hosted build: locks are `std::sync`, the default assert print goes to
+# stderr. Zero third-party dependencies.
+std = []
+# `no_std` + `alloc` build (ROADMAP item 13): locks come from the `spin`
+# crate. Build with `--no-default-features --features spin`. Ignored when
+# `std` is also on (std wins).
+spin = ["dep:spin"]
+
 [dependencies]
 fprime-config.workspace = true
+# Only the lock types the `sync` shim wraps; MSRV 1.71 (ours is 1.85).
+spin = { version = "0.12.3", optional = true, default-features = false, features = ["spin_mutex", "rwlock", "once"] }

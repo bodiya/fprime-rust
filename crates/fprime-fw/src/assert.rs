@@ -13,9 +13,21 @@
 //! and leave the deployment running half-dead. Dev/test builds intentionally
 //! keep the unwind strategy so `#[should_panic]`/`catch_unwind` tests work;
 //! do not rely on surviving a failed `fw_assert!` in flight code.
+//!
+//! `no_std` (ROADMAP item 13): there is no stderr, so the default print
+//! goes to the registered `Fw::Logger` ([`crate::logger::log_message`],
+//! truncated to its 256-byte string like every logger message) and the
+//! panic carries the full message to the platform's `#[panic_handler]`.
+//! Whether that handler aborts, resets or halts is the platform's choice;
+//! it must not resume (fail-stop parity).
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use core::fmt::Write as _;
 use fprime_config::{FW_ASSERT_TEXT_SIZE, FwAssertArgType};
-use std::sync::RwLock;
+
+use crate::sync::RwLock;
 
 /// Swappable assert hook (port of `Fw::AssertHook`). Components like an
 /// `AssertFatalAdapter` register one to emit FATAL events instead of the
@@ -32,9 +44,10 @@ pub trait AssertHook: Send + Sync {
         self.print_assert(&msg);
     }
 
-    /// Print a formatted assert message. Default: stderr.
+    /// Print a formatted assert message. Default: stderr (C++
+    /// `defaultPrintAssert`); in a `no_std` build, the `Fw::Logger`.
     fn print_assert(&self, msg: &str) {
-        eprintln!("{msg}");
+        default_print_assert(msg);
     }
 
     /// Take the assert action. Default: panic — which is the C++
@@ -53,18 +66,12 @@ static ASSERT_HOOK: RwLock<Option<Box<dyn AssertHook>>> = RwLock::new(None);
 /// Install the global assert hook, returning any previously installed hook
 /// (the C++ `registerHook` chain, made explicit).
 pub fn register_assert_hook(hook: Box<dyn AssertHook>) -> Option<Box<dyn AssertHook>> {
-    let mut guard = ASSERT_HOOK
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.replace(hook)
+    ASSERT_HOOK.write().replace(hook)
 }
 
 /// Remove and return the global assert hook (`deregisterHook`).
 pub fn deregister_assert_hook() -> Option<Box<dyn AssertHook>> {
-    let mut guard = ASSERT_HOOK
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    guard.take()
+    ASSERT_HOOK.write().take()
 }
 
 /// Build the standard assert message: `Assert: "file:line" a1 ... aN`,
@@ -73,7 +80,8 @@ pub fn deregister_assert_hook() -> Option<Box<dyn AssertHook>> {
 pub fn format_assert_msg(file: &str, line: u32, args: &[FwAssertArgType]) -> String {
     let mut msg = format!("Assert: \"{file}:{line}\"");
     for arg in args {
-        msg.push_str(&format!(" {arg}"));
+        // Writing to a String cannot fail.
+        let _ = write!(msg, " {arg}");
     }
     if msg.len() >= FW_ASSERT_TEXT_SIZE {
         // truncate on a char boundary at or below the C++ buffer limit
@@ -86,13 +94,24 @@ pub fn format_assert_msg(file: &str, line: u32, args: &[FwAssertArgType]) -> Str
     msg
 }
 
+/// C++ `Fw::defaultPrintAssert`: the message plus a newline on stderr.
+#[cfg(feature = "std")]
+fn default_print_assert(msg: &str) {
+    std::eprintln!("{msg}");
+}
+
+/// `no_std` stand-in for `Fw::defaultPrintAssert`: no stderr exists, so the
+/// message goes to the registered `Fw::Logger` (dropped if none).
+#[cfg(not(feature = "std"))]
+fn default_print_assert(msg: &str) {
+    crate::logger::log_message(msg);
+}
+
 /// Dispatch a failed assertion (the `Fw::SwAssert` path). Called by
 /// [`fw_assert!`](crate::fw_assert); do not call directly except from
 /// custom assert plumbing.
 pub fn assert_failure(file: &str, line: u32, args: &[FwAssertArgType]) {
-    let guard = ASSERT_HOOK
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = ASSERT_HOOK.read();
     match guard.as_ref() {
         Some(hook) => {
             hook.report_assert(file, line, args);
@@ -100,7 +119,7 @@ pub fn assert_failure(file: &str, line: u32, args: &[FwAssertArgType]) {
         }
         None => {
             let msg = format_assert_msg(file, line, args);
-            eprintln!("{msg}");
+            default_print_assert(&msg);
             panic!("{msg}");
         }
     }
@@ -138,7 +157,10 @@ macro_rules! fw_assert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::{String, ToString};
     use std::sync::{Arc, Mutex};
+    use std::vec;
+    use std::vec::Vec;
 
     // Serializes the tests that mutate the global hook against each other.
     static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());

@@ -9,8 +9,14 @@
 //! `default/config`. The type-alias names keep their exact F Prime spelling
 //! for grep-compatibility with the C++ tree.
 
+//!
+//! The crate is unconditionally `#![no_std]` (and needs no `alloc`): it is
+//! nothing but type aliases and constants, so it has no `std` feature to
+//! turn off (ROADMAP item 13; see ARCHITECTURE.md "no_std").
+
 // The Fw* alias names are kept verbatim from the C++ tree.
 #![allow(non_camel_case_types)]
+#![no_std]
 
 // ---------------------------------------------------------------------------
 // Type aliases (unix platform defaults, from PlatformTypes.fpp + FpConfig.fpp)

@@ -37,12 +37,12 @@ pub trait MemoryInterface: Send + Sync {
 
 /// The front type: the build-time-selected default backend (C++
 /// `Os/Linux/DefaultMemory.cpp`).
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 pub type Memory = crate::linux::memory::LinuxMemory;
 
 /// The front type: the build-time-selected default backend (C++
 /// `Os/Stub/DefaultMemory.cpp`).
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(feature = "std", target_os = "linux")))]
 pub type Memory = crate::stub::memory::StubMemory;
 
 /// The process-wide memory instance (C++ `Memory::getSingleton()`'s
@@ -73,7 +73,7 @@ mod tests {
 
     // Port of Os/test/ut/memory/CommonMemoryTests.cpp (Basic.Usage) against
     // the default backend; the stub deliberately reports 0/0.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(feature = "std", target_os = "linux"))]
     #[test]
     fn default_backend_reports_nonzero_usage() {
         let mut usage = Usage::default();

@@ -250,7 +250,7 @@ macro_rules! input_port_adapter {
             "` (the hand-written equivalent of the C++ generated static thunk)."
         )]
         struct $adapter {
-            comp: ::std::sync::Arc<$comp>,
+            comp: $crate::fw::sync::Arc<$comp>,
         }
 
         impl $port for $adapter {
@@ -267,12 +267,12 @@ macro_rules! input_port_adapter {
         impl $comp {
             $(#[$meta])*
             $fvis fn $input(
-                self: &::std::sync::Arc<Self>,
+                self: &$crate::fw::sync::Arc<Self>,
                 port_num: $crate::config::FwIndexType,
             ) -> $crate::PortRef<dyn $port> {
                 $crate::PortRef::new(
-                    ::std::sync::Arc::new($adapter {
-                        comp: ::std::sync::Arc::clone(self),
+                    $crate::fw::sync::Arc::new($adapter {
+                        comp: $crate::fw::sync::Arc::clone(self),
                     }),
                     port_num,
                 )
@@ -364,7 +364,7 @@ macro_rules! async_input_port_adapter {
              equivalent of the C++ generated static thunk + `<port>_preMsgHook`)."
         )]
         struct $adapter {
-            comp: ::std::sync::Arc<$comp>,
+            comp: $crate::fw::sync::Arc<$comp>,
         }
 
         impl $port for $adapter {
@@ -411,12 +411,12 @@ macro_rules! async_input_port_adapter {
         impl $comp {
             $(#[$meta])*
             $fvis fn $input(
-                self: &::std::sync::Arc<Self>,
+                self: &$crate::fw::sync::Arc<Self>,
                 port_num: $crate::config::FwIndexType,
             ) -> $crate::PortRef<dyn $port> {
                 $crate::PortRef::new(
-                    ::std::sync::Arc::new($adapter {
-                        comp: ::std::sync::Arc::clone(self),
+                    $crate::fw::sync::Arc::new($adapter {
+                        comp: $crate::fw::sync::Arc::clone(self),
                     }),
                     port_num,
                 )
@@ -563,9 +563,9 @@ macro_rules! serializable_port {
             }
 
             fn serial_call_adapter(
-                target: ::std::sync::Arc<dyn $crate::serial_port::SerializePort>,
-            ) -> ::std::sync::Arc<Self> {
-                ::std::sync::Arc::new($crate::serial_port::SerialCallAdapter::new(target))
+                target: $crate::fw::sync::Arc<dyn $crate::serial_port::SerializePort>,
+            ) -> $crate::fw::sync::Arc<Self> {
+                $crate::fw::sync::Arc::new($crate::serial_port::SerialCallAdapter::new(target))
             }
         }
     };

@@ -39,6 +39,26 @@
 //!
 //! The integration test `tests/example_component.rs` is the normative
 //! exemplar of how a component is assembled from these pieces.
+//!
+//! # `no_std`
+//!
+//! Like `fprime-fw`, the crate is always `#![no_std]` + `alloc`; the default
+//! `std` feature links `std` back in. With `--no-default-features
+//! --features spin` every module above still builds — passive, queued and
+//! active components, ports, envelopes, escrow, serialize ports, state
+//! machines and the macros — over `spin` locks (`fprime_fw::sync`) and the
+//! `no_std` subset of `fprime-os`. An active component's task, `RawTime`
+//! sampling and blocking queue waits then come from the platform the
+//! deployment registers with `fprime_os::register_platform` (see
+//! `fprime_os::platform` and ARCHITECTURE.md "no_std", ROADMAP item 13).
+
+#![no_std]
+
+extern crate alloc;
+// Unit tests always run on a hosted target, so they get `std` even in a
+// `no_std` build.
+#[cfg(any(feature = "std", test))]
+extern crate std;
 
 pub mod active;
 pub mod escrow;
@@ -75,3 +95,11 @@ pub use serial_port::{SerialCallAdapter, SerializablePort, SerializePort, TypedC
 pub use sm::{
     ExternalSmOverflowHook, ExternalSmSender, ExternalStateMachine, SmOverflowHook, SmSender,
 };
+
+/// The tests' platform (shared with the integration tests): in a `no_std`
+/// test build — still a hosted target — `install()` registers a
+/// `std::thread` `fprime_os::platform::Platform` so active components run
+/// their task through the seam; with `std` it is a no-op.
+#[cfg(test)]
+#[path = "../tests/no_std_platform/mod.rs"]
+pub(crate) mod test_platform;

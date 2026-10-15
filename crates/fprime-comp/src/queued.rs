@@ -10,11 +10,12 @@
 
 use crate::msg::{self, QueueFullPolicy};
 use crate::obj::PassiveBase;
+use alloc::boxed::Box;
+use alloc::vec;
 use fprime_config::{FwEnumStoreType, FwQueuePriorityType, FwSizeType};
+use fprime_fw::sync::{AtomicU64, Mutex, Ordering};
 use fprime_fw::{ExtBuf, SerBufAny, fw_assert};
 use fprime_os::queue::{BlockingType, Queue, Status as QueueStatus};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 
 /// C++ `Fw::QueuedComponentBase::MsgDispatchStatus` — exact discriminants.
 #[must_use]
@@ -98,10 +99,7 @@ impl QueuedBase {
             .queue
             .create(name.as_str().unwrap_or(""), depth, msg_size);
         fw_assert!(status == QueueStatus::OpOk, status as i32);
-        let mut scratch = self
-            .msg_buffer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut scratch = self.msg_buffer.lock();
         *scratch = vec![0u8; msg_size as usize].into_boxed_slice();
     }
 
@@ -176,10 +174,7 @@ impl QueuedBase {
         component: &dyn ComponentDispatch,
         blocking: BlockingType,
     ) -> MsgDispatchStatus {
-        let mut scratch = self
-            .msg_buffer
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut scratch = self.msg_buffer.lock();
         let mut actual_size: FwSizeType = 0;
         let mut priority: FwQueuePriorityType = 0;
         let status = self
@@ -230,6 +225,7 @@ mod tests {
     use fprime_fw::{LinearBuffer, SerBuf};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::Mutex as StdMutex;
+    use std::vec::Vec;
 
     /// Records (msg_type, port_num, payload u32) triples; message type 9
     /// re-enqueues a message (for the snapshot-bound test).

@@ -11,11 +11,11 @@ use crate::port::{
     TimePort, TlmPort,
 };
 use fprime_config::{FwChanIdType, FwEventIdType, FwIdType, FwOpcodeType, FwPrmIdType};
+use fprime_fw::sync::{AtomicU32, Ordering};
 use fprime_fw::{
     CmdResponse, Endianness, LogBuffer, LogSeverity, ParamBuffer, ParamValid, Serialize,
     SerializeStatus, TextLogString, Time, TlmBuffer, fw_assert,
 };
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// C++ `getTime()`: invoke the time port if connected, else return the
 /// default (zero) time.
@@ -274,7 +274,10 @@ mod tests {
     use super::*;
     use fprime_config::FwIndexType;
     use fprime_fw::{SerBuf, TimeBase};
+    use std::string::{String, ToString};
     use std::sync::{Arc, Mutex};
+    use std::vec;
+    use std::vec::Vec;
 
     /// (id, time, severity, raw arg bytes)
     type EventRecord = (FwEventIdType, Time, LogSeverity, Vec<u8>);

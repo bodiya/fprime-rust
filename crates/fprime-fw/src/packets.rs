@@ -318,6 +318,7 @@ mod tests {
     use super::*;
     use crate::serial::LinearBuffer;
     use crate::time::TimeBase;
+    use std::vec;
 
     fn test_time() -> Time {
         Time::new(TimeBase::TbWorkstationTime, 0, 0x0000_0001, 0x0000_0002)

@@ -17,14 +17,27 @@
 //! retries without priority/affinity after one global log notice — the same
 //! one-time notice is emitted here). Stack size IS honored via
 //! `std::thread::Builder::stack_size`.
+//!
+//! `no_std` (ROADMAP item 13): the state machine above is unchanged; the
+//! thread spawn, join and delay go through the deployment's
+//! `platform::Platform`, which receives priority, stack size and
+//! affinity verbatim (no degrade notice — the platform decides). With no
+//! platform registered, [`Task::start`] and [`Task::delay`] return
+//! [`Status::NotSupported`].
 
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
 use fprime_config::{FwSizeType, FwTaskIdType, FwTaskPriorityType};
 use fprime_fw::TimeInterval;
 use fprime_fw::fw_assert;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
-use std::time::Duration;
+use fprime_fw::sync::{Arc, AtomicU64, Mutex, MutexGuard, Ordering};
+
+/// The backend's handle to a started task.
+#[cfg(feature = "std")]
+type JoinHandle = std::thread::JoinHandle<()>;
+/// The backend's handle to a started task.
+#[cfg(not(feature = "std"))]
+type JoinHandle = Box<dyn crate::platform::TaskHandle>;
 
 /// Port of `Os::TaskInterface::Status` (Os/Task.hpp) — exact C++
 /// discriminants.
@@ -135,17 +148,20 @@ struct Shared {
 static NUM_TASKS: AtomicU64 = AtomicU64::new(0);
 /// One-time degraded-permissions notice flag (C++ PosixTask
 /// `s_permissions_reported`).
-static DEGRADE_NOTICE_REPORTED: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "std")]
+static DEGRADE_NOTICE_REPORTED: fprime_fw::sync::AtomicBool =
+    fprime_fw::sync::AtomicBool::new(false);
 
 /// The F Prime task (see module docs). Methods take `&self`; a `Task` is
 /// shareable as `Arc<Task>`.
 pub struct Task {
     shared: Arc<Mutex<Shared>>,
-    handle: Mutex<Option<JoinHandle<()>>>,
+    handle: Mutex<Option<JoinHandle>>,
 }
 
 fn lock_shared(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared.lock().unwrap_or_else(PoisonError::into_inner)
+    // Poison-recovering in the std build (see `fprime_fw::sync`).
+    shared.lock()
 }
 
 impl Task {
@@ -176,7 +192,9 @@ impl Task {
         }
         // C++ parity: PosixTask silently degrades priority/affinity on
         // EPERM with one global notice. std::thread cannot express them at
-        // all, so the degrade path is unconditional here.
+        // all, so the degrade path is unconditional here. (A `no_std`
+        // platform receives them and decides itself.)
+        #[cfg(feature = "std")]
         if (arguments.priority != TASK_PRIORITY_DEFAULT || arguments.cpu_affinity != TASK_DEFAULT)
             && !DEGRADE_NOTICE_REPORTED.swap(true, Ordering::Relaxed)
         {
@@ -200,20 +218,18 @@ impl Task {
             routine();
         };
 
-        let mut builder = std::thread::Builder::new().name(arguments.name);
-        if arguments.stack_size != TASK_DEFAULT {
-            builder = builder.stack_size(arguments.stack_size as usize);
-        }
-        match builder.spawn(wrapper) {
+        let priority = arguments.priority;
+        match spawn(Arguments {
+            routine: Box::new(wrapper),
+            ..arguments
+        }) {
             Ok(handle) => {
-                *self.handle.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
-                lock_shared(&self.shared).priority = arguments.priority;
+                *self.handle.lock() = Some(handle);
+                lock_shared(&self.shared).priority = priority;
                 NUM_TASKS.fetch_add(1, Ordering::Relaxed);
                 Status::OpOk
             }
-            // Thread spawn fails on resource exhaustion (EAGAIN in C++ maps
-            // to ERROR_RESOURCES).
-            Err(_) => Status::ErrorResources,
+            Err(status) => status,
         }
     }
 
@@ -228,19 +244,11 @@ impl Task {
         if state != State::Running && state != State::Starting {
             return Status::InvalidState;
         }
-        let handle = self
-            .handle
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let handle = self.handle.lock().take();
         let status = match handle {
             // No underlying thread: PosixTask::join returns INVALID_HANDLE.
             None => Status::InvalidHandle,
-            Some(handle) => match handle.join() {
-                Ok(()) => Status::OpOk,
-                // The routine panicked: pthread_join failure equivalent.
-                Err(_) => Status::JoinError,
-            },
+            Some(handle) => join_handle(handle),
         };
         let mut shared = lock_shared(&self.shared);
         shared.state = if status == Status::OpOk {
@@ -299,12 +307,60 @@ impl Task {
     /// C++ parity: `TimeInterval` carries (seconds, MICROseconds); nanosleep
     /// EINTR-resume is handled by `std::thread::sleep` internally.
     pub fn delay(interval: TimeInterval) -> Status {
-        std::thread::sleep(Duration::new(
-            u64::from(interval.get_seconds()),
-            interval.get_useconds().saturating_mul(1000),
-        ));
-        Status::OpOk
+        #[cfg(feature = "std")]
+        {
+            std::thread::sleep(std::time::Duration::new(
+                u64::from(interval.get_seconds()),
+                interval.get_useconds().saturating_mul(1000),
+            ));
+            Status::OpOk
+        }
+        #[cfg(not(feature = "std"))]
+        match crate::platform::get() {
+            Some(platform) => platform.delay(interval),
+            None => Status::NotSupported,
+        }
     }
+}
+
+/// Start the (already state-machine-wrapped) routine on a `std::thread`.
+#[cfg(feature = "std")]
+fn spawn(arguments: Arguments) -> Result<JoinHandle, Status> {
+    let mut builder = std::thread::Builder::new().name(arguments.name);
+    if arguments.stack_size != TASK_DEFAULT {
+        builder = builder.stack_size(arguments.stack_size as usize);
+    }
+    // Thread spawn fails on resource exhaustion (EAGAIN in C++ maps to
+    // ERROR_RESOURCES).
+    builder
+        .spawn(arguments.routine)
+        .map_err(|_| Status::ErrorResources)
+}
+
+/// Start the (already state-machine-wrapped) routine through the
+/// registered platform; [`Status::NotSupported`] without one.
+#[cfg(not(feature = "std"))]
+fn spawn(arguments: Arguments) -> Result<JoinHandle, Status> {
+    match crate::platform::get() {
+        Some(platform) => platform.start_task(arguments),
+        None => Err(Status::NotSupported),
+    }
+}
+
+/// Join a `std::thread`.
+#[cfg(feature = "std")]
+fn join_handle(handle: JoinHandle) -> Status {
+    match handle.join() {
+        Ok(()) => Status::OpOk,
+        // The routine panicked: pthread_join failure equivalent.
+        Err(_) => Status::JoinError,
+    }
+}
+
+/// Join through the platform's task handle.
+#[cfg(not(feature = "std"))]
+fn join_handle(handle: JoinHandle) -> Status {
+    handle.join()
 }
 
 impl Default for Task {
@@ -317,10 +373,11 @@ impl Default for Task {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn lifecycle_not_started_to_exited() {
+        crate::test_platform::install();
         let task = Task::new();
         assert_eq!(task.get_state(), State::NotStarted);
         // join before start is INVALID_STATE.
@@ -354,6 +411,7 @@ mod tests {
     // finish before start() returns; join() from Starting is still legal.
     #[test]
     fn join_legal_from_starting_even_if_routine_already_finished() {
+        crate::test_platform::install();
         let task = Task::new();
         let status = task.start(Arguments::new("fast_task", Box::new(|| {})));
         assert_eq!(status, Status::OpOk);
@@ -365,6 +423,7 @@ mod tests {
 
     #[test]
     fn join_on_panicked_routine_is_join_error_and_unknown_state() {
+        crate::test_platform::install();
         let task = Task::new();
         let status = task.start(Arguments::new(
             "panicking_task",
@@ -377,6 +436,7 @@ mod tests {
 
     #[test]
     fn priority_and_stack_are_recorded() {
+        crate::test_platform::install();
         let task = Task::new();
         let mut arguments = Arguments::new("configured_task", Box::new(|| {}));
         arguments.priority = 42;
@@ -388,6 +448,7 @@ mod tests {
 
     #[test]
     fn delay_sleeps_at_least_the_interval() {
+        crate::test_platform::install();
         let start = Instant::now();
         assert_eq!(Task::delay(TimeInterval::new(0, 20_000)), Status::OpOk);
         assert!(start.elapsed() >= Duration::from_millis(20));
@@ -395,6 +456,7 @@ mod tests {
 
     #[test]
     fn num_tasks_counts_starts() {
+        crate::test_platform::install();
         let before = Task::get_num_tasks();
         let task = Task::new();
         assert_eq!(

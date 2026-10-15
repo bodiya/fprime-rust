@@ -15,6 +15,9 @@
 //!   big-endian by default (`FW_RAW_TIME_SERIALIZATION_MAX_SIZE = 8`), with
 //!   the seconds truncated-cast from the full internal value (C++ parity:
 //!   `static_cast<U32>(tv_sec)`).
+//!
+//! `no_std` (ROADMAP item 13): [`RawTime::now`] reads
+//! `platform::Platform::raw_time_now` instead of `SystemTime`.
 
 use fprime_fw::{
     Deserialize, Endianness, SerBuf, SerBufAny, Serialize, SerializeStatus, TimeInterval,
@@ -79,6 +82,7 @@ impl RawTime {
     /// Sample the wall clock (port of `now`; `clock_gettime(CLOCK_REALTIME)`
     /// semantics via `SystemTime`).
     pub fn now(&mut self) -> Status {
+        #[cfg(feature = "std")]
         match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(duration) => {
                 self.seconds = duration.as_secs();
@@ -87,6 +91,16 @@ impl RawTime {
             }
             // A pre-epoch clock: nothing in the C++ table fits better.
             Err(_) => Status::OtherError,
+        }
+        // `no_std`: the platform's clock; NOT_SUPPORTED without a platform.
+        #[cfg(not(feature = "std"))]
+        match crate::platform::get().map(|platform| platform.raw_time_now()) {
+            Some(Ok(time)) => {
+                *self = time;
+                Status::OpOk
+            }
+            Some(Err(status)) => status,
+            None => Status::NotSupported,
         }
     }
 
@@ -272,6 +286,7 @@ mod tests {
 
     #[test]
     fn now_advances() {
+        crate::test_platform::install();
         let mut first = RawTime::new();
         let mut second = RawTime::new();
         assert_eq!(first.now(), Status::OpOk);

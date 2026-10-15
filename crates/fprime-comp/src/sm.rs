@@ -46,11 +46,11 @@
 use crate::msg::{self, QueueFullPolicy};
 use crate::queued::QueuedBase;
 use fprime_config::{FwEnumStoreType, FwQueuePriorityType};
+use fprime_fw::sync::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use fprime_fw::{
     Endianness, LinearBuffer, SerBuf, SerBufAny, Serialize, SmSignalBuffer, fw_assert,
 };
 use fprime_os::queue::Status as QueueStatus;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 /// Size of the state-machine signal header that follows the envelope
 /// header: `sm_id` + `signal`, both `FwEnumStoreType` (C++
@@ -129,9 +129,9 @@ impl Serialize for StrArg<'_> {
 /// send side can split a UTF-8 sequence; the incomplete tail is dropped.
 pub fn str_of<const N: usize>(s: &fprime_fw::FwString<N>) -> &str {
     let bytes = s.as_bytes();
-    match std::str::from_utf8(bytes) {
+    match core::str::from_utf8(bytes) {
         Ok(text) => text,
-        Err(e) => std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or(""),
+        Err(e) => core::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or(""),
     }
 }
 
@@ -621,6 +621,8 @@ pub fn read_external_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
+    use std::vec::Vec;
 
     /// A five-node tree:
     /// ```text

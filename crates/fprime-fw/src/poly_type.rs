@@ -143,6 +143,7 @@ impl Deserialize for PolyType {
 mod tests {
     use super::*;
     use crate::serial::LinearBuffer;
+    use std::vec::Vec;
 
     fn ser(p: &PolyType) -> (Vec<u8>, SerializeStatus) {
         let mut buf = LinearBuffer::<16>::new();

@@ -15,11 +15,12 @@
 //! `Fw::Buffer::serializeTo` lays the buffer out, with the token in the
 //! pointer slot.
 
+use alloc::vec::Vec;
 use fprime_config::FwSizeType;
+use fprime_fw::sync::Mutex;
 use fprime_fw::{
     Buffer, Deserialize, Endianness, FppSized, SerBufAny, Serialize, SerializeStatus, fw_assert,
 };
-use std::sync::{Mutex, PoisonError};
 
 /// Token layout: `[generation: u32][slot index: u32]`. The generation
 /// counter catches stale/double-claimed tokens (`fw_assert`), the moral
@@ -62,7 +63,7 @@ impl BufferEscrow {
     /// Deposit a buffer, returning the token to serialize into the queue
     /// message (in the position C++ serializes the buffer pointer).
     pub fn deposit(&self, buffer: Buffer) -> u64 {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock();
         let index = match state.free.pop() {
             Some(index) => {
                 let slot = &mut state.slots[index];
@@ -88,7 +89,7 @@ impl BufferEscrow {
     /// already-claimed token (the safe analogue of dereferencing a bad
     /// pointer in the C++ message).
     pub fn claim(&self, token: u64) -> Buffer {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock();
         let index = (token & 0xFFFF_FFFF) as usize;
         let generation = (token >> 32) as u32;
         fw_assert!(index < state.slots.len(), index as i32);
@@ -109,7 +110,7 @@ impl BufferEscrow {
 
     /// Number of buffers currently held.
     pub fn len(&self) -> usize {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.state.lock();
         state.slots.iter().filter(|s| s.buffer.is_some()).count()
     }
 

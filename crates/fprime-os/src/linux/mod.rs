@@ -6,7 +6,7 @@
 //! stack buffers (no heap allocation per sample). The parsing is plain std
 //! code, so the module is compiled on every host (the tests feed it crafted
 //! files); only the default-backend selection in [`crate::cpu`] /
-//! [`crate::memory`] is `cfg(target_os = "linux")`.
+//! [`crate::memory`] is `cfg(all(feature = "std", target_os = "linux"))`.
 
 pub mod cpu;
 pub mod memory;
