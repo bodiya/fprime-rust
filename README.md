@@ -195,8 +195,12 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-Nothing in the pinned upstream `Svc` tree is unported. `CfdpManager` is
-ported, but upstream's Ref uses `FileHandling` rather than
+Sixteen upstream `Svc` components are not ported yet (listed under "Not yet
+ported" in [`docs/ROADMAP.md`](docs/ROADMAP.md)): `ActivePhaser`,
+`AssertFatalAdapter`, `BufferLogger`, `BufferRepeater`, `ChronoTime`,
+`CmdSplitter`, `ComRetry`, `FileDispatcher`, `FileWorker`, `OsTime`,
+`PassThroughRouter`, `PolyDb`, `SeqDispatcher`, `StaticMemory`, `Version`
+and `WasmSequencer`. `CfdpManager` is ported, but upstream's Ref uses `FileHandling` rather than
 `FileHandlingCfdp`, so neither Ref instantiates it (a two-instance
 transfer test stands in for it). The SDLS security
 layer is ported, but `AesGcmEncryptor`/`AesGcmDecryptor` are only compiled
@@ -210,7 +214,7 @@ the Rust Ref instantiates it, and the Fpy compiler (`fprime-fpyc`) is not
 part of fprime-gds 4.3.1, so its tests build sequences byte by byte.
 `no_std`: `fprime-config`, `fprime-fw`, `fprime-comp`, a subset of
 `fprime-os` (queue, task, mutex, condition variable, raw time, interval
-timer, stub cpu/memory), `fprime-utils` but its two file modules, and every
+timer, stub cpu/memory), `fprime-utils` except its two file modules, and every
 `fprime-svc` component that needs no file system or console (rate groups,
 command dispatch, events, telemetry, health, the F Prime and CCSDS comms
 stacks, the hub, the text loggers, `FatalHandler`, `PosixTime`,

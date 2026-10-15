@@ -346,6 +346,23 @@ subsystems, then the strategic changes.
   wire (the metadata closure-requested bit, the ACK(EOF) subtype); see
   `docs/api-notes.md`.
 
+## Not yet ported
+
+A sweep of the pinned upstream `Svc/` tree (every directory with a
+component model) against this workspace found sixteen components that were
+never on this roadmap and are not ported. Sizes are upstream's non-test C++.
+
+- **Small, self-contained** (under ~250 lines each): `AssertFatalAdapter`,
+  `BufferRepeater`, `ChronoTime`, `CmdSplitter` (the usual feeder of a
+  `GenericHub`'s `cmdDispIn`), `ComRetry`, `OsTime`, `PassThroughRouter`,
+  `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`.
+- **File services:** `BufferLogger` (with `Os::ValidatedFile`),
+  `FileWorker` and `FileDispatcher`.
+- **`WasmSequencer`** (~2,800 lines). Upstream is itself a C++ shim over
+  Rust crates (`fprime_spacewasm`, MSRV 1.87), so a port means taking those
+  crates as a dependency and raising this workspace's MSRV from 1.85 — a
+  policy decision, like the `zlib` / `aes-gcm` features.
+
 ## Strategic
 
 Nothing remains in this section: the `no_std` work it listed is done (see
