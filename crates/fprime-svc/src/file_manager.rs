@@ -71,7 +71,7 @@
 //! fail-open): until `configure` is called every command is rejected, with
 //! an empty `sandboxDir` in the event. Upstream's `FileHandling`
 //! subtopology configures `"/"` (unrestricted) in its `configComponents`
-//! phase, and the Rust `Ref` topology does the same.
+//! phase; the Rust `Ref` topology confines it to its data directory.
 
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComponentDispatch, EventGlue, MsgDispatchStatus,

@@ -1700,9 +1700,9 @@ and stop at the first rejection; ListDirectory checks busy first; GenerateDp che
 busy, then the DP ports, then clamps the chunk size, then the sandbox.
 
 Unlike `Os::SandboxedFile`, the component is fail-CLOSED: unconfigured, it rejects
-every command with an empty `sandboxDir`. The Ref configures `"/"`
-(`FILE_MANAGER_SANDBOX_DIR` in `topology.rs`), mirroring the `configComponents` phase
-of upstream's `FileHandling` subtopology. Resolution is lexical, so a symlink inside
+every command with an empty `sandboxDir`. Upstream's `FileHandling` subtopology
+configures `"/"` (unrestricted); the Rust Ref deliberately configures its data
+directory instead, as it already does for `prmDb` and `fileDownlink`. Resolution is lexical, so a symlink inside
 the sandbox can point outside it, and an empty path is always rejected.
 Deviation: non-UTF-8 paths are rejected (the Rust path/file APIs take `&str`).
 

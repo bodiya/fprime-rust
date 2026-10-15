@@ -48,7 +48,8 @@ subsystems, then the strategic changes.
 - **`FileManager` command-path sandbox** (item 2). Port of upstream
   nasa/fprime#5850: `configure(sandboxDir)`, every command path resolved and
   contained before use, `PathOutsideSandbox`, fail-closed when unconfigured.
-  The Ref configures `/`, as upstream's `FileHandling` subtopology does.
+  The Ref confines it to the deployment's data directory (upstream's
+  `FileHandling` subtopology configures `/`, i.e. unrestricted).
 - **`Os::ValidateFile`** (item 3), as `fprime_utils::validate_file`;
   `ComLogger` uses it. Porting it showed that upstream's `CRCChecker` has
   written big-endian `.CRC32` sidecars since nasa/fprime#5775, so

@@ -104,27 +104,30 @@ fn file_manager_create_directory_end_to_end() {
 /// subtopology does (`FileHandlingConfig.Paths.sandboxDir`): a path OUTSIDE
 /// the deployment's data directory is still accepted end to end.
 #[test]
-fn file_manager_sandbox_is_open_like_the_file_handling_subtopology() {
+fn file_manager_is_confined_to_the_data_directory() {
     let harness = Harness::up();
+    let sandbox = harness
+        .topology
+        .file_manager
+        .sandbox_directory()
+        .expect("the Ref configures the FileManager sandbox");
     assert_eq!(
-        harness
-            .topology
-            .file_manager
-            .sandbox_directory()
-            .as_ref()
-            .and_then(|d| d.as_str()),
-        Some("/")
+        sandbox.as_str(),
+        Some(format!("{}/", harness.data_dir()).as_str())
     );
-    // A sibling of the data directory, so not inside it.
+
+    // A sibling of the data directory shares its prefix but is outside it.
     let outside = format!("{}_x", harness.data_dir());
     assert!(!std::path::Path::new(&outside).exists());
-
     let create = opcode(FILE_MANAGER_BASE_ID, FileManager::OPCODE_CREATE_DIRECTORY);
-    run_command(&harness, create, &cmd_string_arg(&outside));
-    assert!(std::path::Path::new(&outside).is_dir());
-    assert!(!harness.saw_event(FILE_MANAGER_BASE_ID + FileManager::EVENTID_PATH_OUTSIDE_SANDBOX));
+    harness.inject(&build_command_frame(create, &cmd_string_arg(&outside)));
+    let rejected = FILE_MANAGER_BASE_ID + FileManager::EVENTID_PATH_OUTSIDE_SANDBOX;
+    assert!(
+        harness.tick_until(|| harness.saw_event(rejected)),
+        "expected PathOutsideSandbox"
+    );
+    assert!(!std::path::Path::new(&outside).exists());
 
-    std::fs::remove_dir(&outside).unwrap();
     harness.topology.teardown();
 }
 
