@@ -1,6 +1,7 @@
 //! Port of `Utils::Hash` (CRC32 implementation) and `Utils::HashBuffer`.
 //!
 //! C++ sources: `Utils/Hash/Crc32/Crc32.cpp`, `Utils/Hash/Crc32/HashImpl.cpp`,
+//! `Utils/Hash/HashCommon.cpp` (the file-extension helpers),
 //! `Utils/Hash/HashBuffer.hpp`, `Utils/Hash/HashBufferCommon.cpp`.
 //! Analysis: `docs/cpp-analysis/utils-misc.md` (Utils::Hash section) and
 //! `docs/cpp-analysis/svc-comms.md` (Utils::Hash CRC32 section).
@@ -10,10 +11,11 @@
 //! table-driven register update WITHOUT the final complement; `finalize`
 //! returns `!register` (the standard CRC-32 value) without mutating state.
 
-use fprime_fw::fw_assert;
+use fprime_config::FwSizeType;
 use fprime_fw::serial::{
     Deserialize, Endianness, LinearBuffer, SerBuf, SerBufAny, Serialize, SerializeStatus,
 };
+use fprime_fw::{FwString, StringFormatStatus, fw_assert};
 
 /// Size of a hash digest in bytes (C++ `HASH_DIGEST_LENGTH`).
 pub const HASH_DIGEST_LENGTH: usize = 4;
@@ -218,6 +220,53 @@ impl Hash {
         h.update(data);
         h.finalize()
     }
+
+    /// The file extension of the supported hash type, `".CRC32"`
+    /// (C++ static `Hash::getFileExtensionString`, `HashCommon.cpp`).
+    pub const fn get_file_extension_string() -> &'static str {
+        HASH_EXTENSION_STRING
+    }
+
+    /// Write `<base_name><extension>` into `extended_name`
+    /// (C++ static `Hash::addFileExtension`, `HashCommon.cpp`:
+    /// `extendedName.format("%s%s", baseName.toChar(), HASH_EXTENSION_STRING)`).
+    ///
+    /// `base_name` is the content of the C++ `const Fw::ConstStringBase&`
+    /// (pass `s.as_bytes()` for an [`FwString`]). Like `%s` on `toChar()`,
+    /// it is read up to its first NUL byte.
+    ///
+    /// C++ parity (`Fw::stringFormat` over `vsnprintf`): when the result does
+    /// not fit in `extended_name` (more than `N` bytes), the status is
+    /// [`StringFormatStatus::Overflowed`] and `extended_name` holds the
+    /// result TRUNCATED to `N` bytes — not an empty string; otherwise it is
+    /// [`StringFormatStatus::Success`]. The other `FormatStatus` values are
+    /// unreachable here (no null destination, null format string or
+    /// `vsnprintf` error exist in this port).
+    pub fn add_file_extension<const N: usize>(
+        base_name: &[u8],
+        extended_name: &mut FwString<N>,
+    ) -> StringFormatStatus {
+        let base_len = base_name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(base_name.len());
+        // `set_bytes`/`append` truncate byte-wise at capacity, as vsnprintf
+        // does at `capacity - 1` characters plus the terminator.
+        extended_name.set_bytes(&base_name[..base_len]);
+        extended_name.append(HASH_EXTENSION_STRING);
+        if base_len + HASH_EXTENSION_STRING.len() > FwString::<N>::max_length() {
+            StringFormatStatus::Overflowed
+        } else {
+            StringFormatStatus::Success
+        }
+    }
+
+    /// The length of the file extension string, without a terminator
+    /// (C++ static `Hash::getFileExtensionLength`:
+    /// `sizeof(HASH_EXTENSION_STRING) - 1`).
+    pub const fn get_file_extension_length() -> FwSizeType {
+        HASH_EXTENSION_STRING.len() as FwSizeType
+    }
 }
 
 impl Default for Hash {
@@ -335,5 +384,71 @@ mod tests {
     fn extension_and_digest_constants() {
         assert_eq!(HASH_EXTENSION_STRING, ".CRC32");
         assert_eq!(HASH_DIGEST_LENGTH, 4);
+    }
+
+    #[test]
+    fn file_extension_string_and_length() {
+        assert_eq!(Hash::get_file_extension_string(), HASH_EXTENSION_STRING);
+        // sizeof(HASH_EXTENSION_STRING) - 1: the terminator is not counted.
+        assert_eq!(Hash::get_file_extension_length(), 6);
+    }
+
+    #[test]
+    fn add_file_extension_appends_extension() {
+        let mut extended = fprime_fw::FileNameString::new();
+        assert_eq!(
+            Hash::add_file_extension(b"seq/file.bin", &mut extended),
+            StringFormatStatus::Success
+        );
+        assert_eq!(extended, "seq/file.bin.CRC32");
+
+        // The previous content is replaced, not appended to (format()).
+        assert_eq!(
+            Hash::add_file_extension(b"", &mut extended),
+            StringFormatStatus::Success
+        );
+        assert_eq!(extended, ".CRC32");
+    }
+
+    #[test]
+    fn add_file_extension_exact_fit_succeeds() {
+        // 4 + 6 == capacity 10: fits exactly (vsnprintf needs 10 < 11).
+        let mut extended = FwString::<10>::new();
+        assert_eq!(
+            Hash::add_file_extension(b"abcd", &mut extended),
+            StringFormatStatus::Success
+        );
+        assert_eq!(extended, "abcd.CRC32");
+    }
+
+    #[test]
+    fn add_file_extension_overflow_truncates() {
+        // C++ parity: vsnprintf keeps the first capacity characters and
+        // stringFormat reports OVERFLOWED; the name is NOT emptied.
+        let mut extended = FwString::<10>::new();
+        assert_eq!(
+            Hash::add_file_extension(b"abcde", &mut extended),
+            StringFormatStatus::Overflowed
+        );
+        assert_eq!(extended, "abcde.CRC3");
+
+        // A base longer than the destination keeps only its prefix.
+        assert_eq!(
+            Hash::add_file_extension(b"0123456789AB", &mut extended),
+            StringFormatStatus::Overflowed
+        );
+        assert_eq!(extended, "0123456789");
+    }
+
+    #[test]
+    fn add_file_extension_stops_at_nul() {
+        // `%s` on `toChar()` stops at the first NUL; only the prefix counts
+        // toward the length.
+        let mut extended = FwString::<10>::new();
+        assert_eq!(
+            Hash::add_file_extension(b"abcd\0zzzzzzzz", &mut extended),
+            StringFormatStatus::Success
+        );
+        assert_eq!(extended, "abcd.CRC32");
     }
 }

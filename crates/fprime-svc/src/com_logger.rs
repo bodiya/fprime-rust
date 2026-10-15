@@ -45,7 +45,7 @@ use fprime_fw::{
     SerBuf, SerBufAny, SerializeStatus, fw_assert, fw_try,
 };
 use fprime_os::file::{self, File, Mode, WaitType};
-use fprime_utils::hash::HASH_EXTENSION_STRING;
+use fprime_utils::hash::Hash;
 use fprime_utils::validate_file;
 use std::sync::{Arc, Mutex};
 
@@ -328,7 +328,7 @@ impl ComLogger {
             timestamp.get_seconds(),
             timestamp.get_useconds()
         );
-        let hash_name = format!("{name}{HASH_EXTENSION_STRING}");
+        let hash_name = format!("{name}{}", Hash::get_file_extension_string());
         // C++ parity: both format() statuses are asserted.
         fw_assert!(
             name.len() <= FileNameString::max_length(),
@@ -623,7 +623,6 @@ mod tests {
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, LogTextPort, TimePort};
     use fprime_fw::{TextLogString, Time, TimeBase};
     use fprime_os::task::TASK_DEFAULT;
-    use fprime_utils::hash::Hash;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -803,7 +802,11 @@ mod tests {
         // Sidecar: 4 BIG-ENDIAN bytes of the CRC-32 of the .com file.
         let crc = Hash::hash_u32(&[0x00, 0x03, 0xAA, 0xBB, 0xCC, 0x00, 0x01, 0x01]);
         assert_eq!(
-            std::fs::read(format!("{expected_name}.CRC32")).unwrap(),
+            std::fs::read(format!(
+                "{expected_name}{}",
+                Hash::get_file_extension_string()
+            ))
+            .unwrap(),
             crc.to_be_bytes().to_vec()
         );
 
@@ -862,7 +865,7 @@ mod tests {
         assert_eq!(std::fs::read(&second).unwrap(), vec![0, 3, 7, 8, 9]);
         // The rotated-away file gets its sidecar immediately; the still-open
         // one gets it when the component is dropped.
-        assert!(std::fs::metadata(format!("{first}.CRC32")).is_ok());
+        assert!(std::fs::metadata(format!("{first}{}", Hash::get_file_extension_string())).is_ok());
     }
 
     #[test]
@@ -879,7 +882,7 @@ mod tests {
         assert_eq!(std::fs::read(&name).unwrap(), vec![0, 2, 9, 9]);
         let crc = Hash::hash_u32(&[0, 2, 9, 9]);
         assert_eq!(
-            std::fs::read(format!("{name}.CRC32")).unwrap(),
+            std::fs::read(format!("{name}{}", Hash::get_file_extension_string())).unwrap(),
             crc.to_be_bytes().to_vec()
         );
         // Gotcha: the destructor path emits NO FileClosed event.

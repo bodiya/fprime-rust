@@ -395,9 +395,7 @@ mod tests {
         }
     }
 
-    /// Port of `CRCCheckerTest.GoldenValue` (the `Utils::Hash` file-extension
-    /// helpers it also exercises are not ported; see `hash`), plus the
-    /// literal sidecar bytes.
+    /// Port of `CRCCheckerTest.GoldenValue`, plus the literal sidecar bytes.
     #[test]
     fn golden_value() {
         let dir = TempDir::new("golden");
@@ -424,6 +422,23 @@ mod tests {
         let on_disk = fs::read(sidecar(&test_file)).unwrap();
         assert_eq!(on_disk, [0xCB, 0xF4, 0x39, 0x26]);
         assert_eq!(on_disk, buffer.as_slice());
+
+        // File extension helpers
+        assert_eq!(Hash::get_file_extension_string(), HASH_EXTENSION_STRING);
+        assert_eq!(
+            Hash::get_file_extension_length(),
+            HASH_EXTENSION_STRING.len() as FwSizeType
+        );
+        let mut extended = FileNameString::new();
+        // C++ ignores the status here; the name fits, so it is SUCCESS.
+        assert_eq!(
+            Hash::add_file_extension(
+                FileNameString::from(test_file.as_str()).as_bytes(),
+                &mut extended
+            ),
+            fprime_fw::StringFormatStatus::Success
+        );
+        assert_eq!(extended.as_str(), Some(sidecar(&test_file).as_str()));
     }
 
     /// Port of `CRCCheckerTest.MissingDataFile`.
@@ -568,7 +583,7 @@ mod tests {
     #[test]
     fn file_name_too_long() {
         let dir = TempDir::new("toolong");
-        let ext = HASH_EXTENSION_STRING.len();
+        let ext = Hash::get_file_extension_length() as usize;
         // Fw::FileNameString holds FileNameStringSize characters.
         assert_eq!(FileNameString::max_length(), FILE_NAME_STRING_SIZE);
         let longest_ok = FILE_NAME_STRING_SIZE - ext;
