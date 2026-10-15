@@ -3653,3 +3653,115 @@ worker verify it and read it back, and a `BufferLogger` log of the same
 bytes validates through `ValidatedFile`. Upstream's `nominalread.bin`
 fixture is generated (the byte ramp from 0x61; its CRC is upstream's
 committed 0xBC0905F4).
+
+### fprime-svc: `PassThroughRouter`, `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher` ("Not yet ported" small components)
+
+Ports of `Svc/PassThroughRouter`, `Svc/PolyDb` (+ `Svc/PolyIf`,
+`default/config/PolyDbCfg.fpp`), `Svc/StaticMemory`
+(+ `default/config/StaticMemoryConfig.hpp`), `Svc/Version`
+(+ `Svc/Ports/VersionPorts`, `default/config/VersionCfg.fpp`),
+`Svc/ActivePhaser` and `Svc/SeqDispatcher` (+ `Svc/Seq`). All six are
+`no_std` (none needs files, the console or a host clock), so
+`tools/check-no-std.sh` builds them for thumbv7em with the rest of the
+crate. Config: `fprime_config::{SEQ_DISPATCHER_SEQUENCER_PORTS,
+STATIC_MEMORY_ALLOCATIONS}` (AcConstants), `static_memory::ALLOCATION_SIZE`,
+`poly_db::NUM_ENTRIES`, `version::{NUM_VERSION_ENUMS, FRAMEWORK_VERSION,
+PROJECT_VERSION, LIBRARY_VERSIONS}`. The config FPP enums
+(`PolyDbCfg.PolyDbEntry`, `VersionCfg.VersionEnum`) need `fprime-fw`'s
+`fpp_enum!`, so they live in `poly_if` / `version` with a compile-time
+check against the `fprime-config` count, as `Fpy.SerialPortIndex` does.
+
+Surface:
+
+```
+seq::{SeqArgs, SeqArgsBuffer, BlockState, CmdSeqInPort, CmdSeqCancelPort,
+  SEQUENCE_ARGUMENTS_MAX_SIZE}            // moved from cmd_sequencer, which re-exports them
+pass_through_router::PassThroughRouter::new(name)
+  ports: data_in(n) (ComDataWithContext, sync), all_packets_return_in(n)
+    (BufferSend, sync); out: all_packets_out, data_return_out, evt
+poly_if::{MeasurementStatus, PolyDbEntry, PolyPort}
+poly_db::PolyDb::new(name); ports: get_value(n), set_value(n) (Poly, guarded)
+static_memory::StaticMemory::new(name); is_allocated(n)
+  ports: buffer_allocate(n) (BufferGet, guarded), buffer_deallocate(n)
+    (BufferSend, guarded), n < STATIC_MEMORY_ALLOCATIONS
+version::{VersionStatus, VersionEnum, VersionEnabled, VersionType,
+  CustomVersionDb, CustomVersionString, VersionPort, NUM_VERSION_SLOTS}
+version::Version::new(name) | with_versions(name, framework, project, libraries)
+  config(enable); start(); reg_commands()
+  ports: get_version(n), set_version(n) (Version, guarded), cmd_in(n) (guarded)
+  OPCODE_{ENABLE,VERSION}, EVENTID_* (0..=3), CHANID_* (0..=21)
+active_phaser::ActivePhaser::new(name); init(QUEUE_DEPTH /* must be 1 */);
+  configure(cycle_ticks); register_phased(port, length, start, user_context)
+  DONT_CARE, MAX_CHILDREN, CONNECTION_COUNT_MAX, EVENTID_MISSED_DEADLINE
+  ports: cycle_in(n) (Cycle, async, drop); out: phaser_member_out[10], evt, tlm
+seq_dispatcher::{SeqDispatcher, CmdSequencerState}; SeqDispatcher::new(name);
+  init(queue_depth); reg_commands()
+  ports: seq_run_in(n) (CmdSeqIn), seq_done_in(i) (CmdResponse),
+    seq_start_in(i) (CmdSeqIn), cmd_in(n) — all async;
+    out: seq_run_out[i], seq_cancel_out[i], cmd/evt/tlm glue
+  OPCODE_* (0..=4), EVENTID_* (0..=7), CHANID_* (0..=3)
+```
+
+Deviations and mappings:
+
+- **`StaticMemory` ownership.** C++ hands out non-owning descriptors into
+  `U8 m_static_memory[N][2048]` and `bufferDeallocate` checks that the
+  returned `[data, data + size)` lies inside the index's segment. Here each
+  index owns one `BufferStorage` allocated at construction; allocating
+  moves it into the `Buffer` (window = the whole segment, context
+  `NO_CONTEXT`, as C++) and deallocating moves it back. The range check is
+  an identity check (same base address and capacity); the window may still
+  have been moved (`advance`/`set_size`) before the return. A *different*
+  descriptor pointing into the segment, which C++ accepts, cannot exist.
+- **`Version` strings.** Upstream's build generates `versions/version.hpp`
+  from `git describe`. Defaults here: `FRAMEWORK_VERSION` = the pinned
+  upstream commit's short hash (`"4dee010"`), `PROJECT_VERSION` = the
+  workspace crate version, `LIBRARY_VERSIONS` = none — the dictionary
+  metadata's `frameworkVersion` / `projectVersion` / `libraryVersions`
+  (`fprime-ref`'s `version_strings_match_the_dictionary_metadata` checks
+  all three). `with_versions` overrides them per instance; the unit tests
+  use upstream's test values. The `Svc.Version` port's unsized `string` is
+  `FwDefaultString`.
+- **`ActivePhaser` tick counter** is an atomic (C++ guards it with its own
+  `Os::Mutex`); the schedule's mutex is released before the child is
+  invoked and before `MissedDeadline` is logged (component thread only, so
+  nothing else can observe the difference).
+- **`SeqDispatcher` command file names** are `CmdStringArg` (40 bytes), as
+  the generated C++ handlers' are and as `CmdSequencer` does, though the
+  dictionary says `string size 240`; `seqRunIn` names keep 240. Async
+  commands share one queue message type (workspace convention). An
+  undeclared `BlockState` / `VersionEnabled` / `VersionType` argument
+  answers `VALIDATION_ERROR`.
+- **`PolyDb` test.** Upstream asserts that stored `F32`/`F64` values read
+  back *unequal*, because C++ `PolyType::operator==` returns false for
+  floating point; the Rust `PolyType` derives `PartialEq`, so the ported
+  test checks equality for every type.
+- **`PassThroughRouter`** imports `Fw.Event` but declares no events; its
+  `evt` glue exists for wiring only.
+
+Upstream behavior kept (covered by tests): `PolyDbEntry` skips
+`POLYDB_ENTRY_02` (names and values diverge from entry 3 on);
+`Version`'s `U8` custom-element counter wraps (the 256th `setVersion`
+reports nothing), `VERSION CUSTOM` is silent — events included — while
+verbosity is off, a slot holding `"no_ver"` is never reported, and the
+11th and later libraries get events but no channel; `ActivePhaser` drops
+cycles silently (queue depth 1, `drop`), holds the next child back a tick
+after a late one, and counts COUNT contexts modulo the product of the
+ratios with wrapping `U32` ticks; `SeqDispatcher` never emits
+`InvalidSequencer`, counts `errorCount` only for `BLOCK` runs, and
+`CANCEL_ALL` cancels the caller's own sequencer.
+
+Ref: `version` joins `CdhCore` at base id 0x01007000 (upstream's
+`BASE_ID + 0x3000` is `textLogger`'s in the Rust Ref), command port 15,
+`config(true)` and `start()` as `CdhCore`'s init specifiers do; the
+dictionary was regenerated (additions only) and the GDS cross-check sends
+`ENABLE` / `VERSION ALL` and checks the framework version decodes as the
+pinned commit.
+
+Tests: the upstream unit tests of all six (ActivePhaser's `FauxPhaser`
+model and all eight cases including the rollover stress; SeqDispatcher's
+ten; Version's startup/commands/ports; PolyDb's read-write sweep;
+StaticMemory's allocate/deallocate; PassThroughRouter's two), plus the
+assert paths, the quirks above, argument errors and a byte-exact
+`seqStartIn` envelope; `fprime-ref`'s
+`version_reports_at_startup_and_on_command`.

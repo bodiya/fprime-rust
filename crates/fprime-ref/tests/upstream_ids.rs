@@ -172,6 +172,40 @@ fn rust_instances() -> Vec<Instance> {
             ],
         ),
         instance(
+            "version",
+            VERSION_BASE_ID,
+            entries![
+                Command "ENABLE" = fprime_svc::version::Version::OPCODE_ENABLE,
+                Command "VERSION" = fprime_svc::version::Version::OPCODE_VERSION,
+                Event "FrameworkVersion" = fprime_svc::version::Version::EVENTID_FRAMEWORK_VERSION,
+                Event "ProjectVersion" = fprime_svc::version::Version::EVENTID_PROJECT_VERSION,
+                Event "LibraryVersions" = fprime_svc::version::Version::EVENTID_LIBRARY_VERSIONS,
+                Event "CustomVersions" = fprime_svc::version::Version::EVENTID_CUSTOM_VERSIONS,
+                Channel "FrameworkVersion" = fprime_svc::version::Version::CHANID_FRAMEWORK_VERSION,
+                Channel "ProjectVersion" = fprime_svc::version::Version::CHANID_PROJECT_VERSION,
+                Channel "CustomVersion01" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_01,
+                Channel "CustomVersion02" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_02,
+                Channel "CustomVersion03" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_03,
+                Channel "CustomVersion04" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_04,
+                Channel "CustomVersion05" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_05,
+                Channel "CustomVersion06" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_06,
+                Channel "CustomVersion07" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_07,
+                Channel "CustomVersion08" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_08,
+                Channel "CustomVersion09" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_09,
+                Channel "CustomVersion10" = fprime_svc::version::Version::CHANID_CUSTOM_VERSION_10,
+                Channel "LibraryVersion01" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_01,
+                Channel "LibraryVersion02" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_02,
+                Channel "LibraryVersion03" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_03,
+                Channel "LibraryVersion04" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_04,
+                Channel "LibraryVersion05" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_05,
+                Channel "LibraryVersion06" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_06,
+                Channel "LibraryVersion07" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_07,
+                Channel "LibraryVersion08" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_08,
+                Channel "LibraryVersion09" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_09,
+                Channel "LibraryVersion10" = fprime_svc::version::Version::CHANID_LIBRARY_VERSION_10,
+            ],
+        ),
+        instance(
             "comQueue",
             COM_QUEUE_BASE_ID,
             entries![
@@ -697,6 +731,42 @@ fn upstream_pin() {
         "the dictionary was generated from {version}, but the port is pinned to {pin}: \
          regenerate it with crates/fprime-ref/fpp/generate-dictionary.sh"
     );
+}
+
+/// `Svc::Version` reports the same framework/project/library versions the
+/// dictionary's metadata records (the defaults in
+/// `fprime_config::version`).
+#[test]
+fn version_strings_match_the_dictionary_metadata() {
+    let dict = dictionary();
+    let metadata = dict.get("metadata").expect("metadata");
+    let field = |name: &str| {
+        metadata
+            .get(name)
+            .and_then(Json::as_str)
+            .unwrap_or_else(|| panic!("metadata.{name}"))
+            .to_string()
+    };
+    assert_eq!(
+        fprime_svc::version::FRAMEWORK_VERSION,
+        &pinned_commit()[..7]
+    );
+    assert_eq!(
+        fprime_svc::version::FRAMEWORK_VERSION,
+        field("frameworkVersion")
+    );
+    assert_eq!(
+        fprime_svc::version::PROJECT_VERSION,
+        field("projectVersion")
+    );
+    let libraries: Vec<String> = metadata
+        .get("libraryVersions")
+        .and_then(Json::as_arr)
+        .expect("metadata.libraryVersions")
+        .iter()
+        .map(|l| l.as_str().expect("library version string").to_string())
+        .collect();
+    assert_eq!(fprime_svc::version::LIBRARY_VERSIONS, libraries.as_slice());
 }
 
 #[test]

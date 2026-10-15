@@ -20,8 +20,10 @@ use fprime_ref::topology::{
     DP_MANAGER_BASE_ID, DP_WRITER_BASE_ID, EVENT_MANAGER_BASE_ID, FILE_DOWNLINK_BASE_ID,
     FILE_MANAGER_BASE_ID, FILE_UPLINK_BASE_ID, HEALTH_BASE_ID, RATE_GROUP_1_BASE_ID,
     RATE_GROUP_2_BASE_ID, RATE_GROUP_3_BASE_ID, SIGNAL_GEN_BASE_ID, SYSTEM_RESOURCES_BASE_ID,
+    VERSION_BASE_ID,
 };
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
+use fprime_svc::version::{self, Version, VersionType};
 
 /// Snapshot of every telemetry (channel id, value-bytes) pair downlinked
 /// so far.
@@ -79,15 +81,36 @@ fn tlm_value_size(id: u32, value: &[u8]) -> usize {
         _ if id == DP_BUFFER_ACCUMULATOR_BASE_ID => U32,
         // cmdSeq counters (U32) + CS_CurrentSequence (string size 240)
         _ if (CMD_SEQUENCER_BASE_ID..CMD_SEQUENCER_BASE_ID + 5).contains(&id) => U32,
-        _ if id == CMD_SEQUENCER_BASE_ID + 5 => {
-            assert!(value.len() >= 2, "truncated CS_CurrentSequence");
-            2 + usize::from(u16::from_be_bytes([value[0], value[1]]))
-        }
+        _ if id == CMD_SEQUENCER_BASE_ID + 5 => string_size(value),
         // systemResources memory/non-volatile (U64) then CPU + CPU_nn (F32)
         _ if (SYSTEM_RESOURCES_BASE_ID..SYSTEM_RESOURCES_BASE_ID + 4).contains(&id) => U64,
         _ if (SYSTEM_RESOURCES_BASE_ID + 4..SYSTEM_RESOURCES_BASE_ID + 26).contains(&id) => F32,
+        // version FrameworkVersion/ProjectVersion/LibraryVersionNN
+        // (string size 40) and CustomVersionNN (CustomVersionDb: enum U32,
+        // string size 80, status U8)
+        _ if id == VERSION_BASE_ID + Version::CHANID_FRAMEWORK_VERSION
+            || id == VERSION_BASE_ID + Version::CHANID_PROJECT_VERSION
+            || (VERSION_BASE_ID + Version::CHANID_LIBRARY_VERSION_01
+                ..=VERSION_BASE_ID + Version::CHANID_LIBRARY_VERSION_10)
+                .contains(&id) =>
+        {
+            string_size(value)
+        }
+        _ if (VERSION_BASE_ID + Version::CHANID_CUSTOM_VERSION_01
+            ..=VERSION_BASE_ID + Version::CHANID_CUSTOM_VERSION_10)
+            .contains(&id) =>
+        {
+            assert!(value.len() >= 4, "truncated CustomVersionDb");
+            4 + string_size(&value[4..]) + 1
+        }
         _ => panic!("telemetry channel 0x{id:x} missing from the test dictionary"),
     }
+}
+
+/// Size of a serialized string value: `[u16 len][len bytes]`.
+fn string_size(value: &[u8]) -> usize {
+    assert!(value.len() >= 2, "truncated string value");
+    2 + usize::from(u16::from_be_bytes([value[0], value[1]]))
 }
 
 /// TLM packet: `[0x0001 u16]` + N x `[id u32][time 11B][value]` ->
@@ -201,6 +224,53 @@ fn telemetry_downlinks_after_ticks() {
             .log_events()
             .iter()
             .any(|(id, args)| *id == completed && args[..] == toggle.to_be_bytes())
+    );
+    harness.topology.teardown();
+}
+
+/// `version` (CdhCore): the startup framework/project version events, and
+/// `VERSION ALL` answering with events and telemetry carrying the pinned
+/// upstream commit.
+#[test]
+fn version_reports_at_startup_and_on_command() {
+    let harness = Harness::up();
+    let framework_event = VERSION_BASE_ID + Version::EVENTID_FRAMEWORK_VERSION;
+    let project_event = VERSION_BASE_ID + Version::EVENTID_PROJECT_VERSION;
+    let string_arg = |s: &str| {
+        let mut out = (s.len() as u16).to_be_bytes().to_vec();
+        out.extend_from_slice(s.as_bytes());
+        out
+    };
+    assert!(
+        harness
+            .tick_until(|| harness.saw_event(framework_event) && harness.saw_event(project_event)),
+        "expected the startup version events; got {:?}",
+        harness.log_events()
+    );
+    assert_eq!(
+        harness.event_args(framework_event).unwrap(),
+        string_arg(version::FRAMEWORK_VERSION)
+    );
+    assert_eq!(
+        harness.event_args(project_event).unwrap(),
+        string_arg(version::PROJECT_VERSION)
+    );
+
+    let command = VERSION_BASE_ID + Version::OPCODE_VERSION;
+    harness.inject(&build_command_frame(command, &[VersionType::All.as_repr()]));
+    let completed = CMD_DISPATCHER_BASE_ID + CmdDispatcher::EVENTID_OP_CODE_COMPLETED;
+    let framework_chan = VERSION_BASE_ID + Version::CHANID_FRAMEWORK_VERSION;
+    assert!(
+        harness.tick_until(|| {
+            harness
+                .log_events()
+                .iter()
+                .any(|(id, args)| *id == completed && args[..] == command.to_be_bytes())
+                && tlm_values(&harness).iter().any(|(id, value)| {
+                    *id == framework_chan && value[..] == string_arg(version::FRAMEWORK_VERSION)[..]
+                })
+        }),
+        "expected VERSION to complete with FrameworkVersion telemetry"
     );
     harness.topology.teardown();
 }

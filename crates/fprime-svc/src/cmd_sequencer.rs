@@ -77,68 +77,21 @@ use fprime_config::{
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, CmdStringArg, ComBuffer, Endianness, ExtBuf, FileNameString,
     FwDefaultString, LengthMode, LogBuffer, LogSeverity, LogStringArg, SerBuf, SerBufAny,
-    SerializeStatus, Time, TimeBase, TimeComparison, fpp_array, fpp_enum, fpp_struct, fw_assert,
-    fw_try,
+    SerializeStatus, Time, TimeBase, TimeComparison, fpp_enum, fw_assert, fw_try,
 };
 use fprime_os::file::{Mode as FileMode, Status as FileStatus, WaitType};
 use fprime_utils::Hash;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
-// Svc/Seq types and ports (Svc/Seq/Seq.fpp).
+// Svc/Seq types and ports (Svc/Seq/Seq.fpp): defined in `crate::seq` (they
+// are shared with the `no_std` `SeqDispatcher`) and re-exported here under
+// their original paths.
 // ---------------------------------------------------------------------------
 
-/// `SequenceArgumentsMaxSize` (AcConstants.fpp): 12 at the pinned
-/// upstream commit (it was the 255 bytes left over in a command argument
-/// buffer before upstream's WasmSequencer change, nasa/fprime#5386).
-pub use fprime_config::SEQUENCE_ARGUMENTS_MAX_SIZE;
-
-fpp_array! {
-    /// The raw argument bytes of [`SeqArgs`] (`[SequenceArgumentsMaxSize] U8`).
-    /// Serializes as 255 consecutive bytes — no count prefix, no padding.
-    #[derive(Clone, Copy, Eq)]
-    pub array SeqArgsBuffer = [u8; SEQUENCE_ARGUMENTS_MAX_SIZE]
-    default fill 0
-}
-
-fpp_struct! {
-    /// `Svc.SeqArgs` — arguments handed to a sequence over `Svc.CmdSeqIn`.
-    /// Wire format: `[size u64 BE][12 raw bytes]` (20 bytes).
-    ///
-    /// `CmdSequencer` ignores the arguments it receives and always emits an
-    /// all-zero value on `seqStartOut` (C++ `(void)args;`).
-    #[derive(Clone, Copy, Eq)]
-    pub struct SeqArgs {
-        /// Number of valid bytes in `buffer`.
-        size: FwSizeType { get_size, set_size },
-        /// Raw argument bytes.
-        buffer: SeqArgsBuffer { get_buffer, set_buffer },
-    }
-}
-
-fpp_enum! {
-    /// `Svc.BlockState` — whether `CS_RUN` defers its command response until
-    /// the sequence finishes.
-    pub enum BlockState : u8 {
-        /// Answer the command only when the sequence completes or fails.
-        Block = 0,
-        /// Answer the command immediately.
-        NoBlock = 1,
-    }
-    default Block
-}
-
-/// `Svc.CmdSeqIn` — request that a sequence file be run.
-pub trait CmdSeqInPort: Send + Sync {
-    /// Invoke the port.
-    fn invoke(&self, port_num: FwIndexType, filename: &FileNameString, args: &SeqArgs);
-}
-
-/// `Svc.CmdSeqCancel` — cancel the running sequence (no arguments).
-pub trait CmdSeqCancelPort: Send + Sync {
-    /// Invoke the port.
-    fn invoke(&self, port_num: FwIndexType);
-}
+pub use crate::seq::{
+    BlockState, CmdSeqCancelPort, CmdSeqInPort, SEQUENCE_ARGUMENTS_MAX_SIZE, SeqArgs, SeqArgsBuffer,
+};
 
 /// `Svc.FileDispatch` — dispatch a file name (by reference, C++ `ref`).
 pub trait FileDispatchPort: Send + Sync {

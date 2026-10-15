@@ -384,15 +384,31 @@ subsystems, then the strategic changes.
   `SignalDone` done ports. Neither upstream's Ref nor any subtopology
   instantiates them, so the Rust Ref does not either; see
   `docs/api-notes.md`.
+- **`Svc::PassThroughRouter`, `Svc::PolyDb`, `Svc::StaticMemory`,
+  `Svc::Version`, `Svc::ActivePhaser`, `Svc::SeqDispatcher`**, with the
+  port definitions they need (`Svc/PolyIf`'s `Svc.Poly` and
+  `MeasurementStatus`, `Svc/Ports/VersionPorts`, and `Svc/Seq`'s types and
+  ports, which moved out of the `std`-only `cmd_sequencer` into a `seq`
+  module `cmd_sequencer` re-exports). All six build without `std`. Every
+  command, event and channel is at its upstream id; the upstream unit
+  tests are ported (ActivePhaser's `FauxPhaser` model included). The
+  config goes to `fprime-config` (`SEQ_DISPATCHER_SEQUENCER_PORTS`,
+  `STATIC_MEMORY_ALLOCATIONS`, `static_memory`, `poly_db`, `version`).
+  `StaticMemory` hands each port index's fixed segment out by move and
+  takes the same storage back. `Version` reports the pinned upstream
+  commit as the framework version, the workspace version as the project
+  version and no libraries (the dictionary metadata's three values); the
+  Rust Ref instantiates it as `CdhCore` does (`config(true)`, `start()`),
+  at base id 0x01007000 because `textLogger` holds upstream's 0x01003000,
+  and the GDS cross-check runs its commands.
 
 ## Not yet ported
 
 A sweep of the pinned upstream `Svc/` tree (every directory with a
 component model) against this workspace found sixteen components that were
-never on this roadmap and are not ported. Sizes are upstream's non-test C++.
+never on this roadmap. Fifteen have since been ported (see "Done in phase
+2"); the one left:
 
-- **Small, self-contained** (under ~250 lines each): `PassThroughRouter`,
-  `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`.
 - **`WasmSequencer`** (~2,800 lines). Upstream is itself a C++ shim over
   Rust crates (`fprime_spacewasm`, MSRV 1.87), so a port means taking those
   crates as a dependency and raising this workspace's MSRV from 1.85 (both

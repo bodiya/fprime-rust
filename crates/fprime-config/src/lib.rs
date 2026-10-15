@@ -175,6 +175,14 @@ pub const BUFFER_REPEATER_OUTPUT_PORTS: usize = 10;
 /// Number of command-source port pairs on CmdSplitter (`CmdSplitterPorts`,
 /// defined as `CmdDispatcherSequencePorts`).
 pub const CMD_SPLITTER_PORTS: usize = CMD_DISPATCHER_SEQUENCE_PORTS;
+/// Number of sequencers a `SeqDispatcher` dispatches to: the size of its
+/// `seqRunOut` / `seqCancelOut` / `seqDoneIn` / `seqStartIn` port arrays
+/// (`SeqDispatcherSequencerPorts`).
+pub const SEQ_DISPATCHER_SEQUENCER_PORTS: usize = 2;
+/// Number of `StaticMemory` allocations: the size of its
+/// `bufferAllocate` / `bufferDeallocate` port arrays, one fixed memory
+/// segment per index (`StaticMemoryAllocations`).
+pub const STATIC_MEMORY_ALLOCATIONS: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Per-component configuration (default/config/*Cfg.hpp equivalents)
@@ -332,6 +340,64 @@ pub mod crc_checker {
     /// Block size for streaming a file through the CRC
     /// (`CONFIG_CRC_FILE_READ_BLOCK`).
     pub const FILE_READ_BLOCK: usize = 2048;
+}
+
+/// `Svc::StaticMemory` configuration (`StaticMemoryConfig.hpp`).
+pub mod static_memory {
+    /// Size in bytes of each per-port memory segment
+    /// (`STATIC_MEMORY_ALLOCATION_SIZE`). The component holds
+    /// [`STATIC_MEMORY_ALLOCATIONS`](super::STATIC_MEMORY_ALLOCATIONS) of
+    /// them.
+    pub const ALLOCATION_SIZE: usize = 2048;
+}
+
+/// `Svc::PolyDb` configuration (`PolyDbCfg.fpp`, FPP module
+/// `Svc.PolyDbCfg`). The entry names live in `fprime_svc::poly_if`'s
+/// `PolyDbEntry` (an FPP enum needs `fprime-fw`'s codegen); a project that
+/// renames or adds entries edits both and keeps this count in step (a
+/// compile-time check there enforces it).
+pub mod poly_db {
+    /// Number of `PolyDbCfg.PolyDbEntry` constants: the size of the
+    /// database (C++ `PolyDbEntry::NUM_CONSTANTS`). Upstream declares nine
+    /// (it skips `POLYDB_ENTRY_02`).
+    pub const NUM_ENTRIES: usize = 9;
+}
+
+/// `Svc::Version` configuration: `VersionCfg.fpp` (FPP module
+/// `Svc.VersionCfg`) plus the strings upstream's build generates into
+/// `versions/version.hpp` (`Project::Version`).
+///
+/// Upstream's build writes `FRAMEWORK_VERSION` and `PROJECT_VERSION` with
+/// `git describe` of the F Prime and project checkouts and
+/// `LIBRARY_VERSIONS` with one `"<library> @ <version>"` entry per F Prime
+/// library. Here they are plain constants a project edits (or overrides
+/// per instance with `fprime_svc::version::Version::with_versions`); the
+/// defaults describe this port the way its ground dictionary does
+/// (`metadata.frameworkVersion` / `projectVersion` / `libraryVersions` of
+/// `crates/fprime-ref/dictionary/RefTopologyDictionary.json`).
+pub mod version {
+    /// Number of `VersionCfg.VersionEnum` constants: the custom-version
+    /// slots (C++ `VersionEnum::NUM_CONSTANTS`). The entry names live in
+    /// `fprime_svc::version::VersionEnum`; a compile-time check there keeps
+    /// the two in step. `Svc::Version` has ten `CustomVersionNN` channels,
+    /// so at most ten slots get telemetry.
+    pub const NUM_VERSION_ENUMS: usize = 10;
+
+    /// `Project::Version::FRAMEWORK_VERSION`: the framework version. This
+    /// port reports the upstream F Prime commit it tracks — the first seven
+    /// hex digits of `FPRIME_UPSTREAM_COMMIT`, the dictionary's
+    /// `metadata.frameworkVersion` (a `fprime-ref` test checks both).
+    pub const FRAMEWORK_VERSION: &str = "4dee010";
+
+    /// `Project::Version::PROJECT_VERSION`: the project version — this
+    /// workspace's crate version, the dictionary's
+    /// `metadata.projectVersion`.
+    pub const PROJECT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    /// `Project::Version::LIBRARY_VERSIONS`: one `"<library> @ <version>"`
+    /// string per F Prime library the project uses. None by default (the
+    /// dictionary's `metadata.libraryVersions` is empty too).
+    pub const LIBRARY_VERSIONS: &[&str] = &[];
 }
 
 /// The `DpCompression` subtopology configuration
@@ -582,6 +648,11 @@ mod tests {
         assert_eq!(crc_checker::FILE_READ_BLOCK, 2048);
         assert_eq!(file_dispatcher::MAX_FILE_DISPATCH_PORTS, 3);
         assert_eq!(file_dispatcher::FILE_DISPATCHER_MAX_TABLE_SIZE, 10);
+        assert_eq!(SEQ_DISPATCHER_SEQUENCER_PORTS, 2);
+        assert_eq!(STATIC_MEMORY_ALLOCATIONS, 4);
+        assert_eq!(static_memory::ALLOCATION_SIZE, 2048);
+        assert_eq!(poly_db::NUM_ENTRIES, 9);
+        assert_eq!(version::NUM_VERSION_ENUMS, 10);
         assert_eq!(sdls::MAX_SDLS_KEY_SIZE, 32);
         assert_eq!(sdls::SA_ROUTER_PORT_COUNT, 2);
         assert_eq!(sdls::SA_ROUTER_MAP_ENTRY_COUNT, 2);

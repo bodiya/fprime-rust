@@ -19,6 +19,7 @@
 //! | `fatalHandler`      | `Svc.FatalHandler`     | `0x0100_4000` | CdhCore       |
 //! | `tlmSend`           | `Svc.TlmChan`          | `0x0100_5000` | CdhCore       |
 //! | `fatalAdapter`      | `Svc.AssertFatalAdapter`| `0x0100_6000` | CdhCore      |
+//! | `version`           | `Svc.Version`          | `0x0100_7000` | CdhCore       |
 //! | `comQueue`          | `Svc.ComQueue`         | `0x0200_0000` | ComFprime     |
 //! | `frameAccumulator`  | `Svc.FrameAccumulator` | `0x0200_1000` | ComFprime     |
 //! | `bufferManager`     | `Svc.BufferManager`    | `0x0200_2000` | ComFprime     |
@@ -110,7 +111,7 @@
 //! 0 `cmdDisp` (self), 1 `events`, 2 `health`, 3 `comQueue`, 4 `signalGen`,
 //! 5 `fileDownlink`, 6 `fileManager`, 7 `prmDb`, 8 `cmdSeq`, 9 `dpMgr`,
 //! 10 `dpWriter`, 11 `dpCat`, 12 `systemResources`, 13 `comLog`,
-//! 14 `dpBufferAccumulator`.
+//! 14 `dpBufferAccumulator`, 15 `version`.
 //! (`fileUplink` declares no commands, as in C++.)
 //!
 //! ## Command-source index map (cmdDisp `seqCmdBuff`/`seqCmdStatus`, matched)
@@ -143,6 +144,10 @@
 //!   (single) fill port rather than left to assert unconnected. The rest of
 //!   the data-product chain is the upstream one: `dpBufferAccumulator ->
 //!   dpWriter -> dpBufferAccumulator.bufferSendInReturn -> dpBufferManager`.
+//! - **`version` instance id.** Upstream `CdhCore` places `version` at
+//!   `BASE_ID + 0x3000`, which this deployment's `textLogger` holds, so it
+//!   takes the next free CdhCore slot, 0x7000 (0x6000 is `fatalAdapter`'s). Its configuration is
+//!   upstream's (`config(true)`, `start()` after the tasks start).
 //! - **`ComSplitter` lives in this crate** ([`crate::com_splitter`]) since
 //!   `fprime-svc` is owned by another wave; it is a faithful port of
 //!   `Svc/ComSplitter`.
@@ -216,6 +221,7 @@ use fprime_svc::prm_db::PrmDb;
 use fprime_svc::rate_group_driver::{Divider, RateGroupDriver};
 use fprime_svc::system_resources::SystemResources;
 use fprime_svc::tlm_chan::TlmChan;
+use fprime_svc::version::Version;
 
 use crate::com_splitter::ComSplitter;
 use crate::shims::{DrvToSvcDataShim, DrvToSvcReadyShim, SvcToDrvSendShim};
@@ -240,6 +246,9 @@ pub const TLM_CHAN_BASE_ID: FwIdType = 0x0100_5000;
 /// `fatalAdapter` base ID. Upstream `CdhCore` uses `BASE_ID + 0x05000`,
 /// which this deployment's `tlmSend` occupies.
 pub const FATAL_ADAPTER_BASE_ID: FwIdType = 0x0100_6000;
+/// `version` base ID. Upstream `CdhCore` uses `BASE_ID + 0x03000`, which
+/// this deployment's `textLogger` occupies (and 0x6000 is `fatalAdapter`'s).
+pub const VERSION_BASE_ID: FwIdType = 0x0100_7000;
 /// `comQueue` base ID.
 pub const COM_QUEUE_BASE_ID: FwIdType = 0x0200_0000;
 /// `frameAccumulator` base ID.
@@ -610,6 +619,8 @@ pub struct RefTopology {
     pub fatal_adapter: Arc<AssertFatalAdapter>,
     /// `textLogger` — console text-event sink.
     pub text_logger: Arc<PassiveTextLogger>,
+    /// `version` — framework/project/library/custom version reporter.
+    pub version: Arc<Version>,
     /// `bufferManager` — comms buffer pool.
     pub buffer_manager: Arc<BufferManager>,
     /// `comQueue` — prioritized downlink queue.
@@ -697,6 +708,7 @@ impl RefTopology {
         let health = Health::new("health");
         let fatal_handler = FatalHandler::new("fatalHandler");
         let text_logger = PassiveTextLogger::new("textLogger");
+        let version = Version::new("version");
         let buffer_manager = BufferManager::new("bufferManager");
         let com_queue = ComQueue::new("comQueue");
         let framer = FprimeFramer::new("framer");
@@ -765,6 +777,7 @@ impl RefTopology {
         fatal_handler.base.set_id_base(FATAL_HANDLER_BASE_ID);
         fatal_adapter.base.set_id_base(FATAL_ADAPTER_BASE_ID);
         text_logger.base.set_id_base(TEXT_LOGGER_BASE_ID);
+        version.base.set_id_base(VERSION_BASE_ID);
         buffer_manager.base.set_id_base(BUFFER_MANAGER_BASE_ID);
         com_queue.active.queued.base.set_id_base(COM_QUEUE_BASE_ID);
         framer.base.set_id_base(FRAMER_BASE_ID);
@@ -848,7 +861,7 @@ impl RefTopology {
         // 0: cmdDisp (self), 1: events, 2: health, 3: comQueue, 4: signalGen,
         // 5: fileDownlink, 6: fileManager, 7: prmDb, 8: cmdSeq, 9: dpMgr,
         // 10: dpWriter, 11: dpCat, 12: systemResources, 13: comLog,
-        // 14: dpBufferAccumulator.
+        // 14: dpBufferAccumulator, 15: version.
         cmd_dispatcher
             .cmd
             .cmd_reg_out
@@ -999,6 +1012,16 @@ impl RefTopology {
             .cmd_response_out
             .connect_to(cmd_dispatcher.comp_cmd_stat_in(14));
 
+        version
+            .cmd
+            .cmd_reg_out
+            .connect_to(cmd_dispatcher.comp_cmd_reg_in(15));
+        cmd_dispatcher.comp_cmd_send[15].connect_to(version.cmd_in(0));
+        version
+            .cmd
+            .cmd_response_out
+            .connect_to(cmd_dispatcher.comp_cmd_stat_in(15));
+
         // -- Event pattern: logOut -> events.LogRecv, textLogOut ->
         //    textLogger, timeGetOut -> posixTime (every EventGlue holder,
         //    including events' own logOut — C++ pattern-wires the self-loop).
@@ -1034,6 +1057,7 @@ impl RefTopology {
             &dp_buffer_accumulator.evt,
             &com_logger.evt,
             &fatal_adapter.evt,
+            &version.evt,
         ];
         for evt in event_glues {
             evt.log_out.connect_to(event_manager.log_recv_in(0));
@@ -1062,6 +1086,7 @@ impl RefTopology {
             &dp_writer.tlm,
             &dp_catalog.tlm,
             &dp_buffer_accumulator.tlm,
+            &version.tlm,
         ];
         for tlm in tlm_glues {
             tlm.tlm_out.connect_to(tlm_chan.tlm_recv_in(0));
@@ -1377,6 +1402,9 @@ impl RefTopology {
         rate_group_1.configure([0; 10]);
         rate_group_2.configure([0; 10]);
         rate_group_3.configure([0; 10]);
+        // CdhCore `phase configComponents`: "Startup TLM and Config
+        // verbosity for Versions".
+        version.config(true);
         buffer_manager.setup(
             COMMS_BUFFER_MGR_ID,
             &[BufferBin {
@@ -1526,6 +1554,7 @@ impl RefTopology {
         dp_catalog.reg_commands();
         dp_buffer_accumulator.reg_commands();
         system_resources.reg_commands();
+        version.reg_commands();
         com_logger.reg_commands();
 
         // ------------------------------------------------------------------
@@ -1615,6 +1644,10 @@ impl RefTopology {
         com_logger
             .active
             .start(&com_logger, COM_LOGGER_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
+        // CdhCore `phase startTasks`: "Startup TLM and EVENTS" — the
+        // framework/project/library versions, once the event and telemetry
+        // tasks run.
+        version.start();
         if let Some(tcp) = &tcp_client {
             tcp.start();
         }
@@ -1633,6 +1666,7 @@ impl RefTopology {
             fatal_handler,
             fatal_adapter,
             text_logger,
+            version,
             buffer_manager,
             com_queue,
             framer,

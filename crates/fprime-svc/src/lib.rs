@@ -24,7 +24,10 @@
 //! implementation), [`assert_fatal_adapter`], [`cmd_splitter`],
 //! [`com_retry`], [`buffer_repeater`], and [`posix_time`] /
 //! [`chrono_time`] / [`os_time`] / [`linux_timer`] over the
-//! `fprime_os::platform::Platform` clock and delay.
+//! `fprime_os::platform::Platform` clock and delay; also
+//! [`active_phaser`], [`seq_dispatcher`] (with the [`seq`] port types),
+//! [`pass_through_router`], [`poly_db`] (with [`poly_if`]),
+//! [`static_memory`] and [`version`].
 //!
 //! `std`-only (they need a file system or the host OS): `file_uplink`,
 //! `file_downlink`, `file_manager`, `file_worker`, `file_dispatcher` (no
@@ -52,6 +55,7 @@ compile_error!(
      `no_std` with `--no-default-features --features spin`"
 );
 
+pub mod active_phaser;
 pub mod active_rate_group;
 pub mod active_text_logger;
 pub mod assert_fatal_adapter;
@@ -102,16 +106,23 @@ pub mod generic_hub;
 pub mod health;
 pub mod linux_timer;
 pub mod os_time;
+pub mod pass_through_router;
 pub mod passive_rate_group;
 pub mod passive_text_logger;
+pub mod poly_db;
+pub mod poly_if;
 pub mod posix_time;
 #[cfg(feature = "std")]
 pub mod prm_db;
 pub mod rate_group_driver;
+pub mod seq;
+pub mod seq_dispatcher;
+pub mod static_memory;
 #[cfg(feature = "std")]
 pub mod system_resources;
 pub mod tlm_chan;
 pub mod tlm_packetizer;
+pub mod version;
 
 /// The unit tests' platform: in a `no_std` test build (still a hosted
 /// target), [`install`](test_platform::install) registers a `std::thread`

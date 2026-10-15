@@ -1129,6 +1129,43 @@
       }
     },
     {
+      "kind": "struct",
+      "qualifiedName": "Svc.CustomVersionDb",
+      "members": {
+        "version_enum": {
+          "type": {
+            "name": "Svc.VersionCfg.VersionEnum",
+            "kind": "qualifiedIdentifier"
+          },
+          "index": 0,
+          "annotation": "enumeration/name of the custom version"
+        },
+        "version_value": {
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 80
+          },
+          "index": 1,
+          "annotation": "string containing custom version"
+        },
+        "version_status": {
+          "type": {
+            "name": "Svc.VersionStatus",
+            "kind": "qualifiedIdentifier"
+          },
+          "index": 2,
+          "annotation": "status of the custom version"
+        }
+      },
+      "default": {
+        "version_enum": "Svc.VersionCfg.VersionEnum.PROJECT_VERSION_00",
+        "version_value": "",
+        "version_status": "Svc.VersionStatus.OK"
+      },
+      "annotation": "Data Structure for custom version Tlm"
+    },
+    {
       "kind": "enum",
       "qualifiedName": "Svc.DpHdrField",
       "representationType": {
@@ -1749,6 +1786,157 @@
     },
     {
       "kind": "enum",
+      "qualifiedName": "Svc.VersionCfg.VersionEnum",
+      "representationType": {
+        "name": "U32",
+        "kind": "integer",
+        "size": 32,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "PROJECT_VERSION_00",
+          "value": 0,
+          "annotation": "Entry 0"
+        },
+        {
+          "name": "PROJECT_VERSION_01",
+          "value": 1,
+          "annotation": "Entry 1"
+        },
+        {
+          "name": "PROJECT_VERSION_02",
+          "value": 2,
+          "annotation": "Entry 2"
+        },
+        {
+          "name": "PROJECT_VERSION_03",
+          "value": 3,
+          "annotation": "Entry 3"
+        },
+        {
+          "name": "PROJECT_VERSION_04",
+          "value": 4,
+          "annotation": "Entry 4"
+        },
+        {
+          "name": "PROJECT_VERSION_05",
+          "value": 5,
+          "annotation": "Entry 5"
+        },
+        {
+          "name": "PROJECT_VERSION_06",
+          "value": 6,
+          "annotation": "Entry 6"
+        },
+        {
+          "name": "PROJECT_VERSION_07",
+          "value": 7,
+          "annotation": "Entry 7"
+        },
+        {
+          "name": "PROJECT_VERSION_08",
+          "value": 8,
+          "annotation": "Entry 8"
+        },
+        {
+          "name": "PROJECT_VERSION_09",
+          "value": 9,
+          "annotation": "Entry 9"
+        }
+      ],
+      "default": "Svc.VersionCfg.VersionEnum.PROJECT_VERSION_00",
+      "annotation": "Define a set of Version entries on a project-specific\nbasis."
+    },
+    {
+      "kind": "enum",
+      "qualifiedName": "Svc.VersionEnabled",
+      "representationType": {
+        "name": "U8",
+        "kind": "integer",
+        "size": 8,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "DISABLED",
+          "value": 0,
+          "annotation": "verbosity disabled"
+        },
+        {
+          "name": "ENABLED",
+          "value": 1,
+          "annotation": "verbosity enabled"
+        }
+      ],
+      "default": "Svc.VersionEnabled.DISABLED",
+      "annotation": "Tracks versions for project, framework and user defined versions etc"
+    },
+    {
+      "kind": "enum",
+      "qualifiedName": "Svc.VersionStatus",
+      "representationType": {
+        "name": "U8",
+        "kind": "integer",
+        "size": 8,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "OK",
+          "value": 0,
+          "annotation": "Version was good"
+        },
+        {
+          "name": "FAILURE",
+          "value": 1,
+          "annotation": "Failure to get version"
+        }
+      ],
+      "default": "Svc.VersionStatus.OK",
+      "annotation": "An enumeration for version status"
+    },
+    {
+      "kind": "enum",
+      "qualifiedName": "Svc.VersionType",
+      "representationType": {
+        "name": "U8",
+        "kind": "integer",
+        "size": 8,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "PROJECT",
+          "value": 0,
+          "annotation": "project version"
+        },
+        {
+          "name": "FRAMEWORK",
+          "value": 1,
+          "annotation": "framework version"
+        },
+        {
+          "name": "LIBRARY",
+          "value": 2,
+          "annotation": "library version"
+        },
+        {
+          "name": "CUSTOM",
+          "value": 3,
+          "annotation": "custom version"
+        },
+        {
+          "name": "ALL",
+          "value": 4,
+          "annotation": "all above versions"
+        }
+      ],
+      "default": "Svc.VersionType.PROJECT",
+      "annotation": "An enumeration for Version Type"
+    },
+    {
+      "kind": "enum",
       "qualifiedName": "TimeBase",
       "representationType": {
         "name": "U16",
@@ -2286,6 +2474,40 @@
       ],
       "queueFullBehavior": "assert",
       "annotation": "Change ping value"
+    },
+    {
+      "name": "Ref.version.ENABLE",
+      "commandKind": "guarded",
+      "opcode": 16805888,
+      "formalParams": [
+        {
+          "name": "enable",
+          "type": {
+            "name": "Svc.VersionEnabled",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false,
+          "annotation": "whether or not Version telemetry is enabled"
+        }
+      ],
+      "annotation": "A command to enable or disable Event verbosity and Telemetry"
+    },
+    {
+      "name": "Ref.version.VERSION",
+      "commandKind": "guarded",
+      "opcode": 16805889,
+      "formalParams": [
+        {
+          "name": "version_type",
+          "type": {
+            "name": "Svc.VersionType",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false,
+          "annotation": "which version type Event is requested"
+        }
+      ],
+      "annotation": "Report version as Event"
     },
     {
       "name": "Ref.comQueue.FLUSH_QUEUE",
@@ -4245,6 +4467,91 @@
       "id": 16801799,
       "format": "Unexpected assert in file {}, line {}, args {}",
       "annotation": "An unexpected assert happened"
+    },
+    {
+      "name": "Ref.version.FrameworkVersion",
+      "severity": "ACTIVITY_LO",
+      "formalParams": [
+        {
+          "name": "version",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 40
+          },
+          "ref": false,
+          "annotation": "version string"
+        }
+      ],
+      "id": 16805888,
+      "format": "Framework Version: [{}]",
+      "annotation": "Version of the git repository."
+    },
+    {
+      "name": "Ref.version.ProjectVersion",
+      "severity": "ACTIVITY_LO",
+      "formalParams": [
+        {
+          "name": "version",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 40
+          },
+          "ref": false,
+          "annotation": "version string"
+        }
+      ],
+      "id": 16805889,
+      "format": "Project Version: [{}]",
+      "annotation": "Version of the git repository."
+    },
+    {
+      "name": "Ref.version.LibraryVersions",
+      "severity": "ACTIVITY_LO",
+      "formalParams": [
+        {
+          "name": "version",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 40
+          },
+          "ref": false,
+          "annotation": "version string"
+        }
+      ],
+      "id": 16805890,
+      "format": "Library Versions: [{}]",
+      "annotation": "Version of the git repository."
+    },
+    {
+      "name": "Ref.version.CustomVersions",
+      "severity": "ACTIVITY_LO",
+      "formalParams": [
+        {
+          "name": "version_enum",
+          "type": {
+            "name": "Svc.VersionCfg.VersionEnum",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false,
+          "annotation": "The enum to access"
+        },
+        {
+          "name": "version_value",
+          "type": {
+            "name": "string",
+            "kind": "string",
+            "size": 40
+          },
+          "ref": false,
+          "annotation": "version"
+        }
+      ],
+      "id": 16805891,
+      "format": "Custom Versions: [{}] [{}]",
+      "annotation": "Version of the git repository."
     },
     {
       "name": "Ref.comQueue.QueueOverflow",
@@ -9221,6 +9528,220 @@
       "id": 16785408,
       "telemetryUpdate": "always",
       "annotation": "Number of overrun warnings"
+    },
+    {
+      "name": "Ref.version.FrameworkVersion",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805888,
+      "telemetryUpdate": "always",
+      "annotation": "Software framework version"
+    },
+    {
+      "name": "Ref.version.ProjectVersion",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805889,
+      "telemetryUpdate": "always",
+      "annotation": "Software project version"
+    },
+    {
+      "name": "Ref.version.CustomVersion01",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805890,
+      "telemetryUpdate": "always",
+      "annotation": "Custom Versions"
+    },
+    {
+      "name": "Ref.version.CustomVersion02",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805891,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion03",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805892,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion04",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805893,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion05",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805894,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion06",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805895,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion07",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805896,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion08",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805897,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion09",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805898,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.CustomVersion10",
+      "type": {
+        "name": "Svc.CustomVersionDb",
+        "kind": "qualifiedIdentifier"
+      },
+      "id": 16805899,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion01",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805900,
+      "telemetryUpdate": "always",
+      "annotation": "Library Versions"
+    },
+    {
+      "name": "Ref.version.LibraryVersion02",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805901,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion03",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805902,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion04",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805903,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion05",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805904,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion06",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805905,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion07",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805906,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion08",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805907,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion09",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805908,
+      "telemetryUpdate": "always"
+    },
+    {
+      "name": "Ref.version.LibraryVersion10",
+      "type": {
+        "name": "string",
+        "kind": "string",
+        "size": 40
+      },
+      "id": 16805909,
+      "telemetryUpdate": "always"
     },
     {
       "name": "Ref.comQueue.comQueueDepth",

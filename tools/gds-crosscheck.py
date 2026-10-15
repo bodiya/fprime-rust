@@ -194,6 +194,10 @@ class Session:
 
     # -- tools -------------------------------------------------------------
 
+    def dictionary_metadata(self, key):
+        with open(self.dictionary) as f:
+            return json.load(f)["metadata"][key]
+
     def fail(self, message):
         self.failures.append(message)
 
@@ -301,6 +305,10 @@ def check_commands(s):
         ["Ref.dpBufferAccumulator.BA_SetMode", "ACCUMULATE"],
         ["Ref.dpBufferAccumulator.BA_DrainBuffers", "0", "NOBLOCK"],
         ["Ref.dpBufferAccumulator.BA_SetMode", "DRAIN"],
+        # Svc::Version (CdhCore): both enum commands; VERSION ALL reports
+        # the framework/project versions as events and string channels.
+        ["Ref.version.ENABLE", "ENABLED"],
+        ["Ref.version.VERSION", "ALL"],
     ]
     for c in commands:
         s.command(*c)
@@ -322,6 +330,8 @@ def check_commands(s):
         "Ref.fileManager.CreateDirectorySucceeded",
         "Ref.health.HLTH_CHECK_ENABLE",
         "Ref.dpBufferAccumulator.BA_PartialDrainDone",
+        "Ref.version.FrameworkVersion",
+        "Ref.version.ProjectVersion",
     ]
     for name in expected_events:
         if name not in events_out:
@@ -335,10 +345,17 @@ def check_commands(s):
         "Ref.signalGen.SignalType",
         "Ref.rateGroup1Comp.RgMaxTime",
         "Ref.dpBufferAccumulator.BA_NumQueuedBuffers",
+        "Ref.version.FrameworkVersion",
+        "Ref.version.ProjectVersion",
     ]
     for name in expected_channels:
         if name not in channels_out:
             s.fail(f"[{s.framing}] channel {name} not decoded by the GDS")
+    # The framework version is the pinned upstream commit (the dictionary's
+    # metadata.frameworkVersion).
+    framework = s.dictionary_metadata("frameworkVersion")
+    if framework not in events_out or framework not in channels_out:
+        s.fail(f"[{s.framing}] version.FrameworkVersion did not carry {framework}")
     if "Triangle" not in channels_out:
         s.fail(f"[{s.framing}] signalGen.SignalType did not decode to Triangle")
     if not os.path.isdir(made):

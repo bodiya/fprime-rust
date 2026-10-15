@@ -27,6 +27,9 @@ module Ref {
     queue size Default.QUEUE_SIZE stack size Default.STACK_SIZE priority 24
   # fatalAdapter leaves upstream's 0x5000 offset, which tlmSend holds here.
   instance fatalAdapter: Svc.AssertFatalAdapter base id 0x01006000
+  # version leaves upstream's 0x3000 offset, which textLogger holds here
+  # (0x6000 is fatalAdapter's).
+  instance version: Svc.Version base id 0x01007000
 
   # ComFprime
   instance comQueue: Svc.ComQueue base id 0x02000000 \
@@ -103,6 +106,7 @@ module Ref {
     instance fatalHandler
     instance tlmSend
     instance fatalAdapter
+    instance version
     instance comQueue
     instance frameAccumulator
     instance bufferManager
