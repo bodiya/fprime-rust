@@ -360,8 +360,8 @@ never on this roadmap and are not ported. Sizes are upstream's non-test C++.
   `FileWorker` and `FileDispatcher`.
 - **`WasmSequencer`** (~2,800 lines). Upstream is itself a C++ shim over
   Rust crates (`fprime_spacewasm`, MSRV 1.87), so a port means taking those
-  crates as a dependency and raising this workspace's MSRV from 1.85 — a
-  policy decision, like the `zlib` / `aes-gcm` features.
+  crates as a dependency and raising this workspace's MSRV from 1.85 (both
+  approved; the MSRV is now 1.87).
 
 ## Strategic
 

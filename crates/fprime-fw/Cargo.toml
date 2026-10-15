@@ -22,5 +22,5 @@ spin = ["dep:spin"]
 
 [dependencies]
 fprime-config.workspace = true
-# Only the lock types the `sync` shim wraps; MSRV 1.71 (ours is 1.85).
+# Only the lock types the `sync` shim wraps; MSRV 1.71 (ours is 1.87).
 spin = { version = "0.12.3", optional = true, default-features = false, features = ["spin_mutex", "rwlock", "once"] }

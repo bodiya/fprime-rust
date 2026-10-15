@@ -48,22 +48,39 @@ fn superloop_dispatches_an_uplinked_command_and_downlinks_events_and_telemetry()
     // `[id u32][time 11 B][value u32]` records after the packet type.
     d.step();
     let frames = d.take_downlink();
-    let mut record = (CMD_DISP_BASE_ID + CmdDispatcher::CHANID_COMMANDS_DISPATCHED)
-        .to_be_bytes()
-        .to_vec();
+    // A record is `[id u32][time base u16][context u8][sec u32][usec u32]
+    // [value]`. Matching the id alone is ambiguous (`01 00 00 00` also
+    // occurs where a value ends in `01` before zero bytes), so match the id
+    // followed by the time base and context, which every record of a packet
+    // shares (taken from the packet's first record), and require exactly
+    // one such record.
+    let id = (CMD_DISP_BASE_ID + CmdDispatcher::CHANID_COMMANDS_DISPATCHED).to_be_bytes();
+    let record_at = |f: &[u8]| -> Vec<usize> {
+        let mut needle = id.to_vec();
+        needle.extend_from_slice(&f[14..17]);
+        f[10..]
+            .windows(needle.len())
+            .enumerate()
+            .filter(|(_, w)| *w == needle.as_slice())
+            .map(|(i, _)| 10 + i)
+            .collect()
+    };
     let tlm_frame = frames
         .iter()
-        .find(|f| f[8..10] == FW_PACKET_TELEM.to_be_bytes() && contains(&f[10..], &record))
+        .find(|f| f[8..10] == FW_PACKET_TELEM.to_be_bytes() && !record_at(f).is_empty())
         .expect("CommandsDispatched downlinked");
-    let at = 10 + find(&tlm_frame[10..], &record).unwrap();
-    record.clear();
-    record.extend_from_slice(&tlm_frame[at + 4 + 11..at + 4 + 11 + 4]);
-    assert_eq!(record, 1u32.to_be_bytes());
+    let at = record_at(tlm_frame);
+    assert_eq!(at.len(), 1, "ambiguous record match in {tlm_frame:02x?}");
+    let value = &tlm_frame[at[0] + 4 + 11..at[0] + 4 + 11 + 4];
+    assert_eq!(value, 1u32.to_be_bytes(), "frame {tlm_frame:02x?}");
     // Only the dispatcher spoke: no warning from any other component (an
     // overflowing queue, a bad frame, an exhausted buffer pool).
-    assert!(down.iter().all(
-        |&(kind, id)| kind == FW_PACKET_LOG && (CMD_DISP_BASE_ID..EVENTS_BASE_ID).contains(&id)
-    ));
+    assert!(
+        down.iter()
+            .all(|&(kind, id)| kind == FW_PACKET_LOG
+                && (CMD_DISP_BASE_ID..EVENTS_BASE_ID).contains(&id)),
+        "unexpected downlink {down:x?}"
+    );
 }
 
 #[test]
@@ -73,12 +90,4 @@ fn run_scenario_reports_the_no_op() {
         FW_PACKET_LOG,
         CMD_DISP_BASE_ID + CmdDispatcher::EVENTID_NO_OP_RECEIVED
     )));
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    find(haystack, needle).is_some()
 }

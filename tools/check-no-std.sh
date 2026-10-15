@@ -18,7 +18,7 @@
 # send to queues; its std build is tested here too).
 #
 # Usage: tools/check-no-std.sh [bare-metal-target]   (default thumbv7em-none-eabihf)
-# Needs `rustup target add <target>` (and `--toolchain 1.85`) once.
+# Needs `rustup target add <target>` (and `--toolchain 1.87`) once.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -68,15 +68,15 @@ cargo build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
 cargo build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
     "${EXAMPLES[@]}" "${NOSTD_ALL_OPT[@]}"
 
-step "MSRV (1.85) for the no_std builds"
-cargo +1.85 check "${PKGS[@]}" --all-targets "${NOSTD[@]}"
-cargo +1.85 check "${LOCKLESS_PKGS[@]}" --all-targets "${NOSTD_LOCKLESS[@]}"
-cargo +1.85 check -p fprime-svc --all-targets "${NOSTD_SVC_OPT[@]}"
-cargo +1.85 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
+step "MSRV (1.87) for the no_std builds"
+cargo +1.87 check "${PKGS[@]}" --all-targets "${NOSTD[@]}"
+cargo +1.87 check "${LOCKLESS_PKGS[@]}" --all-targets "${NOSTD_LOCKLESS[@]}"
+cargo +1.87 check -p fprime-svc --all-targets "${NOSTD_SVC_OPT[@]}"
+cargo +1.87 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
     "${EXAMPLES[@]}" "${NOSTD_ALL[@]}"
-cargo +1.85 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
+cargo +1.87 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
     "${EXAMPLES[@]}" "${NOSTD_ALL_LOCKLESS[@]}"
-cargo +1.85 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
+cargo +1.87 build --target "$TARGET" -p fprime-config "${PKGS[@]}" --lib \
     "${EXAMPLES[@]}" "${NOSTD_ALL_OPT[@]}"
 
 step "dependency trees"

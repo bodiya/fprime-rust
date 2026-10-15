@@ -93,7 +93,7 @@ impl EventThrottle {
     /// True (and counts the emission) while under the limit; false once
     /// throttled. C++ parity: `if (m_throttle >= LIMIT) return; m_throttle++`.
     // `fetch_update` is deprecated in favour of `try_update` on newer
-    // toolchains, but `try_update` is newer than the workspace MSRV (1.85).
+    // toolchains, but `try_update` is newer than the workspace MSRV (1.87).
     #[allow(deprecated)]
     pub fn ok_to_emit(&self) -> bool {
         self.count

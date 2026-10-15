@@ -1516,7 +1516,7 @@ impl CmdPort for CfdpManager {
             Self::OPCODE_LOCALEID_PRM_SET..=Self::OPCODE_CHANNELCONFIG_PRM_SAVE => {
                 let index = local - Self::OPCODE_LOCALEID_PRM_SET;
                 let id = index / 2;
-                Some(if index % 2 == 0 {
+                Some(if index.is_multiple_of(2) {
                     self.param_set(id, args)
                 } else {
                     self.param_save(id, args)

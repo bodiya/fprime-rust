@@ -89,7 +89,7 @@ fprime-drv   -> fprime-comp, (fw, os, config)
 fprime-ref   -> everything
 ```
 
-Rust 2024 edition, `rust-version = "1.85"` floor, workspace lints:
+Rust 2024 edition, `rust-version = "1.87"` floor, workspace lints:
 `unsafe_code = "forbid"`, `clippy::all = "warn"`.
 
 ## no_std
@@ -209,7 +209,7 @@ The pieces:
   (an uplinked `CMD_NO_OP` frame is dispatched and its events and the
   telemetry come back down as frames); and
   `tools/check-no-std.sh` builds and tests the no_std configuration on the
-  host, builds it for `thumbv7em-none-eabihf`, checks it at MSRV 1.85, and
+  host, builds it for `thumbv7em-none-eabihf`, checks it at MSRV 1.87, and
   checks the dependency trees, each build and test with both queue
   delegates. The no_std unit tests run the task and
   active-component tests through a `std::thread` test `Platform`

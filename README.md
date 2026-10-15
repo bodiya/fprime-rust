@@ -120,7 +120,7 @@ cargo build --target thumbv7em-none-eabihf -p fprime-svc --example no_std_deploy
 cargo test -p fprime-os -p fprime-comp -p fprime-svc --no-default-features --features spin,lockless-queue
 # ... and with fprime-svc's optional features
 cargo test -p fprime-svc --no-default-features --features spin,zlib,aes-gcm
-# All of the above plus clippy, MSRV 1.85 and the dependency-tree checks
+# All of the above plus clippy, MSRV 1.87 and the dependency-tree checks
 tools/check-no-std.sh
 
 # Run the reference deployment standalone (1 Hz rate loop; type "quit" to stop)

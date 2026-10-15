@@ -97,9 +97,9 @@ fn map_io_error(error: &std::io::Error) -> Status {
         ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => Status::NoPermission,
         ErrorKind::AlreadyExists => Status::AlreadyExists,
         ErrorKind::NotADirectory => Status::NotDir,
-        // ENAMETOOLONG => INVALID_PATH in C++; std has no stable ErrorKind
-        // for it at the 1.85 floor, so it lands in OtherError (noted
-        // divergence).
+        // ENAMETOOLONG => INVALID_PATH (`ErrorKind::InvalidFilename`,
+        // stable since the 1.87 MSRV).
+        ErrorKind::InvalidFilename => Status::InvalidPath,
         // EDQUOT | ENOSPC | EFBIG => NO_SPACE
         ErrorKind::StorageFull | ErrorKind::QuotaExceeded | ErrorKind::FileTooLarge => {
             Status::NoSpace
@@ -386,6 +386,23 @@ pub fn change_working_directory(path: &str) -> Status {
 mod tests {
     use super::*;
     use crate::test_util::temp_dir;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_over_long_path_component_is_invalid_path() {
+        // ENAMETOOLONG => INVALID_PATH for the calls that use the FileSystem
+        // errno table directly (C++ `errno_to_filesystem_status`). Calls that
+        // go through `Os::File` / `Os::Directory` (get_file_size,
+        // create_directory, ...) report OTHER_ERROR, as their C++ tables
+        // have no ENAMETOOLONG case.
+        let dir = temp_dir("fs_name_too_long");
+        let long = dir.join("n".repeat(300));
+        let long = long.to_str().unwrap();
+        assert_eq!(remove_file(long), Status::InvalidPath);
+        assert_eq!(remove_directory(long), Status::InvalidPath);
+        let mut size: FwSizeType = 0;
+        assert_eq!(get_file_size(long, &mut size), Status::OtherError);
+    }
 
     #[test]
     fn create_directory_exclusive_and_if_missing() {
