@@ -13,7 +13,7 @@ use crate::obj::PassiveBase;
 use alloc::boxed::Box;
 use alloc::vec;
 use fprime_config::{FwEnumStoreType, FwQueuePriorityType, FwSizeType};
-use fprime_fw::sync::{AtomicU64, Mutex, Ordering};
+use fprime_fw::sync::{Mutex, Ordering};
 use fprime_fw::{ExtBuf, SerBufAny, fw_assert};
 use fprime_os::queue::{BlockingType, Queue, Status as QueueStatus};
 
@@ -61,6 +61,16 @@ pub trait ComponentDispatch: Send + Sync {
     fn finalizer(&self) {}
 }
 
+/// The dropped-message counter: a native atomic, so the `drop` queue-full
+/// path stays lock-free (it may run in an interrupt with the lockless
+/// queue). Deviation: on targets without 64-bit atomics (e.g. thumbv7em) it
+/// is 32 bits wide and wraps at 2^32 rather than at `FwSizeType::MAX`; C++
+/// `m_msgsDropped` is a plain, unsynchronized `FwSizeType`.
+#[cfg(target_has_atomic = "64")]
+type DroppedCounter = core::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+type DroppedCounter = core::sync::atomic::AtomicU32;
+
 /// Queued-component core: object state + message queue + drop counter.
 ///
 /// All methods take `&self`; the receive scratch buffer is behind a `Mutex`
@@ -72,7 +82,7 @@ pub struct QueuedBase {
     pub base: PassiveBase,
     queue: Queue,
     /// C++ `m_msgsDropped` — incremented by the `drop` queue-full policy.
-    msgs_dropped: AtomicU64,
+    msgs_dropped: DroppedCounter,
     /// Receive scratch, sized to the queue message size at `create_queue`
     /// (steady-state no-alloc: allocated once at init).
     msg_buffer: Mutex<Box<[u8]>>,
@@ -85,7 +95,7 @@ impl QueuedBase {
         Self {
             base: PassiveBase::new(name),
             queue: Queue::new(),
-            msgs_dropped: AtomicU64::new(0),
+            msgs_dropped: DroppedCounter::new(0),
             msg_buffer: Mutex::new(Box::new([])),
         }
     }
@@ -111,7 +121,7 @@ impl QueuedBase {
 
     /// C++ `getNumMsgsDropped`.
     pub fn get_num_msgs_dropped(&self) -> FwSizeType {
-        self.msgs_dropped.load(Ordering::Relaxed)
+        FwSizeType::from(self.msgs_dropped.load(Ordering::Relaxed))
     }
 
     /// C++ `incNumMsgDropped` (generated code calls this on the `drop`

@@ -3159,9 +3159,10 @@ Deviations and behavior notes:
 - The Linux cpu/memory backends stay `std`-only: they read procfs/sysfs
   through `Os::File`, which only a hosted Linux target (with `std`) has;
   no_std builds use the upstream stubs.
-- ISR caveat: on targets without 64-bit atomics, `QueuedBase`'s
-  dropped-message counter (`drop` policy) is the spin-locked
-  `fprime_fw::sync::AtomicU64` fallback (ROADMAP follow-up).
+- `QueuedBase`'s dropped-message counter (`drop` policy) is a native
+  atomic, so the `drop` path is lock-free too: `AtomicU64` where the target
+  has 64-bit atomics, otherwise `AtomicU32` (it then wraps at 2^32 — a
+  documented deviation from C++'s plain `FwSizeType` counter).
 
 Tests: lockless unit tests (slot alignment/layout, state-tag packing and
 tag wrap, per-transition tag bumps, `SequenceWrapComparison`, FIFO across

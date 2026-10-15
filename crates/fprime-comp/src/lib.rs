@@ -57,9 +57,9 @@
 //! `Os::Generic::LocklessPriorityQueue`; an async input port whose
 //! queue-full policy is non-blocking (`assert`, `drop`, `hook`) can then be
 //! invoked from an interrupt handler, since the send path takes no lock.
-//! (One exception on targets without 64-bit atomics, e.g. thumbv7em: the
-//! `drop` policy's dropped-message counter is a `fprime_fw::sync::AtomicU64`,
-//! which falls back to a spin lock there.)
+//! On targets without 64-bit atomics (e.g. thumbv7em) the `drop` policy's
+//! dropped-message counter is a lock-free 32-bit atomic, so that path stays
+//! lock-free too.
 
 #![no_std]
 
