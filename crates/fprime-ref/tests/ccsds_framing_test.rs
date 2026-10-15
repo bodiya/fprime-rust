@@ -3,7 +3,8 @@
 //! through `frameAccumulator` (CCSDS TC frame detector) -> `tcDeframer` ->
 //! `spacePacketDeframer` -> `fprimeRouter`, and the command's events come
 //! back down as space packets in fixed-size TM transfer frames
-//! (`comQueue` -> `spacePacketFramer` -> `tmFramer`).
+//! (`comQueue` -> `spacePacketFramer` -> `aggregator` -> `tmFramer`; the
+//! aggregator packs several packets per frame and rate group 1 flushes it).
 //!
 //! Wire formats (CCSDS 232.0 TC, 132.0 TM, 133.0 Space Packet), big endian:
 //! TC frame = `[0x2000 | scid u16][vcid << 10 | (len - 1) u16][seq u8]
@@ -66,7 +67,7 @@ fn tm_packets(frame: &[u8]) -> Vec<Vec<u8>> {
     assert_eq!(
         status & 0x07FF,
         0,
-        "one packet per frame, at the data field start"
+        "no spanning: the first packet starts the data field"
     );
     let crc_at = TM_FRAME_FIXED_SIZE - 2;
     let crc = u16::from_be_bytes([frame[crc_at], frame[crc_at + 1]]);
@@ -119,6 +120,11 @@ fn ccsds_no_op_round_trip() {
                 && events.iter().filter(|(id, _)| *id == completed).count() == 2
         }),
         "two NO_OPs through TC frames did not come back down in TM frames within {DEADLINE:?}"
+    );
+    // The aggregator packed several packets into at least one frame.
+    assert!(
+        h.frames().iter().any(|frame| tm_packets(frame).len() > 1),
+        "no TM frame carried more than one packet"
     );
     // Neither the deframers nor the sequence-count check complained.
     let events = downlinked_events(&h);

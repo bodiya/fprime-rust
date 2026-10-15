@@ -30,6 +30,7 @@
 //! | `apidManager`       | `Svc.Ccsds.ApidManager`| `0x0200_9000` | ComCcsds      |
 //! | `tcDeframer`        | `Svc.Ccsds.TcDeframer` | `0x0200_B000` | ComCcsds      |
 //! | `spacePacketDeframer`| `Svc.Ccsds.SpacePacketDeframer` | `0x0200_C000` | ComCcsds |
+//! | `aggregator`        | `Svc.ComAggregator`    | `0x0200_D000` | ComCcsds      |
 //! | `dpCat`             | `Svc.DpCatalog`        | `0x0400_0000` | DataProducts  |
 //! | `dpMgr`             | `Svc.DpManager`        | `0x0400_1000` | DataProducts  |
 //! | `dpWriter`          | `Svc.DpWriter`         | `0x0400_2000` | DataProducts  |
@@ -65,7 +66,8 @@
 //! (FprimeFrameDetector) -> deframer -> fprimeRouter` up.
 //! [`Framing::Ccsds`] wires `ComCcsds.Subtopology` instead, for the GDS's
 //! `--framing-selection space-packet-space-data-link`:
-//! `comQueue -> spacePacketFramer -> tmFramer -> comStub` down and
+//! `comQueue -> spacePacketFramer -> aggregator -> tmFramer -> comStub`
+//! down (the `aggregator` flushed by rate group 1) and
 //! `comStub -> frameAccumulator (CcsdsTcFrameDetector) -> tcDeframer ->
 //! spacePacketDeframer -> fprimeRouter` up, with `apidManager` numbering
 //! and validating the space-packet sequence counts. Both chains share
@@ -75,18 +77,20 @@
 //! dictionary covers either selection. Deviations from upstream
 //! `ComCcsds`, each deliberate:
 //!
-//! - **No `ComAggregator`.** It is not ported (ROADMAP item 12), so
-//!   `spacePacketFramer` feeds `tmFramer` directly: one space packet per TM
-//!   frame, the rest of the data field idle-filled. With upstream's
-//!   default `enablePacketSpanning = false` the aggregator only packs
-//!   several whole packets into one frame, which the ground deframer
-//!   handles either way.
 //! - **Instance ids.** The shared instances keep their `ComFprime` ids;
 //!   `tmFramer` (upstream's `framer`), `spacePacketFramer` and
 //!   `apidManager` keep the upstream `ComCcsds` offsets 0x7000-0x9000,
 //!   while `tcDeframer` and `spacePacketDeframer` (upstream 0x4000 and
 //!   0x5000, here taken by `framer` and `fprimeRouter`) move to 0xB000
-//!   and 0xC000.
+//!   and 0xC000, and `aggregator` (upstream 0x6000, here `comStub`) to
+//!   0xD000. The aggregator has no commands, events or telemetry, so its
+//!   id appears in no dictionary entry.
+//! - **Aggregator task and timeout.** `aggregator` is configured with
+//!   upstream's `enablePacketSpanning = false`, its task is started only
+//!   under `--framing ccsds` (its preamble announces readiness on a port
+//!   the F Prime chain leaves unconnected), and its `timeout` rides rate
+//!   group 1 at member index 6 (upstream `RateGroupMemberOut[7]`; this
+//!   deployment's rate group 1 has fewer members).
 //! - **One comms buffer bin.** Upstream adds a 3000-byte file bin; the
 //!   framers here never allocate more than a 512-byte com buffer plus a
 //!   6-byte space-packet header, so the single 2048-byte bin serves both.
@@ -175,6 +179,7 @@ use fprime_svc::ccsds::tc_deframer::TcDeframer;
 use fprime_svc::ccsds::tm_framer::TmFramer;
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_svc::cmd_sequencer::CmdSequencer;
+use fprime_svc::com_aggregator::ComAggregator;
 use fprime_svc::com_logger::ComLogger;
 use fprime_svc::com_queue::{ComQueue, QueueConfigurationTable};
 use fprime_svc::com_stub::ComStub;
@@ -247,6 +252,9 @@ pub const TC_DEFRAMER_BASE_ID: FwIdType = 0x0200_B000;
 /// `spacePacketDeframer` base ID. Upstream `ComCcsds` uses
 /// `BASE_ID + 0x05000`, which this deployment's `fprimeRouter` occupies.
 pub const SPACE_PACKET_DEFRAMER_BASE_ID: FwIdType = 0x0200_C000;
+/// `aggregator` base ID. Upstream `ComCcsds` uses `BASE_ID + 0x06000`,
+/// which this deployment's `comStub` (`ComFprime`) occupies.
+pub const AGGREGATOR_BASE_ID: FwIdType = 0x0200_D000;
 /// `dpCat` base ID (DataProducts window).
 pub const DP_CATALOG_BASE_ID: FwIdType = 0x0400_0000;
 /// `dpMgr` base ID.
@@ -305,6 +313,10 @@ const EVENTS_QUEUE_DEPTH: FwSizeType = 25;
 const HEALTH_QUEUE_DEPTH: FwSizeType = 100;
 /// ComQueue message-queue depth (ComFprime `QueueSizes.comQueue`).
 const COM_QUEUE_DEPTH: FwSizeType = 50;
+/// ComAggregator message-queue depth (`ComCcsdsConfig.QueueSizes.aggregator`).
+const AGGREGATOR_QUEUE_DEPTH: FwSizeType = 10;
+/// `ComCcsdsConfig.Aggregator.enablePacketSpanning`.
+const AGGREGATOR_PACKET_SPANNING: bool = false;
 /// ComLogger message-queue depth. `ComLoggerTeeConfig.QueueSizes.comLog`
 /// is 10; this deployment tees the WHOLE event stream into the logger and
 /// `Fw.Com` async inputs assert on a full queue (C++ parity — an
@@ -320,6 +332,8 @@ const RG2_PRIORITY: FwTaskPriorityType = 42;
 const RG3_PRIORITY: FwTaskPriorityType = 41;
 const CMD_DISP_PRIORITY: FwTaskPriorityType = 35;
 const COM_QUEUE_PRIORITY: FwTaskPriorityType = 29;
+/// `ComCcsdsConfig.Priorities.aggregator`.
+const AGGREGATOR_PRIORITY: FwTaskPriorityType = 30;
 /// `DataProductsConfig.Priorities.dpCat`.
 const DP_CATALOG_PRIORITY: FwTaskPriorityType = 24;
 /// `FileHandlingConfig.Priorities.fileUplink`.
@@ -605,6 +619,9 @@ pub struct RefTopology {
     /// `spacePacketDeframer` — CCSDS space-packet deframer
     /// ([`Framing::Ccsds`]).
     pub space_packet_deframer: Arc<SpacePacketDeframer>,
+    /// `aggregator` — packs space packets into TM frames
+    /// ([`Framing::Ccsds`]).
+    pub aggregator: Arc<ComAggregator>,
     /// The communications stack this topology was wired with.
     pub framing: Framing,
     /// `signalGen` — the demo component.
@@ -674,6 +691,7 @@ impl RefTopology {
         let apid_manager = ApidManager::new("apidManager");
         let tc_deframer = TcDeframer::new("tcDeframer");
         let space_packet_deframer = SpacePacketDeframer::new("spacePacketDeframer");
+        let aggregator = ComAggregator::new("aggregator");
         let signal_gen = SignalGen::new("signalGen");
         let cmd_sequencer = CmdSequencer::new("cmdSeq");
         let system_resources = SystemResources::new("systemResources");
@@ -746,6 +764,11 @@ impl RefTopology {
         space_packet_deframer
             .base
             .set_id_base(SPACE_PACKET_DEFRAMER_BASE_ID);
+        aggregator
+            .active
+            .queued
+            .base
+            .set_id_base(AGGREGATOR_BASE_ID);
         signal_gen.queued.base.set_id_base(SIGNAL_GEN_BASE_ID);
         cmd_sequencer
             .active
@@ -1135,8 +1158,7 @@ impl RefTopology {
                     .connect_to(deframer.data_return_in(0));
             }
             Framing::Ccsds => {
-                // ComCcsds.fpp `SpacePacketFraming.Downlink`, minus the
-                // aggregator: spacePacketFramer -> tmFramer directly.
+                // ComCcsds.fpp `SpacePacketFraming.Downlink`.
                 com_queue
                     .data_out
                     .connect_to(space_packet_framer.data_in(0));
@@ -1154,16 +1176,28 @@ impl RefTopology {
                     .connect_to(apid_manager.get_apid_seq_count_in(0));
                 space_packet_framer
                     .data_out
-                    .connect_to(tm_framer.data_in(0));
-                tm_framer
+                    .connect_to(aggregator.data_in(0));
+                aggregator
                     .data_return_out
                     .connect_to(space_packet_framer.data_return_in(0));
-                tm_framer
+                aggregator
                     .com_status_out
                     .connect_to(space_packet_framer.com_status_in(0));
                 space_packet_framer
                     .com_status_out
                     .connect_to(com_queue.com_status_in(0));
+                // `FramingSubtopology.Downlink`: the aggregate to the TM
+                // transfer-frame layer.
+                aggregator.data_out.connect_to(tm_framer.data_in(0));
+                tm_framer
+                    .data_return_out
+                    .connect_to(aggregator.data_return_in(0));
+                tm_framer
+                    .com_status_out
+                    .connect_to(aggregator.com_status_in(0));
+                // Upstream Ref `RateGroupMemberOut[7] ->
+                // ComCcsds.Subtopology.aggregatorTimeout`.
+                rate_group_1.rate_group_member_out[6].connect_to(aggregator.timeout(0));
                 // `Subtopology.ComStub` (downlink half).
                 tm_framer.data_out.connect_to(com_stub.data_in(0));
                 com_stub
@@ -1345,6 +1379,9 @@ impl RefTopology {
         queue_table.entries[FILE_QUEUE_INDEX].depth = 100;
         queue_table.entries[FILE_QUEUE_INDEX].priority = 1;
         com_queue.configure(&queue_table);
+        // ComCcsds `phase configComponents`:
+        // `aggregator.configure(ComCcsdsConfig::Aggregator::enablePacketSpanning)`.
+        aggregator.configure(AGGREGATOR_PACKET_SPANNING);
         health.set_ping_entries(
             &[
                 PingEntry::new(HEALTH_WARN_CYCLES, HEALTH_FATAL_CYCLES, "rateGroup1Comp"),
@@ -1438,6 +1475,7 @@ impl RefTopology {
             .active
             .queued
             .create_queue(COM_QUEUE_DEPTH, fprime_svc::com_queue::MSG_SIZE);
+        aggregator.create_queue(AGGREGATOR_QUEUE_DEPTH);
         signal_gen.init(QUEUE_DEPTH);
         cmd_sequencer.init(QUEUE_DEPTH);
         prm_db.init(QUEUE_DEPTH);
@@ -1510,6 +1548,11 @@ impl RefTopology {
         com_queue
             .active
             .start(&com_queue, COM_QUEUE_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
+        if config.framing == Framing::Ccsds {
+            aggregator
+                .active
+                .start(&aggregator, AGGREGATOR_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
+        }
         file_uplink.active.start(
             &file_uplink,
             FILE_UPLINK_PRIORITY,
@@ -1581,6 +1624,7 @@ impl RefTopology {
             apid_manager,
             tc_deframer,
             space_packet_deframer,
+            aggregator,
             framing: config.framing,
             signal_gen,
             cmd_sequencer,
@@ -1626,6 +1670,9 @@ impl RefTopology {
         self.event_manager.active.exit();
         self.tlm_chan.active.exit();
         self.com_queue.active.exit();
+        if self.framing == Framing::Ccsds {
+            self.aggregator.active.exit();
+        }
         self.file_uplink.active.exit();
         self.file_downlink.active.exit();
         self.file_manager.active.exit();
@@ -1644,6 +1691,9 @@ impl RefTopology {
         let _ = self.event_manager.active.join();
         let _ = self.tlm_chan.active.join();
         let _ = self.com_queue.active.join();
+        if self.framing == Framing::Ccsds {
+            let _ = self.aggregator.active.join();
+        }
         let _ = self.file_uplink.active.join();
         let _ = self.file_downlink.active.join();
         let _ = self.file_manager.active.join();

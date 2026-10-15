@@ -45,6 +45,9 @@ module Ref {
   instance apidManager: Svc.Ccsds.ApidManager base id 0x02009000
   instance tcDeframer: Svc.Ccsds.TcDeframer base id 0x0200B000
   instance spacePacketDeframer: Svc.Ccsds.SpacePacketDeframer base id 0x0200C000
+  # aggregator leaves upstream's 0x6000 offset, which comStub holds here.
+  instance aggregator: Svc.ComAggregator base id 0x0200D000 \
+    queue size 10 stack size Default.STACK_SIZE priority 30
 
   # DataProducts
   instance dpCat: Svc.DpCatalog base id 0x04000000 \
@@ -109,6 +112,7 @@ module Ref {
     instance apidManager
     instance tcDeframer
     instance spacePacketDeframer
+    instance aggregator
     instance dpCat
     instance dpMgr
     instance dpWriter

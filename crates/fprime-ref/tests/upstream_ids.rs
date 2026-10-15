@@ -228,6 +228,10 @@ fn rust_instances() -> Vec<Instance> {
                 Event "NoBufferAvailable" = fprime_svc::ccsds::space_packet_framer::EVENTID_NO_BUFFER_AVAILABLE,
             ],
         ),
+        // ComAggregator declares no commands, events, telemetry or
+        // parameters: the row pins its instance id and asserts that the
+        // dictionary carries no entries for it.
+        instance("aggregator", AGGREGATOR_BASE_ID, entries![]),
         instance(
             "apidManager",
             APID_MANAGER_BASE_ID,
