@@ -9,7 +9,7 @@
 use fprime_config::{
     FW_CMD_ARG_BUFFER_MAX_SIZE, FW_COM_BUFFER_MAX_SIZE, FW_LOG_BUFFER_MAX_SIZE,
     FW_PARAM_BUFFER_MAX_SIZE, FW_SERIALIZE_FALSE_VALUE, FW_SERIALIZE_TRUE_VALUE,
-    FW_TLM_BUFFER_MAX_SIZE, FwSizeStoreType, FwSizeType,
+    FW_SM_SIGNAL_BUFFER_MAX_SIZE, FW_TLM_BUFFER_MAX_SIZE, FwSizeStoreType, FwSizeType,
 };
 
 /// Serialization status codes; exact C++ discriminants (`Fw::SerializeStatus`).
@@ -809,6 +809,12 @@ pub type LogBuffer = LinearBuffer<FW_LOG_BUFFER_MAX_SIZE>;
 pub type TlmBuffer = LinearBuffer<FW_TLM_BUFFER_MAX_SIZE>;
 /// Parameter value buffer (`Fw::ParamBuffer`).
 pub type ParamBuffer = LinearBuffer<FW_PARAM_BUFFER_MAX_SIZE>;
+/// State-machine signal data buffer (`Fw::SmSignalBuffer`, `Fw/Sm`): the
+/// data an external state machine signal carries. It crosses a component
+/// queue as a nested buffer, `[u16 size][size bytes]`, so its maximum
+/// on-wire size is `2 + FW_SM_SIGNAL_BUFFER_MAX_SIZE` (C++
+/// `SmSignalBuffer::SERIALIZED_SIZE`).
+pub type SmSignalBuffer = LinearBuffer<FW_SM_SIGNAL_BUFFER_MAX_SIZE>;
 
 #[cfg(test)]
 mod tests {

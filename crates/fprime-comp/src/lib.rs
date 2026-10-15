@@ -29,6 +29,11 @@
 //!   [`async_input_port_adapter!`] and [`serializable_port!`] generate the
 //!   input-port thunks, envelope codec, message-type discriminants and port
 //!   serializers that the C++ FPP autocoder emits.
+//! - [`sm`] + [`fpp_state_machine!`]: FPP state machines (`Fw/Sm`) — the
+//!   declarative macro for internal (FPP-defined) machines, the runtime it
+//!   expands against, and the component side of state machine instances
+//!   (the byte-exact signal message, priority and queue-full policy) for
+//!   internal and external machines.
 //!
 //! The integration test `tests/example_component.rs` is the normative
 //! exemplar of how a component is assembled from these pieces.
@@ -42,6 +47,8 @@ pub mod obj;
 pub mod port;
 pub mod queued;
 pub mod serial_port;
+pub mod sm;
+mod sm_macro;
 
 /// The project configuration crate, re-exported so macro expansions and
 /// downstream code can reach the `Fw*` type aliases through this crate.
@@ -63,3 +70,6 @@ pub use port::{
 };
 pub use queued::{ComponentDispatch, MsgDispatchStatus, QueuedBase};
 pub use serial_port::{SerialCallAdapter, SerializablePort, SerializePort, TypedCallAdapter};
+pub use sm::{
+    ExternalSmOverflowHook, ExternalSmSender, ExternalStateMachine, SmOverflowHook, SmSender,
+};

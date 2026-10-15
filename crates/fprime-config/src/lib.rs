@@ -122,6 +122,10 @@ pub const FW_ASSERT_TEXT_SIZE: usize = 256;
 /// Maximum size of an internal-interface string argument
 /// (`FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` in FpConstants.fpp).
 pub const FW_INTERNAL_INTERFACE_STRING_MAX_SIZE: usize = 256;
+/// Capacity of `Fw::SmSignalBuffer`, the data buffer carried by a signal to
+/// an external state machine (`FW_SM_SIGNAL_BUFFER_MAX_SIZE` in
+/// FpConstants.fpp).
+pub const FW_SM_SIGNAL_BUFFER_MAX_SIZE: usize = 128;
 /// Maximum length of a file-name string (`FileNameStringSize` in AcConstants.fpp).
 pub const FILE_NAME_STRING_SIZE: usize = 240;
 /// Time-context "don't care" value used by sequences (`FW_CONTEXT_DONT_CARE`).

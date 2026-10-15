@@ -44,6 +44,9 @@ pub struct FwString<const N: usize> {
 }
 
 impl<const N: usize> FwString<N> {
+    /// The maximum length in bytes (C++ `getCapacity()` minus the NUL).
+    pub const CAPACITY: usize = N;
+
     /// Size when serialized at full capacity: `N + sizeof(FwSizeStoreType)`
     /// (the C++ `STATIC_SERIALIZED_SIZE` used to size autocoded buffers).
     pub const SERIALIZED_SIZE: usize = N + size_of::<FwSizeStoreType>();

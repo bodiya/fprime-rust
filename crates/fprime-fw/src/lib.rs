@@ -37,7 +37,7 @@ pub use packets::{CmdPacket, LogPacket, TlmPacket};
 pub use poly_type::PolyType;
 pub use serial::{
     CmdArgBuffer, ComBuffer, Deserialize, Endianness, ExtBuf, LengthMode, LinearBuffer, LogBuffer,
-    ParamBuffer, SerBuf, SerBufAny, Serialize, SerializeStatus, TlmBuffer,
+    ParamBuffer, SerBuf, SerBufAny, Serialize, SerializeStatus, SmSignalBuffer, TlmBuffer,
 };
 pub use string::{
     CmdStringArg, FileNameString, FwDefaultString, FwString, InternalInterfaceString, LogStringArg,

@@ -150,7 +150,47 @@ macro_rules! component_msg_types {
     };
 }
 
-/// Numbering muncher for [`component_msg_types!`]; not part of the API.
+/// Declare a component's state machine ids (the C++ `SmId` enumeration) as
+/// associated consts, numbered from 0 in declaration order.
+///
+/// C++ numbers **every** state machine instance of the component, internal
+/// and external together, in the **sorted order of the instance names**;
+/// declare them in that order. The ids travel in the signal messages (see
+/// [`sm`](crate::sm)).
+///
+/// ```
+/// use fprime_comp::component_sm_ids;
+///
+/// struct MyComponent;
+///
+/// component_sm_ids! {
+///     /// State machine ids.
+///     impl MyComponent {
+///         /// Instance `basic1`.
+///         SM_ID_BASIC1,
+///         /// Instance `basic2`.
+///         SM_ID_BASIC2,
+///     }
+/// }
+///
+/// assert_eq!(MyComponent::SM_ID_BASIC1, 0);
+/// assert_eq!(MyComponent::SM_ID_BASIC2, 1);
+/// ```
+#[macro_export]
+macro_rules! component_sm_ids {
+    (
+        $(#[$meta:meta])*
+        impl $comp:ty { $($body:tt)* }
+    ) => {
+        $(#[$meta])*
+        impl $comp {
+            $crate::__component_msg_type_consts!(0; $($body)*);
+        }
+    };
+}
+
+/// Numbering muncher for [`component_msg_types!`] and
+/// [`component_sm_ids!`]; not part of the API.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __component_msg_type_consts {
