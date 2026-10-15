@@ -1,0 +1,189 @@
+init [] -> a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+AWAITING_CMD_RUN_VALIDATED checkTimersIn [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED cmd_BREAK [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED cmd_CANCEL [] -> a:report_seqCancelled a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+AWAITING_CMD_RUN_VALIDATED cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+AWAITING_CMD_RUN_VALIDATED cmd_CONTINUE [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED cmd_RUN [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED cmd_RUN_VALIDATED [1] -> a:setSequenceBlockState a:resetRuntime a:incrementSequenceCounter a:pushArgsToStack g:shouldBreak a:report_seqBroken a:signalEntered a:clearBreakBeforeNextLine ; RUNNING_PAUSED
+AWAITING_CMD_RUN_VALIDATED cmd_RUN_VALIDATED [0] -> a:setSequenceBlockState a:resetRuntime a:incrementSequenceCounter a:pushArgsToStack g:shouldBreak a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+AWAITING_CMD_RUN_VALIDATED cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+AWAITING_CMD_RUN_VALIDATED cmd_STEP [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED cmd_VALIDATE [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED entered [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_checkShouldWake_keepSleeping [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_checkShouldWake_wakeup [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_checkStatementTimeout_noTimeout [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_checkStatementTimeout_statementTimeout [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_dispatchStatement_failure [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_dispatchStatement_noMoreStatements [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_dispatchStatement_success [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_failure [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_success [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED result_timeOpFailed [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED stmtResponse_beginSleep [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED stmtResponse_failure [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED stmtResponse_keepWaiting [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED stmtResponse_success [] ->  ; -
+AWAITING_CMD_RUN_VALIDATED stmtResponse_unexpected [] ->  ; -
+IDLE checkTimersIn [] ->  ; -
+IDLE cmd_BREAK [] ->  ; -
+IDLE cmd_CANCEL [] ->  ; -
+IDLE cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+IDLE cmd_CONTINUE [] ->  ; -
+IDLE cmd_RUN [] -> a:setGoalState_RUNNING a:setSequenceFilePath a:setSequenceBlockState a:setSequenceArguments a:report_seqStarted a:signalEntered ; VALIDATING
+IDLE cmd_RUN_VALIDATED [] ->  ; -
+IDLE cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+IDLE cmd_STEP [] ->  ; -
+IDLE cmd_VALIDATE [] -> a:setGoalState_VALID a:setSequenceFilePath a:setSequenceArguments a:report_seqStarted a:signalEntered ; VALIDATING
+IDLE entered [] ->  ; -
+IDLE result_checkShouldWake_keepSleeping [] ->  ; -
+IDLE result_checkShouldWake_wakeup [] ->  ; -
+IDLE result_checkStatementTimeout_noTimeout [] ->  ; -
+IDLE result_checkStatementTimeout_statementTimeout [] ->  ; -
+IDLE result_dispatchStatement_failure [] ->  ; -
+IDLE result_dispatchStatement_noMoreStatements [] ->  ; -
+IDLE result_dispatchStatement_success [] ->  ; -
+IDLE result_failure [] ->  ; -
+IDLE result_success [] ->  ; -
+IDLE result_timeOpFailed [] ->  ; -
+IDLE stmtResponse_beginSleep [] ->  ; -
+IDLE stmtResponse_failure [] ->  ; -
+IDLE stmtResponse_keepWaiting [] ->  ; -
+IDLE stmtResponse_success [] ->  ; -
+IDLE stmtResponse_unexpected [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE checkTimersIn [] -> a:checkStatementTimeout ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_BREAK [] -> a:setBreakBeforeNextLine ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_CANCEL [] -> a:report_seqCancelled a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_CONTINUE [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_RUN [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_RUN_VALIDATED [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_STEP [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE cmd_VALIDATE [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE entered [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_checkShouldWake_keepSleeping [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_checkShouldWake_wakeup [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_checkStatementTimeout_noTimeout [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_checkStatementTimeout_statementTimeout [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_AWAITING_STATEMENT_RESPONSE result_dispatchStatement_failure [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_dispatchStatement_noMoreStatements [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_dispatchStatement_success [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_failure [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_success [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE result_timeOpFailed [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_beginSleep [] ->  ; RUNNING_SLEEPING
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_failure [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_keepWaiting [] ->  ; -
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_success [1] -> g:shouldBreak a:report_seqBroken a:signalEntered a:clearBreakBeforeNextLine ; RUNNING_PAUSED
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_success [0] -> g:shouldBreak a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+RUNNING_AWAITING_STATEMENT_RESPONSE stmtResponse_unexpected [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_DISPATCH_STATEMENT checkTimersIn [] ->  ; -
+RUNNING_DISPATCH_STATEMENT cmd_BREAK [] -> a:setBreakBeforeNextLine ; -
+RUNNING_DISPATCH_STATEMENT cmd_CANCEL [] -> a:report_seqCancelled a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_DISPATCH_STATEMENT cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+RUNNING_DISPATCH_STATEMENT cmd_CONTINUE [] ->  ; -
+RUNNING_DISPATCH_STATEMENT cmd_RUN [] ->  ; -
+RUNNING_DISPATCH_STATEMENT cmd_RUN_VALIDATED [] ->  ; -
+RUNNING_DISPATCH_STATEMENT cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+RUNNING_DISPATCH_STATEMENT cmd_STEP [] ->  ; -
+RUNNING_DISPATCH_STATEMENT cmd_VALIDATE [] ->  ; -
+RUNNING_DISPATCH_STATEMENT entered [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_checkShouldWake_keepSleeping [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_checkShouldWake_wakeup [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_checkStatementTimeout_noTimeout [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_checkStatementTimeout_statementTimeout [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_dispatchStatement_failure [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_DISPATCH_STATEMENT result_dispatchStatement_noMoreStatements [] -> a:report_seqSucceeded a:sendCmdResponse_OK a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_DISPATCH_STATEMENT result_dispatchStatement_success [] ->  ; RUNNING_AWAITING_STATEMENT_RESPONSE
+RUNNING_DISPATCH_STATEMENT result_failure [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_success [] ->  ; -
+RUNNING_DISPATCH_STATEMENT result_timeOpFailed [] ->  ; -
+RUNNING_DISPATCH_STATEMENT stmtResponse_beginSleep [] ->  ; -
+RUNNING_DISPATCH_STATEMENT stmtResponse_failure [] ->  ; -
+RUNNING_DISPATCH_STATEMENT stmtResponse_keepWaiting [] ->  ; -
+RUNNING_DISPATCH_STATEMENT stmtResponse_success [] ->  ; -
+RUNNING_DISPATCH_STATEMENT stmtResponse_unexpected [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_PAUSED checkTimersIn [] ->  ; -
+RUNNING_PAUSED cmd_BREAK [] -> a:setBreakBeforeNextLine ; -
+RUNNING_PAUSED cmd_CANCEL [] -> a:report_seqCancelled a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_PAUSED cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+RUNNING_PAUSED cmd_CONTINUE [] -> a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+RUNNING_PAUSED cmd_RUN [] ->  ; -
+RUNNING_PAUSED cmd_RUN_VALIDATED [] ->  ; -
+RUNNING_PAUSED cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+RUNNING_PAUSED cmd_STEP [] -> a:setBreakBeforeNextLine a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+RUNNING_PAUSED cmd_VALIDATE [] ->  ; -
+RUNNING_PAUSED entered [1] -> g:breakOnce a:clearBreakpoint ; -
+RUNNING_PAUSED entered [0] -> g:breakOnce ; -
+RUNNING_PAUSED result_checkShouldWake_keepSleeping [] ->  ; -
+RUNNING_PAUSED result_checkShouldWake_wakeup [] ->  ; -
+RUNNING_PAUSED result_checkStatementTimeout_noTimeout [] ->  ; -
+RUNNING_PAUSED result_checkStatementTimeout_statementTimeout [] ->  ; -
+RUNNING_PAUSED result_dispatchStatement_failure [] ->  ; -
+RUNNING_PAUSED result_dispatchStatement_noMoreStatements [] ->  ; -
+RUNNING_PAUSED result_dispatchStatement_success [] ->  ; -
+RUNNING_PAUSED result_failure [] ->  ; -
+RUNNING_PAUSED result_success [] ->  ; -
+RUNNING_PAUSED result_timeOpFailed [] ->  ; -
+RUNNING_PAUSED stmtResponse_beginSleep [] ->  ; -
+RUNNING_PAUSED stmtResponse_failure [] ->  ; -
+RUNNING_PAUSED stmtResponse_keepWaiting [] ->  ; -
+RUNNING_PAUSED stmtResponse_success [] ->  ; -
+RUNNING_PAUSED stmtResponse_unexpected [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_SLEEPING checkTimersIn [] -> a:checkShouldWake a:checkStatementTimeout ; -
+RUNNING_SLEEPING cmd_BREAK [] -> a:setBreakBeforeNextLine ; -
+RUNNING_SLEEPING cmd_CANCEL [] -> a:report_seqCancelled a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_SLEEPING cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+RUNNING_SLEEPING cmd_CONTINUE [] ->  ; -
+RUNNING_SLEEPING cmd_RUN [] ->  ; -
+RUNNING_SLEEPING cmd_RUN_VALIDATED [] ->  ; -
+RUNNING_SLEEPING cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+RUNNING_SLEEPING cmd_STEP [] ->  ; -
+RUNNING_SLEEPING cmd_VALIDATE [] ->  ; -
+RUNNING_SLEEPING entered [] ->  ; -
+RUNNING_SLEEPING result_checkShouldWake_keepSleeping [] ->  ; -
+RUNNING_SLEEPING result_checkShouldWake_wakeup [1] -> g:shouldBreak a:report_seqBroken a:signalEntered a:clearBreakBeforeNextLine ; RUNNING_PAUSED
+RUNNING_SLEEPING result_checkShouldWake_wakeup [0] -> g:shouldBreak a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+RUNNING_SLEEPING result_checkStatementTimeout_noTimeout [] ->  ; -
+RUNNING_SLEEPING result_checkStatementTimeout_statementTimeout [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_SLEEPING result_dispatchStatement_failure [] ->  ; -
+RUNNING_SLEEPING result_dispatchStatement_noMoreStatements [] ->  ; -
+RUNNING_SLEEPING result_dispatchStatement_success [] ->  ; -
+RUNNING_SLEEPING result_failure [] ->  ; -
+RUNNING_SLEEPING result_success [] ->  ; -
+RUNNING_SLEEPING result_timeOpFailed [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+RUNNING_SLEEPING stmtResponse_beginSleep [] ->  ; -
+RUNNING_SLEEPING stmtResponse_failure [] ->  ; -
+RUNNING_SLEEPING stmtResponse_keepWaiting [] ->  ; -
+RUNNING_SLEEPING stmtResponse_success [] ->  ; -
+RUNNING_SLEEPING stmtResponse_unexpected [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+VALIDATING checkTimersIn [] ->  ; -
+VALIDATING cmd_BREAK [] ->  ; -
+VALIDATING cmd_CANCEL [] -> a:report_seqCancelled a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+VALIDATING cmd_CLEAR_BREAKPOINT [] -> a:clearBreakpoint ; -
+VALIDATING cmd_CONTINUE [] ->  ; -
+VALIDATING cmd_RUN [] ->  ; -
+VALIDATING cmd_RUN_VALIDATED [] ->  ; -
+VALIDATING cmd_SET_BREAKPOINT [] -> a:setBreakpoint ; -
+VALIDATING cmd_STEP [] ->  ; -
+VALIDATING cmd_VALIDATE [] ->  ; -
+VALIDATING entered [] -> a:validate ; -
+VALIDATING result_checkShouldWake_keepSleeping [] ->  ; -
+VALIDATING result_checkShouldWake_wakeup [] ->  ; -
+VALIDATING result_checkStatementTimeout_noTimeout [] ->  ; -
+VALIDATING result_checkStatementTimeout_statementTimeout [] ->  ; -
+VALIDATING result_dispatchStatement_failure [] ->  ; -
+VALIDATING result_dispatchStatement_noMoreStatements [] ->  ; -
+VALIDATING result_dispatchStatement_success [] ->  ; -
+VALIDATING result_failure [] -> a:report_seqFailed a:sendCmdResponse_EXECUTION_ERROR a:clearBreakpoint a:setGoalState_IDLE a:clearSequenceFile a:clearSequenceArguments ; IDLE
+VALIDATING result_success [11] -> g:goalStateIs_RUNNING a:resetRuntime a:incrementSequenceCounter a:pushArgsToStack g:shouldBreak a:report_seqBroken a:signalEntered a:clearBreakBeforeNextLine ; RUNNING_PAUSED
+VALIDATING result_success [10] -> g:goalStateIs_RUNNING a:resetRuntime a:incrementSequenceCounter a:pushArgsToStack g:shouldBreak a:dispatchStatement ; RUNNING_DISPATCH_STATEMENT
+VALIDATING result_success [0] -> g:goalStateIs_RUNNING a:sendCmdResponse_OK ; AWAITING_CMD_RUN_VALIDATED
+VALIDATING result_timeOpFailed [] ->  ; -
+VALIDATING stmtResponse_beginSleep [] ->  ; -
+VALIDATING stmtResponse_failure [] ->  ; -
+VALIDATING stmtResponse_keepWaiting [] ->  ; -
+VALIDATING stmtResponse_success [] ->  ; -
+VALIDATING stmtResponse_unexpected [] ->  ; -

@@ -113,11 +113,13 @@
 ///   replaced by `_`** (`S1.S2` is `S1_S2`, as in the C++ `State` enum and
 ///   `enter_S1_S2`).
 /// - **Discriminants are explicit**, as everywhere in this workspace:
-///   signals are numbered from 1 in **name order** (the C++ `Signal` enum
-///   sorts them), leaf states from 1 in **definition order** (the order of
-///   the C++ `State` enum). The representation type after the machine
-///   name is the `State` enum's: the smallest unsigned type holding the
-///   leaf count plus one (`u8` in practice).
+///   `fpp-to-cpp` sorts both enums by name, so signals are numbered from
+///   1 in **name order** and leaf states from 1 in the **order of their
+///   `_`-joined names** (`A_A` before `A_B`, whatever the definition
+///   order). The representation type after the machine name is the
+///   `State` enum's: the smallest unsigned type holding the leaf count
+///   plus one (`u8` in practice). The order in which states, choices and
+///   signals are *listed* does not matter.
 /// - **Types carry a passing mode**, as in the port macros: `(val T)`
 ///   passes a `Copy` value by value, `(ref T)` by reference, and
 ///   `(str FwString<N>)` is an FPP string, passed as `&str` (C++

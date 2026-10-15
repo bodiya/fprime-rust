@@ -1,0 +1,1 @@
+init [] -> a:a a:a a:a a:a a:a a:a ; S_T

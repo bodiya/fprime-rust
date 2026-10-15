@@ -1,0 +1,12 @@
+init [] ->  ; WAIT_STATUS
+FILL fill [1] -> g:isFull a:doSplitHold a:doSend ; WAIT_STATUS
+FILL fill [01] -> g:isFull g:willFill a:doFill a:doSend ; WAIT_STATUS
+FILL fill [00] -> g:isFull g:willFill a:doFill ; FILL
+FILL status [] -> a:assertNoStatus ; -
+FILL timeout [1] -> g:isNotEmpty a:doSend ; WAIT_STATUS
+FILL timeout [0] -> g:isNotEmpty ; -
+WAIT_STATUS fill [] -> a:doHold ; -
+WAIT_STATUS status [11] -> g:isGood a:doClear g:isSpanFull a:doSend ; WAIT_STATUS
+WAIT_STATUS status [10] -> g:isGood a:doClear g:isSpanFull ; FILL
+WAIT_STATUS status [0] -> g:isGood a:doNoteFailure ; WAIT_STATUS
+WAIT_STATUS timeout [] ->  ; -

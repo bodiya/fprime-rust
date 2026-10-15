@@ -1,0 +1,10 @@
+init [] -> a:enterS1 a:enterS2 ; S1_S2
+S1_S2 S1_to_S4 [] -> a:exitS2 a:exitS1 a:a a:enterS4 a:enterS5 ; S4_S5
+S1_S2 S1_to_S5 [] -> a:exitS2 a:exitS1 a:a a:enterS4 a:enterS5 ; S4_S5
+S1_S2 S2_to_S3 [] -> a:exitS2 a:enterS3 ; S1_S3
+S1_S3 S1_to_S4 [] -> a:exitS3 a:exitS1 a:a a:enterS4 a:enterS5 ; S4_S5
+S1_S3 S1_to_S5 [] -> a:exitS3 a:exitS1 a:a a:enterS4 a:enterS5 ; S4_S5
+S1_S3 S2_to_S3 [] ->  ; -
+S4_S5 S1_to_S4 [] ->  ; -
+S4_S5 S1_to_S5 [] ->  ; -
+S4_S5 S2_to_S3 [] ->  ; -

@@ -23,7 +23,7 @@ use fprime_comp::{
     ActiveBase, ActiveComponent, ComponentDispatch, MsgDispatchStatus, QueueFullPolicy, QueuedBase,
     component_msg_types, component_sm_ids, fpp_state_machine, msg,
 };
-use sm_harness::{Guard, History, Pick, TestAbsType};
+use sm_harness::{Guard, History, Pick, TestAbsType, TestArray, TestEnum, TestStruct};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -1426,3 +1426,126 @@ fn actions_send_signals_through_the_queue() {
     assert_eq!(c.bounces.load(Ordering::Relaxed), 5);
     assert_eq!(c.sm_ping_pong.get_state(), PingPong::State::B);
 }
+
+// ===========================================================================
+// SmInstanceState.Basic<T> — the typed `Basic*` machines through a queue
+// ===========================================================================
+
+/// A queued component with one instance of `state machine Basic<T> {
+/// action a; action b: T; signal s: T; ... }` (upstream
+/// `BasicTestArray`, `BasicTestEnum`, `BasicTestStruct`, `BasicU32`
+/// testers): the value crosses the queue and reaches action `b`.
+macro_rules! typed_instance {
+    ($test:ident, $mode:ident, $ty:ty, $pick:expr, $arg:ident => $send:expr, $own:ident => $owned:expr) => {
+        mod $test {
+            use super::*;
+
+            mod Machine {
+                #[allow(unused_imports)]
+                use super::super::*;
+                fprime_comp::fpp_state_machine! {
+                    /// A basic state machine with a typed signal
+                    state machine Basic: u8 {
+                        actions { a => action_a, b => action_b ($mode $ty) }
+                        guards {}
+                        signals {
+                            s = 1 => send_signal_s ($mode $ty) {
+                                S => do { a, b } enter T;
+                            }
+                        }
+                        initial enter S;
+                        states {
+                            state S = 1 { exit do { a } }
+                            state T = 2 { entry do { a, a, a } }
+                        }
+                        choices {}
+                    }
+                }
+            }
+
+            const MSG_SIZE: usize = Machine::StateMachine::SIGNAL_MSG_SIZE;
+
+            struct Comp {
+                queued: QueuedBase,
+                sm: Machine::StateMachine,
+                a: History<Machine::Signal, ()>,
+                b: History<Machine::Signal, $ty>,
+            }
+
+            component_msg_types! {
+                impl Comp {
+                    MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL,
+                }
+            }
+
+            impl Comp {
+                fn sender(&self) -> Machine::Sender<'_, MSG_SIZE> {
+                    Machine::Sender(SmSender::new(
+                        &self.queued,
+                        Self::MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL,
+                        0,
+                        0,
+                        QueueFullPolicy::Assert,
+                    ))
+                }
+            }
+
+            impl ComponentDispatch for Comp {
+                fn dispatch_message(
+                    &self,
+                    msg_type: FwEnumStoreType,
+                    msg: &mut dyn SerBufAny,
+                ) -> MsgDispatchStatus {
+                    assert_eq!(msg_type, Self::MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL);
+                    let (sm_id, signal) = read_sm_message(msg);
+                    assert_eq!(sm_id, 0);
+                    self.sm.dispatch_signal(self, signal, msg);
+                    MsgDispatchStatus::Ok
+                }
+            }
+
+            impl Machine::Handlers for Comp {
+                fn action_a(&self, _: FwEnumStoreType, signal: Machine::Signal) {
+                    self.a.push(signal, ());
+                }
+                fn action_b(
+                    &self,
+                    _: FwEnumStoreType,
+                    signal: Machine::Signal,
+                    $own: fprime_comp::__fpp_sm_param_ty!($mode $ty),
+                ) {
+                    self.b.push(signal, $owned);
+                }
+            }
+
+            #[test]
+            fn test() {
+                let c = Comp {
+                    queued: QueuedBase::new("typed"),
+                    sm: Machine::StateMachine::new(),
+                    a: History::new(),
+                    b: History::new(),
+                };
+                c.sm.init(0, &c);
+                c.queued.create_queue(QUEUE_DEPTH, MSG_SIZE as FwSizeType);
+                assert_eq!(c.sm.get_state(), Machine::State::S);
+                let value: $ty = $pick(&Pick::new(51));
+                let $arg = &value;
+                c.sender().send_signal_s($send);
+                assert_eq!(c.sm.get_state(), Machine::State::S);
+                assert_eq!(
+                    c.queued.do_dispatch(&c, BlockingType::NonBlocking),
+                    MsgDispatchStatus::Ok
+                );
+                assert_eq!(c.sm.get_state(), Machine::State::T);
+                assert_eq!(c.a.signals(), vec![Machine::Signal::s; 5]);
+                assert_eq!(c.b.items(), vec![(Machine::Signal::s, value)]);
+            }
+        }
+    };
+}
+
+typed_instance!(basic_test_array, ref, TestArray, |p: &Pick| p.test_array(), v => v, v => *v);
+typed_instance!(basic_test_enum, val, TestEnum, |p: &Pick| p.test_enum(), v => *v, v => v);
+typed_instance!(basic_test_struct, ref, TestStruct, |p: &Pick| p.test_struct(), v => v, v => *v);
+typed_instance!(basic_u32, val, u32, |p: &Pick| p.any(), v => *v, v => v);

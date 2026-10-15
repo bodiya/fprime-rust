@@ -1,0 +1,4 @@
+init [] ->  ; S
+S s [1] -> g:g a:a a:a a:a a:a a:a a:a ; T
+S s [0] -> g:g ; -
+T s [] ->  ; -

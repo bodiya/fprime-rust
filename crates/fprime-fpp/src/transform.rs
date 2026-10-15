@@ -4,8 +4,10 @@
 //! machine with a member sequence implicitly contains `enum State` whose
 //! constants are `__FPRIME_UNINITIALIZED` followed by one constant per
 //! leaf state, named by the state's qualified name with `.` replaced by
-//! `_`, in lexical order. Its representation type is the smallest unsigned
-//! integer type that holds one plus the number of leaf states.
+//! `_`, sorted by that name (not in definition order: `fpp-to-cpp` 3.3.0
+//! numbers `state A { state B }` and `state A_A` as `A_A = 1`, `A_B = 2`).
+//! Its representation type is the smallest unsigned integer type that
+//! holds one plus the number of leaf states.
 
 use crate::ast::*;
 use crate::error::Loc;
@@ -53,6 +55,7 @@ fn state_machine(sm: &mut Node<DefStateMachine>, next_id: &mut NodeId) {
             collect_leaves(s, &mut Vec::new(), &mut leaves);
         }
     }
+    leaves.sort();
     let loc = sm.loc.clone();
     let mut mk = |data: DefEnumConstant, loc: &Loc| -> Annotated<Node<DefEnumConstant>> {
         let id = *next_id;

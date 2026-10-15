@@ -1,0 +1,9 @@
+init [] ->  ; S1_S2
+S1_S2 S2_to_S3 [] ->  ; S1_S3
+S1_S2 poly [] ->  ; S4
+S1_S3 S2_to_S3 [] ->  ; -
+S1_S3 poly [] ->  ; S5
+S4 S2_to_S3 [] ->  ; -
+S4 poly [] ->  ; -
+S5 S2_to_S3 [] ->  ; -
+S5 poly [] ->  ; -

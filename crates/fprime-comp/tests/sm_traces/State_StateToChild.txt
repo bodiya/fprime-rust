@@ -1,0 +1,5 @@
+init [] -> a:enterS2 ; S1_S2
+S1_S2 S1_to_S2 [] -> a:exitS2 a:a a:enterS2 ; S1_S2
+S1_S2 S2_to_S3 [] -> a:exitS2 a:enterS3 ; S1_S3
+S1_S3 S1_to_S2 [] -> a:exitS3 a:a a:enterS2 ; S1_S2
+S1_S3 S2_to_S3 [] ->  ; -

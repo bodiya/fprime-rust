@@ -1,0 +1,6 @@
+init [] ->  ; S1
+S1 s [1] -> g:g1 a:exitS1 a:a a:enterS2 ; S2_S3
+S1 s [01] -> g:g1 a:exitS1 a:a a:enterS2 g:g2 ; S2_S3
+S1 s [00] -> g:g1 a:exitS1 a:a a:enterS2 g:g2 ; S2_S4
+S2_S3 s [] ->  ; -
+S2_S4 s [] ->  ; -

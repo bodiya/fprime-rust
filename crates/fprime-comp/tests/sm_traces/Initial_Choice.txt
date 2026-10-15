@@ -1,0 +1,2 @@
+init [1] -> a:a g:g a:a a:a ; S
+init [0] -> a:a g:g a:a a:a a:a a:a ; T

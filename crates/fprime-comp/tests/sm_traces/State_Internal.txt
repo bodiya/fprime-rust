@@ -1,0 +1,5 @@
+init [] ->  ; S1_S2
+S1_S2 S1_internal [] -> a:a ; -
+S1_S2 S2_to_S3 [] ->  ; S1_S3
+S1_S3 S1_internal [] -> a:a ; -
+S1_S3 S2_to_S3 [] ->  ; -

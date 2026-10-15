@@ -513,3 +513,33 @@ fn serial_connections_follow_the_reference_rules() {
         )
     );
 }
+
+/// The implicit `State` enum of a state machine numbers its leaf states in
+/// the sorted order of their `_`-joined qualified names, as `fpp-to-cpp`
+/// 3.3.0 does (`A_A = 1`, `A_B = 2` here, although `A.B` is defined first).
+#[test]
+fn state_enum_numbers_leaf_states_in_name_order() {
+    let src = r#"
+      module M {
+        state machine Sm {
+          signal s
+          initial enter A
+          state A {
+            initial enter B
+            state B { on s enter A_A }
+          }
+          state A_A { on s enter Z }
+          state Z { on s enter A }
+        }
+      }"#;
+    let mut session = Session::new();
+    let mut a = analyze(&mut session, &[("m.fpp", src)]);
+    let value = |a: &mut Analysis<'_>, name: &str| match constant(a, name) {
+        Value::Enum(_, _, v) => v,
+        other => panic!("{name}: not an enum constant: {other}"),
+    };
+    assert_eq!(value(&mut a, "M.Sm.State.__FPRIME_UNINITIALIZED"), 0);
+    assert_eq!(value(&mut a, "M.Sm.State.A_A"), 1);
+    assert_eq!(value(&mut a, "M.Sm.State.A_B"), 2);
+    assert_eq!(value(&mut a, "M.Sm.State.Z"), 3);
+}

@@ -4,8 +4,8 @@
 //! state-to-choice, state-to-self, state-to-state).
 //!
 //! Each state machine is the upstream `.fppi` model written for
-//! `fpp_state_machine!` (signals numbered in name order, leaf states in
-//! definition order, as `fpp-to-cpp` does); each test is the upstream
+//! `fpp_state_machine!` (signals and leaf states numbered in name order,
+//! as `fpp-to-cpp` does); each test is the upstream
 //! test, action for action.
 #![allow(non_snake_case)]
 
