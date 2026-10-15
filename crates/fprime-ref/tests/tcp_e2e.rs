@@ -123,6 +123,7 @@ fn tcp_no_op_round_trip() {
         hostname: Some("127.0.0.1".to_string()),
         port,
         data_dir: Some(scratch_data_dir()),
+        ..TopologyConfig::default()
     });
     topology
         .fatal_handler

@@ -5,8 +5,10 @@
 //! with no comms) plus `-d data-dir` (this port's addition: the directory
 //! the parameter database, uplinked files, data products and `.com` logs
 //! live in, where C++ hard-codes `"PrmDb.dat"`, `"/tmp/uplink/"` and
-//! `"./DpCat"`), set up the topology, run the blocking 1 Hz rate loop,
-//! tear down, exit 0.
+//! `"./DpCat"`) and `-f fprime|ccsds` (also this port's addition: the
+//! communications stack — upstream's Ref is built with `ComCcsds`, this
+//! one defaults to `ComFprime` and can wire either), set up the topology,
+//! run the blocking 1 Hz rate loop, tear down, exit 0.
 //!
 //! Divergence from C++ (documented): C++ installs SIGINT/SIGTERM handlers
 //! calling `stopRateGroups()`; zero-dependency safe Rust has no signal
@@ -16,21 +18,24 @@
 use std::io::BufRead;
 
 use fprime_fw::{TimeInterval, fw_log};
-use fprime_ref::topology::{RefTopology, TopologyConfig};
+use fprime_ref::topology::{Framing, RefTopology, TopologyConfig};
 
 /// Print usage and exit with status 2 (getopt-style error path).
 fn usage_error(program: &str, message: &str) -> ! {
     eprintln!("{message}");
-    eprintln!("Usage: {program} [-a <hostname>] [-p <port>] [-d <data-dir>]");
+    eprintln!("Usage: {program} [-a <hostname>] [-p <port>] [-d <data-dir>] [-f fprime|ccsds]");
     eprintln!("  -a, --address    GDS hostname (dotted-quad IPv4)");
     eprintln!("  -p, --port       GDS TCP port; comms need BOTH -a and -p");
     eprintln!("  -d, --data-dir   directory for the parameter database, uplinked");
     eprintln!("                   files, data products and .com logs");
     eprintln!("                   (default: <temp>/fprime-ref-<pid>)");
+    eprintln!("  -f, --framing    fprime (ComFprime, default) or ccsds (ComCcsds:");
+    eprintln!("                   space packets in TM/TC transfer frames)");
     std::process::exit(2);
 }
 
-/// Manual getopt-style parse of `-a <hostname> -p <port> -d <data-dir>`.
+/// Manual getopt-style parse of `-a <hostname> -p <port> -d <data-dir>
+/// -f <framing>`.
 fn parse_args() -> TopologyConfig {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_else(|| "fprime-ref".to_string());
@@ -48,6 +53,11 @@ fn parse_args() -> TopologyConfig {
             "-d" | "--data-dir" => match args.next() {
                 Some(dir) if !dir.is_empty() => config.data_dir = Some(dir),
                 _ => usage_error(&program, "-d requires a non-empty directory argument"),
+            },
+            "-f" | "--framing" => match args.next().as_deref() {
+                Some("fprime") => config.framing = Framing::Fprime,
+                Some("ccsds") => config.framing = Framing::Ccsds,
+                _ => usage_error(&program, "-f requires 'fprime' or 'ccsds'"),
             },
             "-h" | "--help" => usage_error(&program, "fprime-ref reference deployment"),
             other => usage_error(&program, &format!("unknown option: {other}")),
@@ -75,6 +85,7 @@ fn main() {
         "Ref deployment data directory: {}\n",
         config.resolved_data_dir()
     );
+    fw_log!("Ref deployment framing: {:?}\n", config.framing);
 
     let topology = RefTopology::setup(&config);
 

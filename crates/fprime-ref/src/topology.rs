@@ -25,6 +25,11 @@
 //! | `framer`            | `Svc.FprimeFramer`     | `0x0200_4000` | ComFprime     |
 //! | `fprimeRouter`      | `Svc.FprimeRouter`     | `0x0200_5000` | ComFprime     |
 //! | `comStub`           | `Svc.ComStub`          | `0x0200_6000` | ComFprime     |
+//! | `tmFramer`          | `Svc.Ccsds.TmFramer`   | `0x0200_7000` | ComCcsds      |
+//! | `spacePacketFramer` | `Svc.Ccsds.SpacePacketFramer` | `0x0200_8000` | ComCcsds |
+//! | `apidManager`       | `Svc.Ccsds.ApidManager`| `0x0200_9000` | ComCcsds      |
+//! | `tcDeframer`        | `Svc.Ccsds.TcDeframer` | `0x0200_B000` | ComCcsds      |
+//! | `spacePacketDeframer`| `Svc.Ccsds.SpacePacketDeframer` | `0x0200_C000` | ComCcsds |
 //! | `dpCat`             | `Svc.DpCatalog`        | `0x0400_0000` | DataProducts  |
 //! | `dpMgr`             | `Svc.DpManager`        | `0x0400_1000` | DataProducts  |
 //! | `dpWriter`          | `Svc.DpWriter`         | `0x0400_2000` | DataProducts  |
@@ -48,9 +53,43 @@
 //! | `comSplitter`       | `Svc.ComSplitter`      | `0x1050_0100` | ComLoggerTee  |
 //!
 //! (Base IDs are the C++ ones: `CdhCore` 0x01000000, `ComFprime`
-//! 0x02000000 — this deployment frames with `ComFprime`, not `ComCcsds` —
-//! `DataProducts` 0x04000000, `FileHandling` 0x05000000, `ComLoggerTee`
-//! 0x10500000, main-topology instances per `Ref/Top/instances.fpp`.)
+//! 0x02000000, `DataProducts` 0x04000000, `FileHandling` 0x05000000,
+//! `ComLoggerTee` 0x10500000, main-topology instances per
+//! `Ref/Top/instances.fpp`. The `ComCcsds` instances share the 0x02000000
+//! window with `ComFprime`, see "Framing" below.)
+//!
+//! ## Framing (`--framing fprime|ccsds`)
+//!
+//! [`Framing::Fprime`] (the default) wires the `ComFprime` chain:
+//! `comQueue -> framer -> comStub` down and `comStub -> frameAccumulator
+//! (FprimeFrameDetector) -> deframer -> fprimeRouter` up.
+//! [`Framing::Ccsds`] wires `ComCcsds.Subtopology` instead, for the GDS's
+//! `--framing-selection space-packet-space-data-link`:
+//! `comQueue -> spacePacketFramer -> tmFramer -> comStub` down and
+//! `comStub -> frameAccumulator (CcsdsTcFrameDetector) -> tcDeframer ->
+//! spacePacketDeframer -> fprimeRouter` up, with `apidManager` numbering
+//! and validating the space-packet sequence counts. Both chains share
+//! `comQueue`, `bufferManager`, `frameAccumulator`, `fprimeRouter` and
+//! `comStub` (the instances the two upstream subtopologies have in
+//! common), and every instance of both is constructed, so one ground
+//! dictionary covers either selection. Deviations from upstream
+//! `ComCcsds`, each deliberate:
+//!
+//! - **No `ComAggregator`.** It is not ported (ROADMAP item 12), so
+//!   `spacePacketFramer` feeds `tmFramer` directly: one space packet per TM
+//!   frame, the rest of the data field idle-filled. With upstream's
+//!   default `enablePacketSpanning = false` the aggregator only packs
+//!   several whole packets into one frame, which the ground deframer
+//!   handles either way.
+//! - **Instance ids.** The shared instances keep their `ComFprime` ids;
+//!   `tmFramer` (upstream's `framer`), `spacePacketFramer` and
+//!   `apidManager` keep the upstream `ComCcsds` offsets 0x7000-0x9000,
+//!   while `tcDeframer` and `spacePacketDeframer` (upstream 0x4000 and
+//!   0x5000, here taken by `framer` and `fprimeRouter`) move to 0xB000
+//!   and 0xC000.
+//! - **One comms buffer bin.** Upstream adds a 3000-byte file bin; the
+//!   framers here never allocate more than a 512-byte com buffer plus a
+//!   6-byte space-packet header, so the single 2048-byte bin serves both.
 //!
 //! ## Command-port index map (cmdDisp `compCmdReg`/`compCmdSend`, matched)
 //!
@@ -128,6 +167,11 @@ use fprime_fw::FileNameString;
 use fprime_svc::active_rate_group::ActiveRateGroup;
 use fprime_svc::buffer_accumulator::{BufferAccumulator, OpState};
 use fprime_svc::buffer_manager::{BufferBin, BufferManager};
+use fprime_svc::ccsds::apid_manager::ApidManager;
+use fprime_svc::ccsds::space_packet_deframer::SpacePacketDeframer;
+use fprime_svc::ccsds::space_packet_framer::SpacePacketFramer;
+use fprime_svc::ccsds::tc_deframer::TcDeframer;
+use fprime_svc::ccsds::tm_framer::TmFramer;
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_svc::cmd_sequencer::CmdSequencer;
 use fprime_svc::com_logger::ComLogger;
@@ -144,7 +188,9 @@ use fprime_svc::file_uplink::FileUplink;
 use fprime_svc::fprime_deframer::FprimeDeframer;
 use fprime_svc::fprime_framer::FprimeFramer;
 use fprime_svc::fprime_router::FprimeRouter;
-use fprime_svc::frame_accumulator::{FprimeFrameDetector, FrameAccumulator};
+use fprime_svc::frame_accumulator::{
+    CcsdsTcFrameDetector, FprimeFrameDetector, FrameAccumulator, FrameDetector,
+};
 use fprime_svc::health::{Health, PingEntry};
 use fprime_svc::linux_timer::LinuxTimer;
 use fprime_svc::passive_text_logger::PassiveTextLogger;
@@ -188,6 +234,18 @@ pub const FRAMER_BASE_ID: FwIdType = 0x0200_4000;
 pub const ROUTER_BASE_ID: FwIdType = 0x0200_5000;
 /// `comStub` base ID.
 pub const COM_STUB_BASE_ID: FwIdType = 0x0200_6000;
+/// `tmFramer` base ID (upstream `ComCcsds.framer`, `BASE_ID + 0x07000`).
+pub const TM_FRAMER_BASE_ID: FwIdType = 0x0200_7000;
+/// `spacePacketFramer` base ID (`ComCcsds` `BASE_ID + 0x08000`).
+pub const SPACE_PACKET_FRAMER_BASE_ID: FwIdType = 0x0200_8000;
+/// `apidManager` base ID (`ComCcsds` `BASE_ID + 0x09000`).
+pub const APID_MANAGER_BASE_ID: FwIdType = 0x0200_9000;
+/// `tcDeframer` base ID. Upstream `ComCcsds` uses `BASE_ID + 0x04000`,
+/// which this deployment's `framer` (`ComFprime`) occupies.
+pub const TC_DEFRAMER_BASE_ID: FwIdType = 0x0200_B000;
+/// `spacePacketDeframer` base ID. Upstream `ComCcsds` uses
+/// `BASE_ID + 0x05000`, which this deployment's `fprimeRouter` occupies.
+pub const SPACE_PACKET_DEFRAMER_BASE_ID: FwIdType = 0x0200_C000;
 /// `dpCat` base ID (DataProducts window).
 pub const DP_CATALOG_BASE_ID: FwIdType = 0x0400_0000;
 /// `dpMgr` base ID.
@@ -361,6 +419,18 @@ const COM_LOGGER_PREFIX: &str = "comlog";
 // TopologyState equivalent
 // ---------------------------------------------------------------------------
 
+/// Which communications stack carries the ground link (see the module
+/// header's "Framing" section).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Framing {
+    /// `ComFprime`: F Prime frames (GDS `--framing-selection fprime`).
+    #[default]
+    Fprime,
+    /// `ComCcsds`: space packets in TM (down) and TC (up) transfer frames
+    /// (GDS `--framing-selection space-packet-space-data-link`).
+    Ccsds,
+}
+
 /// CLI-derived deployment state (C++ `Ref::TopologyState`).
 #[derive(Debug, Clone, Default)]
 pub struct TopologyConfig {
@@ -377,6 +447,8 @@ pub struct TopologyConfig {
     /// `"/tmp/uplink/"`; one configurable root keeps a test (or a second
     /// instance) from colliding with those fixed paths.
     pub data_dir: Option<String>,
+    /// The communications stack (`--framing`); `ComFprime` by default.
+    pub framing: Framing,
 }
 
 impl TopologyConfig {
@@ -521,6 +593,19 @@ pub struct RefTopology {
     pub router: Arc<FprimeRouter>,
     /// `comStub` — byte-stream com adapter.
     pub com_stub: Arc<ComStub>,
+    /// `tmFramer` — CCSDS TM transfer-frame framer ([`Framing::Ccsds`]).
+    pub tm_framer: Arc<TmFramer>,
+    /// `spacePacketFramer` — CCSDS space-packet framer ([`Framing::Ccsds`]).
+    pub space_packet_framer: Arc<SpacePacketFramer>,
+    /// `apidManager` — space-packet sequence counts ([`Framing::Ccsds`]).
+    pub apid_manager: Arc<ApidManager>,
+    /// `tcDeframer` — CCSDS TC transfer-frame deframer ([`Framing::Ccsds`]).
+    pub tc_deframer: Arc<TcDeframer>,
+    /// `spacePacketDeframer` — CCSDS space-packet deframer
+    /// ([`Framing::Ccsds`]).
+    pub space_packet_deframer: Arc<SpacePacketDeframer>,
+    /// The communications stack this topology was wired with.
+    pub framing: Framing,
     /// `signalGen` — the demo component.
     pub signal_gen: Arc<SignalGen>,
     /// `cmdSeq` — command sequencer (command source index 1).
@@ -583,6 +668,11 @@ impl RefTopology {
         let frame_accumulator = FrameAccumulator::new("frameAccumulator");
         let router = FprimeRouter::new("fprimeRouter");
         let com_stub = ComStub::new("comStub");
+        let tm_framer = TmFramer::new("tmFramer");
+        let space_packet_framer = SpacePacketFramer::new("spacePacketFramer");
+        let apid_manager = ApidManager::new("apidManager");
+        let tc_deframer = TcDeframer::new("tcDeframer");
+        let space_packet_deframer = SpacePacketDeframer::new("spacePacketDeframer");
         let signal_gen = SignalGen::new("signalGen");
         let cmd_sequencer = CmdSequencer::new("cmdSeq");
         let system_resources = SystemResources::new("systemResources");
@@ -646,6 +736,15 @@ impl RefTopology {
             .set_id_base(FRAME_ACCUMULATOR_BASE_ID);
         router.base.set_id_base(ROUTER_BASE_ID);
         com_stub.base.set_id_base(COM_STUB_BASE_ID);
+        tm_framer.base.set_id_base(TM_FRAMER_BASE_ID);
+        space_packet_framer
+            .base
+            .set_id_base(SPACE_PACKET_FRAMER_BASE_ID);
+        apid_manager.base.set_id_base(APID_MANAGER_BASE_ID);
+        tc_deframer.base.set_id_base(TC_DEFRAMER_BASE_ID);
+        space_packet_deframer
+            .base
+            .set_id_base(SPACE_PACKET_DEFRAMER_BASE_ID);
         signal_gen.queued.base.set_id_base(SIGNAL_GEN_BASE_ID);
         cmd_sequencer
             .active
@@ -871,6 +970,10 @@ impl RefTopology {
             &deframer.evt,
             &frame_accumulator.evt,
             &router.evt,
+            &space_packet_framer.evt,
+            &apid_manager.evt,
+            &tc_deframer.evt,
+            &space_packet_deframer.evt,
             &rate_group_1.evt,
             &rate_group_2.evt,
             &rate_group_3.evt,
@@ -983,7 +1086,7 @@ impl RefTopology {
         rate_group_3.rate_group_member_out[3].connect_to(dp_writer.sched_in(0));
         rate_group_3.rate_group_member_out[4].connect_to(dp_manager.sched_in(0));
 
-        // -- Downlink chain (ComFprime.fpp `Downlink` + `ComStub` blocks). --
+        // -- Downlink queueing (common to both framing stacks). -------------
         // Event stream: events.PktSend -> comSplitter -> {comQueue, comLog}
         // (C++ `ComLoggerTee`: comSplitter.comOut -> comLog.comIn).
         event_manager.pkt_send.connect_to(com_splitter.com_in(0));
@@ -1000,24 +1103,99 @@ impl RefTopology {
             .connect_to(com_queue.buffer_queue_in(FILE_BUFFER_QUEUE_PORT));
         com_queue.buffer_return_out[FILE_BUFFER_QUEUE_PORT as usize]
             .connect_to(file_downlink.buffer_return_in(0));
-        com_queue.data_out.connect_to(framer.data_in(0));
-        framer
-            .data_return_out
-            .connect_to(com_queue.data_return_in(0));
-        framer
-            .buffer_allocate
-            .connect_to(buffer_manager.buffer_get_callee_in(0));
-        framer
-            .buffer_deallocate
-            .connect_to(buffer_manager.buffer_send_in(0));
-        framer.com_status_out.connect_to(com_queue.com_status_in(0));
-        framer.data_out.connect_to(com_stub.data_in(0));
-        com_stub
-            .data_return_out
-            .connect_to(framer.data_return_in(0));
-        com_stub.com_status_out.connect_to(framer.com_status_in(0));
+        // -- Framing layer: ComFprime or ComCcsds (module header "Framing").
+        match config.framing {
+            Framing::Fprime => {
+                // ComFprime.fpp `Downlink` + `ComStub` blocks.
+                com_queue.data_out.connect_to(framer.data_in(0));
+                framer
+                    .data_return_out
+                    .connect_to(com_queue.data_return_in(0));
+                framer
+                    .buffer_allocate
+                    .connect_to(buffer_manager.buffer_get_callee_in(0));
+                framer
+                    .buffer_deallocate
+                    .connect_to(buffer_manager.buffer_send_in(0));
+                framer.com_status_out.connect_to(com_queue.com_status_in(0));
+                framer.data_out.connect_to(com_stub.data_in(0));
+                com_stub
+                    .data_return_out
+                    .connect_to(framer.data_return_in(0));
+                com_stub.com_status_out.connect_to(framer.com_status_in(0));
+                // ComFprime.fpp `Uplink` block.
+                frame_accumulator.data_out.connect_to(deframer.data_in(0));
+                deframer
+                    .data_return_out
+                    .connect_to(frame_accumulator.data_return_in(0));
+                deframer.data_out.connect_to(router.data_in(0));
+                router
+                    .data_return_out
+                    .connect_to(deframer.data_return_in(0));
+            }
+            Framing::Ccsds => {
+                // ComCcsds.fpp `SpacePacketFraming.Downlink`, minus the
+                // aggregator: spacePacketFramer -> tmFramer directly.
+                com_queue
+                    .data_out
+                    .connect_to(space_packet_framer.data_in(0));
+                space_packet_framer
+                    .data_return_out
+                    .connect_to(com_queue.data_return_in(0));
+                space_packet_framer
+                    .buffer_allocate
+                    .connect_to(buffer_manager.buffer_get_callee_in(0));
+                space_packet_framer
+                    .buffer_deallocate
+                    .connect_to(buffer_manager.buffer_send_in(0));
+                space_packet_framer
+                    .get_apid_seq_count
+                    .connect_to(apid_manager.get_apid_seq_count_in(0));
+                space_packet_framer
+                    .data_out
+                    .connect_to(tm_framer.data_in(0));
+                tm_framer
+                    .data_return_out
+                    .connect_to(space_packet_framer.data_return_in(0));
+                tm_framer
+                    .com_status_out
+                    .connect_to(space_packet_framer.com_status_in(0));
+                space_packet_framer
+                    .com_status_out
+                    .connect_to(com_queue.com_status_in(0));
+                // `Subtopology.ComStub` (downlink half).
+                tm_framer.data_out.connect_to(com_stub.data_in(0));
+                com_stub
+                    .data_return_out
+                    .connect_to(tm_framer.data_return_in(0));
+                com_stub
+                    .com_status_out
+                    .connect_to(tm_framer.com_status_in(0));
+                // `TmTcFraming.Uplink` + `SpacePacketFraming.Uplink`.
+                frame_accumulator
+                    .data_out
+                    .connect_to(tc_deframer.data_in(0));
+                tc_deframer
+                    .data_return_out
+                    .connect_to(frame_accumulator.data_return_in(0));
+                tc_deframer
+                    .data_out
+                    .connect_to(space_packet_deframer.data_in(0));
+                space_packet_deframer
+                    .data_return_out
+                    .connect_to(tc_deframer.data_return_in(0));
+                space_packet_deframer
+                    .validate_apid_seq_count
+                    .connect_to(apid_manager.validate_apid_seq_count_in(0));
+                space_packet_deframer.data_out.connect_to(router.data_in(0));
+                router
+                    .data_return_out
+                    .connect_to(space_packet_deframer.data_return_in(0));
+            }
+        }
 
-        // -- Uplink chain (ComFprime.fpp `Uplink` + `ComStub` blocks). ------
+        // -- Uplink front end, common to both stacks (`ComStub` uplink
+        //    half + the frame accumulator's buffers). --------------------
         com_stub.data_out.connect_to(frame_accumulator.data_in(0));
         frame_accumulator
             .data_return_out
@@ -1028,14 +1206,6 @@ impl RefTopology {
         frame_accumulator
             .buffer_deallocate
             .connect_to(buffer_manager.buffer_send_in(0));
-        frame_accumulator.data_out.connect_to(deframer.data_in(0));
-        deframer
-            .data_return_out
-            .connect_to(frame_accumulator.data_return_in(0));
-        deframer.data_out.connect_to(router.data_in(0));
-        router
-            .data_return_out
-            .connect_to(deframer.data_return_in(0));
         // Router <-> dispatcher: seqCmdBuff/seqCmdStatus matched at index 0.
         router
             .command_out
@@ -1159,10 +1329,13 @@ impl RefTopology {
                 num_buffers: COMMS_BUFFER_COUNT,
             }],
         );
-        frame_accumulator.configure(
-            Box::new(FprimeFrameDetector::new()),
-            FRAME_ACCUMULATOR_RING_SIZE,
-        );
+        // The frame detector matches the stack (ComFprime
+        // `FprimeFrameDetector`, ComCcsds `CcsdsTcFrameDetector`).
+        let frame_detector: Box<dyn FrameDetector> = match config.framing {
+            Framing::Fprime => Box::new(FprimeFrameDetector::new()),
+            Framing::Ccsds => Box::new(CcsdsTcFrameDetector::new()),
+        };
+        frame_accumulator.configure(frame_detector, FRAME_ACCUMULATOR_RING_SIZE);
         let mut queue_table = QueueConfigurationTable::default();
         queue_table.entries[EVENTS_QUEUE_INDEX].depth = 200;
         queue_table.entries[EVENTS_QUEUE_INDEX].priority = 0;
@@ -1402,6 +1575,12 @@ impl RefTopology {
             frame_accumulator,
             router,
             com_stub,
+            tm_framer,
+            space_packet_framer,
+            apid_manager,
+            tc_deframer,
+            space_packet_deframer,
+            framing: config.framing,
             signal_gen,
             cmd_sequencer,
             system_resources,

@@ -1,6 +1,6 @@
 # The Rust reference deployment as an FPP model: the component instances of
 # `crates/fprime-ref/src/topology.rs` with their base ids (the C++ ones of
-# `TestDeploymentsProject/Ref` and the `CdhCore`, `ComFprime`,
+# `TestDeploymentsProject/Ref` and the `CdhCore`, `ComFprime`, `ComCcsds`,
 # `FileHandling`, `DataProducts` and `ComLoggerTee` subtopologies). Its
 # purpose is the ground dictionary (`fpp-to-rust --dict`), so the topology
 # lists instances only; the wiring lives in `topology.rs`.
@@ -35,6 +35,16 @@ module Ref {
   instance framer: Svc.FprimeFramer base id 0x02004000
   instance fprimeRouter: Svc.FprimeRouter base id 0x02005000
   instance comStub: Svc.ComStub base id 0x02006000
+
+  # ComCcsds (`--framing ccsds`; shares comQueue, frameAccumulator,
+  # bufferManager, fprimeRouter and comStub with ComFprime above).
+  # tcDeframer and spacePacketDeframer leave upstream's 0x4000/0x5000
+  # offsets, which framer and fprimeRouter hold here.
+  instance tmFramer: Svc.Ccsds.TmFramer base id 0x02007000
+  instance spacePacketFramer: Svc.Ccsds.SpacePacketFramer base id 0x02008000
+  instance apidManager: Svc.Ccsds.ApidManager base id 0x02009000
+  instance tcDeframer: Svc.Ccsds.TcDeframer base id 0x0200B000
+  instance spacePacketDeframer: Svc.Ccsds.SpacePacketDeframer base id 0x0200C000
 
   # DataProducts
   instance dpCat: Svc.DpCatalog base id 0x04000000 \
@@ -94,6 +104,11 @@ module Ref {
     instance framer
     instance fprimeRouter
     instance comStub
+    instance tmFramer
+    instance spacePacketFramer
+    instance apidManager
+    instance tcDeframer
+    instance spacePacketDeframer
     instance dpCat
     instance dpMgr
     instance dpWriter

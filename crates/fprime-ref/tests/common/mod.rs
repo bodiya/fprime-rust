@@ -108,9 +108,19 @@ impl Harness {
 
     /// [`Harness::up`] with an explicit data directory.
     pub fn up_in(data_dir: &str) -> Harness {
-        let topology = RefTopology::setup(&TopologyConfig {
+        Harness::up_with(TopologyConfig {
             data_dir: Some(data_dir.to_string()),
             ..TopologyConfig::default()
+        })
+    }
+
+    /// [`Harness::up`] with an explicit topology configuration (its
+    /// hostname/port are ignored: the loopback is the driver).
+    pub fn up_with(config: TopologyConfig) -> Harness {
+        let topology = RefTopology::setup(&TopologyConfig {
+            hostname: None,
+            port: 0,
+            ..config
         });
         topology
             .fatal_handler

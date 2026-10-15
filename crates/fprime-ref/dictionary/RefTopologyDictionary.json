@@ -3999,6 +3999,202 @@
       "annotation": "A buffer returned on fileBufferReturnIn was not found in the\nbuffer-to-context table. The buffer is still returned, but with an\nempty context."
     },
     {
+      "name": "Ref.spacePacketFramer.NoBufferAvailable",
+      "severity": "WARNING_HI",
+      "formalParams": [],
+      "id": 33587200,
+      "format": "Failed to allocate a packet buffer: packet dropped",
+      "annotation": "No buffer was available to hold the packet, which was dropped",
+      "throttle": {
+        "count": 5,
+        "every": null
+      }
+    },
+    {
+      "name": "Ref.apidManager.UnexpectedSequenceCount",
+      "severity": "WARNING_LO",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "expected",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 33591296,
+      "format": "Unexpected sequence count received. Packets may have been dropped. Transmitted: {} | Expected on board: {}",
+      "annotation": "Deframing received an unexpected sequence count"
+    },
+    {
+      "name": "Ref.tcDeframer.InvalidPacket",
+      "severity": "WARNING_LO",
+      "formalParams": [],
+      "id": 33599488,
+      "format": "Invalid packet received refusing to deframe",
+      "annotation": "Invalid packet received that will be dropped"
+    },
+    {
+      "name": "Ref.tcDeframer.InvalidSpacecraftId",
+      "severity": "WARNING_LO",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "configured",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 33599489,
+      "format": "Invalid Spacecraft ID Received. Received: {} | Deframer configured with: {}",
+      "annotation": "Deframing received an invalid SCID"
+    },
+    {
+      "name": "Ref.tcDeframer.InvalidFrameLength",
+      "severity": "WARNING_HI",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "actual",
+          "type": {
+            "name": "FwSizeType",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false
+        }
+      ],
+      "id": 33599490,
+      "format": "Not enough data received. Header length specified: {} | Received data length: {}",
+      "annotation": "Deframing received an invalid frame length"
+    },
+    {
+      "name": "Ref.tcDeframer.InvalidVcId",
+      "severity": "ACTIVITY_LO",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "configured",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 33599491,
+      "format": "Invalid Virtual Channel ID Received. Header token specified: {} | Deframer configured with: {}",
+      "annotation": "Deframing received an invalid VCID"
+    },
+    {
+      "name": "Ref.tcDeframer.InvalidCrc",
+      "severity": "WARNING_HI",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "computed",
+          "type": {
+            "name": "U16",
+            "kind": "integer",
+            "size": 16,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 33599492,
+      "format": "Invalid checksum received. Trailer specified: {} | Computed on board: {}",
+      "annotation": "Deframing received an invalid checksum"
+    },
+    {
+      "name": "Ref.spacePacketDeframer.InvalidPacket",
+      "severity": "WARNING_HI",
+      "formalParams": [],
+      "id": 33603584,
+      "format": "Malformed packet received refusing to deframe",
+      "annotation": "Deframing received a malformed packet"
+    },
+    {
+      "name": "Ref.spacePacketDeframer.InvalidLength",
+      "severity": "WARNING_HI",
+      "formalParams": [
+        {
+          "name": "transmitted",
+          "type": {
+            "name": "FwSizeType",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false
+        },
+        {
+          "name": "actual",
+          "type": {
+            "name": "FwSizeType",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false
+        }
+      ],
+      "id": 33603585,
+      "format": "Invalid length received. Header specified packet byte size of {} | Actual received data length: {}",
+      "annotation": "Deframing received an invalid frame length"
+    },
+    {
       "name": "Ref.dpCat.DirectoryOpenError",
       "severity": "WARNING_HI",
       "formalParams": [
