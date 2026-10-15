@@ -69,6 +69,7 @@ dependencies = [
  "fprime-comp",
  "fprime-config",
  "fprime-drv",
+ "fprime-fpp",
  "fprime-fw",
  "fprime-os",
  "fprime-svc",

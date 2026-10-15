@@ -22,3 +22,7 @@ fprime-drv.workspace = true
 [[bin]]
 name = "fprime-ref"
 path = "src/main.rs"
+
+[dev-dependencies]
+# The JSON parser the dictionary back end uses (tests/upstream_ids.rs).
+fprime-fpp.workspace = true

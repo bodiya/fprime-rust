@@ -1,0 +1,11 @@
+# The upstream F Prime (nasa/fprime) commit this port tracks: the C++ the
+# Rust components are ported from, and the FPP model the Rust Ref's ground
+# dictionary (crates/fprime-ref/dictionary) is generated from. One full
+# hash on the only non-comment line.
+#
+# crates/fprime-ref/fpp/generate-dictionary.sh refuses a checkout at any
+# other commit (unless --allow-other-commit) and records the first seven
+# hex digits as the dictionary's metadata.frameworkVersion; the fprime-ref
+# test `upstream_pin` checks that the committed dictionary agrees. To move
+# the pin, follow "Syncing with upstream" in docs/ROADMAP.md.
+4dee010c3002bce6a66f1372b89e1fed47289c57
