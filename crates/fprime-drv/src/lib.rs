@@ -2,7 +2,10 @@
 //!
 //! Port of `Drv/ByteStreamDriverModel`, `Drv/Interfaces`, `Drv/Ip`
 //! (`SocketComponentHelper` + TCP sockets), `Drv/TcpClient` and
-//! `Drv/TcpServer`. Analysis: `docs/cpp-analysis/svc-comms.md`.
+//! `Drv/TcpServer`, `Drv/AsyncByteStreamBufferAdapter` and the hardware
+//! drivers (`LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`,
+//! `LinuxSpiDriver`). Analysis: `docs/cpp-analysis/svc-comms.md`,
+//! `docs/cpp-analysis/linux-drivers.md`.
 //!
 //! The byte-stream port traits defined in [`byte_stream`] are the CANONICAL
 //! ones for the workspace; `fprime-svc`'s `com_stub` module carries
@@ -10,6 +13,7 @@
 //! depend on each other (see the seam note in `byte_stream`). The reference
 //! deployment bridges the families with tiny adapter shims.
 
+pub mod async_byte_stream_buffer_adapter;
 pub mod byte_stream;
 pub mod gpio;
 pub mod i2c;
@@ -19,6 +23,7 @@ pub mod tcp_client;
 pub mod tcp_server;
 pub mod uart;
 
+pub use async_byte_stream_buffer_adapter::AsyncByteStreamBufferAdapter;
 pub use byte_stream::{
     BufferSendPort, ByteStreamDataPort, ByteStreamReadyPort, ByteStreamSendPort, ByteStreamStatus,
 };

@@ -36,9 +36,11 @@
 //! `sendReturnOut` reuses `Drv.ByteStreamData` to hand the same buffer back
 //! with the send status (`SEND_RETRY` asks the client to resend it). The
 //! client side (`Drv.PassiveAsyncByteStreamDriverClient`, used by
-//! `Svc::ComStub` as `drvAsyncSendOut` / `drvAsyncSendReturnIn`) is the
-//! mirror image. At the pinned upstream revision no driver component
-//! implements `AsyncByteStreamDriver` — the TCP drivers and the UART driver
+//! `Svc::ComStub` as `drvAsyncSendOut` / `drvAsyncSendReturnIn` and by
+//! [`AsyncByteStreamBufferAdapter`](crate::AsyncByteStreamBufferAdapter) as
+//! `toByteStreamDriver` / `toByteStreamDriverReturn`) is the mirror image.
+//! At the pinned upstream revision no driver component implements
+//! `AsyncByteStreamDriver` — the TCP drivers and the UART driver
 //! (`Drv/PosixUartDriver`, formerly `LinuxUartDriver`) all import the
 //! synchronous `ByteStreamDriver` — so none is provided here either.
 

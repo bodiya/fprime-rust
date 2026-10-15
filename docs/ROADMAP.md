@@ -81,8 +81,6 @@ subsystems, then the strategic changes.
 These surfaced while porting items 2–7. None changes the wire format of the
 Ref deployment.
 
-- **`Drv::AsyncByteStreamBufferAdapter`.** The only upstream client of the
-  async byte-stream interface besides `ComStub`.
 - **Restrict the Ref's `FileManager` sandbox** to the deployment's data
   directory, as `prmDb`/`fileDownlink` already are, if fail-open-to-`/`
   (the upstream `FileHandling` default) is not wanted.

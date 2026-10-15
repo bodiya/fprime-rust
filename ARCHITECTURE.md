@@ -58,7 +58,7 @@ crates/
   fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...
-  fprime-drv      # Drv: byte stream driver model, TCP client/server
+  fprime-drv      # Drv: byte stream driver model, TCP client/server, async byte-stream buffer adapter, hardware drivers
   fprime-ref      # Reference deployment binary (Ref-style topology, GDS-compatible)
 ```
 
@@ -594,7 +594,10 @@ config constants, and quirks listed there:
   `FprimeRouter`, `BufferManager`
 - `fprime-drv`: `ByteStreamStatus { OpOk=0, SendRetry=1, RecvNoData=2,
   OtherError=3 }` + ports, `TcpClient`, `TcpServer` (std::net; read thread +
-  reconnect thread; status mapping per the analysis)
+  reconnect thread; status mapping per the analysis); later additions:
+  `AsyncByteStreamBufferAdapter` and the hardware drivers (`LinuxGpioDriver`,
+  `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver`; see
+  `docs/cpp-analysis/linux-drivers.md`)
 
 The F Prime frame (GDS-compatible): `[0xdeadbeef u32][length u32][payload]
 [crc32 u32]`, CRC over header+payload, all BE, total = 12 + length.

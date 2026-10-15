@@ -1799,7 +1799,8 @@ The async driver interface (`Drv.AsyncByteStreamDriver`) needs no new port types
 upstream 4dee010 no driver implements it — `Drv/LinuxUartDriver` is now
 `Drv/PosixUartDriver` and, like the TCP drivers, is synchronous — so the async path is
 exercised against test drivers, as upstream does. `Drv/AsyncByteStreamBufferAdapter`
-(another client of the interface) is not ported.
+(the other client of the interface) is ported in `fprime-drv`; see the section on it
+below.
 
 ### fprime-svc: `CmdSequencer` AMPCS format (ROADMAP item 6)
 
@@ -1891,3 +1892,43 @@ carried the platform in its name). Following upstream, no deprecated alias is ke
 Following the wider restriction, `UartConfigPolicy::Stty` now passes the BSD `stty -f`
 device flag on non-Linux hosts instead of GNU-only `-F`; Linux behavior is unchanged.
 No FPP model, dictionary or Ref wiring in this repository named the driver.
+
+### fprime-drv: `Drv::AsyncByteStreamBufferAdapter`
+
+```text
+AsyncByteStreamBufferAdapter (fprime_drv::async_byte_stream_buffer_adapter, PASSIVE; root re-export)
+  new(name) -> Arc<Self>; driver_is_ready() -> bool
+  pub base: PassiveBase, pub evt: EventGlue (Log/LogText/Time; no Tlm, no Cmd)
+  Outputs (all OutputPort<dyn BufferSendPort>):
+    buffer_in_return_out (bufferInReturn), buffer_out (bufferOut),
+    from_byte_stream_driver_return_out (fromByteStreamDriverReturn -> driver.recvReturnIn),
+    to_byte_stream_driver_out (toByteStreamDriver -> driver.$send)
+  Inputs (all sync, no component mutex):
+    buffer_in -> PortRef<dyn BufferSendPort>; buffer_out_return_in -> PortRef<dyn BufferSendPort>
+    byte_stream_driver_ready_in -> PortRef<dyn ByteStreamReadyPort>   (<- driver.ready)
+    from_byte_stream_driver_in -> PortRef<dyn ByteStreamDataPort>     (<- driver.$recv)
+    to_byte_stream_driver_return_in -> PortRef<dyn ByteStreamDataPort> (<- driver.sendReturnOut)
+  EVENTID_DRIVER_NOT_READY=0, EVENTID_DATA_SEND_ERROR=1 (stat: I32), EVENTID_DATA_RECEIVE_ERROR=2
+    (stat: I32) — all WARNING_LO, unthrottled; stat is the ByteStreamStatus value
+```
+
+Line-for-line port of upstream 4dee010, with its three unit tests
+(`Test_Stream_out`/`_in`/`_Return`; the `STest::Pick` random fill is a fixed-seed
+xorshift) plus literal-byte event, per-status, ready-latch and unconnected-port tests.
+Buffers move through it: `bufferIn` goes to the driver once `ready` has been seen, else
+straight back on `bufferInReturn` with `DriverNotReady`; the driver's
+`sendReturnOut` always comes back on `bufferInReturn` (non-`OP_OK`, including
+`SEND_RETRY`, also logs `DataSendError` — the adapter does not retry). Received `OP_OK`
+data goes out on `bufferOut` and returns to the driver via `bufferOutReturn`; any other
+receive status returns it to the driver at once with `DataReceiveError`. The ready flag
+is never cleared (C++ parity).
+
+Placement: every port it uses is either `Fw.BufferSend` (`fprime_comp::BufferSendPort`,
+shared by all crates) or a `Drv` byte-stream port, so it lives in `fprime-drv` beside
+the canonical byte-stream traits and connects to an fprime-drv async driver with no
+shims; an `fprime-svc` client of the buffer side connects directly too. Deviation: the
+input port number is not forwarded as the output port number (C++
+`toByteStreamDriver_out(portNum, ..)`); each `OutputPort` uses its connection's target
+port number. All ports are single, so upstream always passes 0 anyway. The Ref does
+not instantiate it (upstream has no async byte-stream driver to put behind it). The
+synchronous sibling `Drv::ByteStreamBufferAdapter` is still not ported.
