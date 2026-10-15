@@ -44,7 +44,10 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   topology wiring from `.fpp` models; hand-written components and generated
   ones coexist because both target `fprime-comp`. Anything a macro cannot
   express faithfully stays hand-written — the macros never half-work.
-- No `no_std` support yet (the OSAL keeps a clean seam for it).
+- `no_std` + `alloc` for the framework core: `fprime-config`, `fprime-fw`,
+  `fprime-comp` and a subset of `fprime-os` build without `std` (see
+  "no_std" below). Services, drivers, utilities and the deployment crates
+  stay `std`.
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
   CFDP. (`Fw/Sm` state machines are ported as the
   `fpp_state_machine!` macro layer, which `fpp-to-rust` emits.)
@@ -63,7 +66,7 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 crates/
   fprime-config   # type aliases + constants from default/config (no deps)
   fprime-fw       # Fw: serialization, types, strings, time, buffers, packets, assert, logger
-  fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime, cpu, memory
+  fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime, cpu, memory; no_std platform seam
   fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...
@@ -85,6 +88,71 @@ fprime-ref   -> everything
 
 Rust 2024 edition, `rust-version = "1.85"` floor, workspace lints:
 `unsafe_code = "forbid"`, `clippy::all = "warn"`.
+
+## no_std
+
+ROADMAP item 13: the framework core builds as `no_std` + `alloc`, and the
+OSAL seam is real — what a hosted build gets from `std` a bare-metal or
+RTOS deployment supplies through one trait.
+
+Configurations:
+
+| crate | default (`std`) | `--no-default-features --features spin` |
+| --- | --- | --- |
+| `fprime-config` | always `#![no_std]` (no `alloc` either; no features) | same |
+| `fprime-fw` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | no `std`; locks from `spin` |
+| `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue`, `task`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
+| `fprime-comp` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | everything (passive/queued/active bases, ports, envelopes, escrow, serialize ports, glue, state machines, macros) |
+
+`spin` is a separate, explicit feature because cargo cannot enable a
+dependency when a feature is turned *off*; building with neither `std` nor
+`spin` is a `compile_error!` that says so. The default build pulls in no
+third-party crate (`tools/check-no-std.sh` asserts both trees).
+
+The pieces:
+
+- **`fprime_fw::sync`** — the lock shim every framework crate uses:
+  `Mutex`, `RwLock`, `OnceLock` (plus `Arc`, the atomics and an
+  `AtomicU64` that falls back to a locked `u64` on targets without 64-bit
+  atomics, e.g. thumbv7em). With `std` they wrap `std::sync` and the
+  guards are the `std::sync` guards; without, they wrap `spin::Mutex` /
+  `spin::RwLock` / `spin::Once`. Locking is infallible: the std backend
+  keeps the `PoisonError::into_inner` recovery every call site already
+  did, and spin locks never poison.
+- **`fprime_os::platform::Platform`** (no_std only) — what a deployment
+  implements and registers once with `fprime_os::register_platform`:
+  `start_task` (+ a `TaskHandle::join`), `delay`, `raw_time_now`, and
+  `queue_wait`, the backoff a blocking `Os::Queue` send/receive takes each
+  time it finds the queue full/empty (it polls, with the lock released, the
+  shape of upstream's `Os::Generic::LocklessPriorityQueue`; the default is
+  `core::hint::spin_loop`). The `Os::Task` state machine, the queue's
+  status flow and FIFO-within-priority order, and `RawTime`'s arithmetic
+  and wire format are shared with the std backend. Without a registered
+  platform, `Task::start`/`delay` and `RawTime::now` return
+  `NotSupported`; non-blocking queues and the queued dispatch loop need no
+  platform at all.
+- **What a no_std deployment supplies**: a global allocator, a
+  `#[panic_handler]` that never resumes (a failed `fw_assert!` panics —
+  fail-stop parity), a `Platform` if it has active components, blocking
+  queues or `RawTime`, and an `FwLogger` if it wants diagnostic text (the
+  default assert print goes to the logger instead of stderr). The target
+  needs pointer-width atomic compare-and-swap (`Arc`, `spin`).
+- **std-only**: in `fprime-fw`, the stderr default of the assert print; in
+  `fprime-os`, `File`, `FileSystem`, `Directory`, `FilePathUtils`,
+  `SandboxedFile`, `Console`, `OsMutex`/`ScopeLock`,
+  `ConditionVariable`, the Linux cpu/memory backends and the console part
+  of `os::init()`; `fprime-utils`, `fprime-svc`, `fprime-drv`,
+  `fprime-ref`, `fprime-fpp` and `fprime-fpp-demo` entirely.
+- **Proof**: `crates/fprime-comp/examples/no_std_component.rs` is a
+  `#![no_std]` library crate that expands every exported framework macro
+  without the std prelude (built by every `--all-targets` build), and
+  `tools/check-no-std.sh` builds and tests the no_std configuration on the
+  host, builds it for `thumbv7em-none-eabihf`, checks it at MSRV 1.85, and
+  checks the dependency trees. The no_std unit tests run the task and
+  active-component tests through a `std::thread` test `Platform`
+  (`crates/fprime-comp/tests/no_std_platform/`), and
+  `crates/fprime-os/tests/no_std_platform.rs` checks the seam itself
+  (NotSupported before registration, routing after).
 
 ## fprime-config
 
@@ -291,8 +359,9 @@ strings, FPP-style enums, and packets.)
   `FwAssertArgType` args): on failure formats
   `Assert: "file:line" a1 ... aN`, dispatches to a registered `AssertHook`
   (global `OnceLock`-style swappable hook; register before threads start),
-  default prints to stderr and panics. Components like `AssertFatalAdapter`
-  can hook this to emit FATAL events.
+  default prints to stderr (the `Fw::Logger` in a `no_std` build) and
+  panics. Components like `AssertFatalAdapter` can hook this to emit FATAL
+  events.
 - `fw::logger` — global diagnostic text logger (`Fw::Logger`):
   `register_logger(&'static dyn FwLogger)`, `fw_log!(fmt, ...)`; silently
   drops when unregistered. Distinct from the event (`Fw.Log`) path.
@@ -340,6 +409,9 @@ status enums from `docs/cpp-analysis/os.md`. Highlights:
   `OpOverflow` (~71 min).
 - **`IntervalTimer`**, `Os::init()` equivalent (`os::init()` registers the
   console logger).
+- **no_std** — without the `std` feature only the queue, task, raw time,
+  interval timer and stub cpu/memory remain, over `fprime_fw::sync` spin
+  locks and the `platform::Platform` seam (see "no_std" above).
 
 ## fprime-comp: object / port / component model
 

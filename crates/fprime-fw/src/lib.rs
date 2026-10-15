@@ -48,11 +48,7 @@ pub use fprime_config as config;
 /// work in `no_std` crates (which have no `std` prelude). Not public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use alloc::boxed::Box;
     pub use alloc::format;
-    pub use alloc::string::String;
-    pub use alloc::sync::Arc;
-    pub use alloc::vec::Vec;
 }
 
 pub use buffer::{Buffer, BufferStorage};

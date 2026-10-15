@@ -2919,3 +2919,93 @@ relative-directory variant of `seqBaseDir_resolvesPath` (the tests run in
 parallel in per-test directories, so the base directory is absolute).
 Upstream's Ref does not instantiate the sequencer, so the Rust Ref and its
 dictionary are unchanged.
+
+### fprime-fw / fprime-os / fprime-comp: `no_std` + `alloc` (ROADMAP item 13)
+
+Surface:
+
+- Features. `fprime-fw`, `fprime-os` and `fprime-comp` have
+  `default = ["std"]` and an optional `spin` feature; the `no_std` build is
+  `--no-default-features --features spin` (`fprime-comp`'s and
+  `fprime-os`'s features forward to `fprime-fw`'s, the only crate that
+  depends on `spin` 0.12, with `spin_mutex`, `rwlock` and `once` only).
+  Building with neither is a `compile_error!` naming the fix. `fprime-config` has
+  no features: it is unconditionally `#![no_std]` (constants and aliases
+  only, not even `alloc`). `fprime-os` and `fprime-comp` depend on
+  `fprime-fw` / `fprime-os` by path with `default-features = false`; every
+  other crate keeps the workspace dependency, so the workspace build has
+  `std` on everywhere.
+- `fprime_fw::sync` (new, public): `Mutex`, `MutexGuard`, `RwLock`,
+  `RwLockReadGuard`, `RwLockWriteGuard`, `OnceLock`, `Arc`, `Weak`, the
+  `core` atomics and `Ordering`, and `AtomicU64` (core's where the target
+  has 64-bit atomics, else a `Mutex<u64>` with `new`/`load`/`store`/
+  `fetch_add`/`swap`). `Mutex::lock`, `RwLock::read`/`write` return the
+  guard directly; `Mutex::try_lock` returns `Option`. With `std` the
+  guards are the `std::sync` guard types.
+- `fprime_os::platform` (new, `no_std` builds only): `trait Platform:
+  Sync { start_task(Arguments) -> Result<Box<dyn TaskHandle>, task::Status>;
+  delay(TimeInterval) -> task::Status; raw_time_now() -> Result<RawTime,
+  rawtime::Status>; queue_wait() /* default: spin_loop */ }`,
+  `trait TaskHandle: Send { join(self: Box<Self>) -> task::Status }`,
+  `register_platform(&'static dyn Platform) -> bool` (write-once; `false`
+  if one is already registered, also re-exported at the crate root) and
+  `platform::get()`.
+- `fprime-os` in `no_std`: `queue`, `task`, `rawtime`, `interval_timer`,
+  `generic`, `cpu`, `memory`, `stub`, `platform` and an `init()` that
+  initializes the cpu/memory singletons only. `cpu::Cpu`/`memory::Memory`
+  select the stub backends there (the Linux ones read procfs through
+  `File`).
+- `fprime-comp` in `no_std`: the whole crate; the exported macros
+  (`async_input_port_adapter!`, `input_port_adapter!`,
+  `serializable_port!`) now name `$crate::fw::sync::Arc` instead of
+  `::std::sync::Arc` (the same type), and `fw_log!` formats through
+  `$crate::__private::format!`; `fpp_array!` names `::core` paths. A
+  hidden `fprime_fw::__private` module holds those re-exports.
+- `examples/no_std_component.rs` (a `crate-type = ["lib"]` example) and
+  `tools/check-no-std.sh` are the proof; see ARCHITECTURE.md "no_std" for
+  what a deployment must supply.
+
+Deviations and behavior notes:
+
+- Default (`std`) build: unchanged behavior. Internal locks moved from
+  `std::sync::Mutex`/`RwLock`/`OnceLock` to the shim, whose std backend is
+  those types with the same `PoisonError::into_inner` recovery the call
+  sites had; `Os::Task::start` now boxes the wrapped routine before
+  spawning (no observable difference).
+- `no_std` locks are spin locks: they busy-wait and never poison. Taking
+  one from an interrupt that preempted a holder of the same lock on the
+  same core deadlocks — do not send to an `Os::Queue` from such an ISR
+  (upstream's ISR-safe `LocklessPriorityQueue` is not ported).
+- `no_std` blocking queue: no condition variable; a blocked send/receive
+  releases the lock, calls `Platform::queue_wait` (or `spin_loop` with no
+  platform) and re-checks — upstream's `LocklessPriorityQueue` backs off
+  with `Os::Task::delay` in the same place. Notifications are no-ops.
+  Status flow, ordering and storage are the std queue's.
+- `no_std` `Os::Task`: the C++ state machine is kept; spawn/join/delay are
+  the platform's, priority/stack/affinity/identifier are passed through
+  (no degrade notice — the std backend's notice exists because `std`
+  cannot express them). With no platform, `start` and `delay` return
+  `NOT_SUPPORTED` (the task is left in `Starting`, as after any failed
+  start) and a join after a platform's `NotSupported` leaves the task
+  `Unknown`.
+- `no_std` `Os::RawTime::now`: `Platform::raw_time_now`, or
+  `NOT_SUPPORTED` with no platform.
+- `no_std` assert: C++ `defaultPrintAssert` writes stderr; without `std`
+  the message goes to `Fw::Logger` (truncated to its 256 bytes, dropped if
+  no logger is registered) and the panic carries the full text to the
+  platform's `#[panic_handler]`, which must not resume.
+- The `fprime-os` crate docs link std-only modules; the `no_std` doc build
+  allows `rustdoc::broken_intra_doc_links` for that reason only.
+
+Tests: the fw/os/comp suites run in both configurations
+(`cargo test -p fprime-fw -p fprime-os -p fprime-comp --no-default-features
+--features spin`); in `no_std` the task, raw-time, interval-timer and
+active-component tests run through a `std::thread` test platform
+(`fprime-os`'s `test_platform`, `fprime-comp/tests/no_std_platform/`).
+Added: `fprime_fw::sync` unit tests (both backends, poison recovery under
+`std`), `fprime-os/tests/no_std_platform.rs` (NotSupported before
+registration, write-once registration, task/delay/clock routing with
+priority and stack pass-through, a blocking receive woken by the
+`queue_wait` backoff) and `fprime-comp/tests/no_std_example.rs` (runs the
+`#![no_std]` example's superloop). The `Fw::Logger` unit test ignores
+assert messages, which reach the logger in a `no_std` run.

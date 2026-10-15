@@ -239,6 +239,22 @@ subsystems, then the strategic changes.
   byte by byte, as upstream's tests do. Porting it showed that
   `SequenceArgumentsMaxSize` is 12 at the pin, not 255; `Svc.SeqArgs` was
   corrected for `CmdSequencer` too.
+- **`no_std` OSAL seam** (item 13). `fprime-config`, `fprime-fw` and
+  `fprime-comp` build as `no_std` + `alloc` with the default `std`
+  feature off (`--no-default-features --features spin`), and so does the
+  `fprime-os` subset they need: the priority queue, the task state
+  machine, raw time, the interval timer and the stub cpu/memory backends.
+  Locks come from a `fprime_fw::sync` shim — `std::sync` (keeping the
+  poison recovery every call site did) by default, the `spin` crate
+  without `std` — so the default build still has no third-party crate.
+  Task start/join/delay, `RawTime::now` and the blocking-queue wait go
+  through `fprime_os::platform::Platform`, which a deployment registers
+  once; the blocking queue polls with a platform backoff, as upstream's
+  `LocklessPriorityQueue` does. Everything above, including active
+  components and every exported macro (a `#![no_std]` example component),
+  builds for `thumbv7em-none-eabihf` and at MSRV 1.85
+  (`tools/check-no-std.sh`); the fw/os/comp tests pass in both
+  configurations, the no_std ones over a `std::thread` test platform.
 
 ## Next: small follow-ups
 
@@ -253,8 +269,21 @@ the Ref deployment.
 
 ## Strategic
 
-13. **`no_std` OSAL seam.** `fprime-os` keeps the seam; making `fprime-fw`
-    and `fprime-comp` `no_std` + `alloc` is the first real test of it.
+No numbered items remain. Directions the `no_std` seam (item 13) opens:
+
+- **`no_std` beyond the core.** `fprime-utils` and the `fprime-svc`
+  components that need no files (rate groups, `CmdDispatcher`,
+  `EventManager`, `TlmChan`, `Health`, the comms framing) are still
+  `std`-only; each needs its `std::sync` uses moved onto
+  `fprime_fw::sync` and its file/console uses gated.
+- **An ISR-safe queue.** The no_std `Os::Queue` is the lock-based
+  `PriorityQueue` over a spin lock, so it must not be sent to from an
+  interrupt that can preempt a holder. Upstream's
+  `Os::Generic::LocklessPriorityQueue` is the ISR-safe option; a safe-Rust
+  port would replace the slot `std::atomic` words with `core` atomics.
+- **`Os::Mutex` / `Os::ConditionVariable` in no_std.** Only the
+  `fprime_fw::sync` locks exist there today; the `Os` wrappers (and the
+  Linux cpu/memory backends) stay `std`-only.
 
 ## Syncing with upstream
 

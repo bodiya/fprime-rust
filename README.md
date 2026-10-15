@@ -102,6 +102,19 @@ cargo test --workspace --features fprime-svc/zlib
 # aes-gcm, getrandom and zeroize)
 cargo test --workspace --features fprime-svc/aes-gcm
 
+# no_std + alloc: fprime-config, fprime-fw, fprime-comp and the no_std
+# subset of fprime-os without the default `std` feature. Locks then come
+# from the `spin` crate, which the `spin` feature enables (cargo cannot turn
+# a dependency on when a feature is OFF, so the feature is explicit).
+cargo build -p fprime-fw -p fprime-os -p fprime-comp --no-default-features --features spin
+cargo test  -p fprime-fw -p fprime-os -p fprime-comp --no-default-features --features spin
+# ... and for a bare-metal target, which has no std at all
+rustup target add thumbv7em-none-eabihf
+cargo build --target thumbv7em-none-eabihf -p fprime-fw -p fprime-os -p fprime-comp \
+    --no-default-features --features spin
+# All of the above plus clippy, MSRV 1.85 and the dependency-tree checks
+tools/check-no-std.sh
+
 # Run the reference deployment standalone (1 Hz rate loop; type "quit" to stop)
 cargo run -p fprime-ref
 
@@ -119,8 +132,10 @@ cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000 --framing ccsds
 ```
 
 Requires stable Rust (edition 2024). No external crates in the default build;
-the optional `zlib` feature adds `miniz_oxide` (pure Rust) and the optional
-`aes-gcm` feature adds RustCrypto `aes-gcm` with `getrandom` and `zeroize`.
+the optional `zlib` feature adds `miniz_oxide` (pure Rust), the optional
+`aes-gcm` feature adds RustCrypto `aes-gcm` with `getrandom` and `zeroize`,
+and the `no_std` configuration (`--no-default-features --features spin`)
+adds `spin` (lock types only).
 
 ## Porting status
 
@@ -135,6 +150,7 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust) and the optional
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
+| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp` and the `fprime-os` queue/task/raw-time/interval-timer/stub-cpu-memory subset build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; tasks, the clock and blocking-queue backoff come from a deployment-supplied `fprime_os::platform::Platform` (`tools/check-no-std.sh`) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
@@ -180,8 +196,12 @@ upstream's (where `DpCompression.Subtopology` is commented out), does not
 instantiate it. `FpySequencer` is ported, but neither upstream's Ref nor
 the Rust Ref instantiates it, and the Fpy compiler (`fprime-fpyc`) is not
 part of fprime-gds 4.3.1, so its tests build sequences byte by byte.
-`no_std`
-targets remain a design goal of the OSAL seam rather than a current feature.
+`no_std`: `fprime-config`, `fprime-fw`, `fprime-comp` and a subset of
+`fprime-os` (queue, task, raw time, interval timer, stub cpu/memory) build
+as `no_std` + `alloc`; a deployment supplies tasks, the clock and the
+blocking-queue backoff through `fprime_os::platform::Platform`. The
+services, drivers, utilities and the file/console half of `fprime-os` are
+still `std`-only (see ARCHITECTURE.md "no_std").
 The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## How the port maps C++ to Rust
