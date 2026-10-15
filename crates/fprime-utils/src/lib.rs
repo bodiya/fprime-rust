@@ -3,9 +3,10 @@
 //! - [`hash`] — `Utils::Hash` CRC32 (IEEE 802.3) and `HashBuffer`
 //! - [`crc_checker`] — `Utils::CRCChecker` file checksum sidecars
 //! - [`validate_file`] — `Os::ValidateFile`: validate a file against its
-//!   `.CRC32` hash file, or create one (an `Os` facility that lives here
-//!   because it is built on [`hash`]; see the module docs for the placement
-//!   and for its sidecar encoding next to [`crc_checker`]'s)
+//!   `.CRC32` hash file, or create one, and `Os::ValidatedFile`
+//!   ([`ValidatedFile`]) (`Os` facilities that live here because they are
+//!   built on [`hash`]; see the module docs for the placement and for the
+//!   sidecar encoding next to [`crc_checker`]'s)
 //! - [`types`] — `Types::CircularBuffer` byte ring and `Types::Queue`
 //!   fixed-message FIFO/LIFO
 //! - [`rate_limiter`] — `Utils::RateLimiter`
@@ -58,3 +59,5 @@ pub use hash::{HASH_DIGEST_LENGTH, HASH_EXTENSION_STRING, Hash, HashBuffer};
 pub use rate_limiter::RateLimiter;
 pub use token_bucket::{MAX_TOKEN_BUCKET_TOKENS, TokenBucket};
 pub use types::{CircularBuffer, Queue, QueueMode, QueueOverflowMode};
+#[cfg(feature = "std")]
+pub use validate_file::ValidatedFile;

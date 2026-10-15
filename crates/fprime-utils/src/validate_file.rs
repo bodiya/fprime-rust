@@ -1,9 +1,13 @@
 //! Port of `Os::ValidateFile` — validate a file against its `.CRC32` hash
-//! file, or create that hash file.
+//! file, or create that hash file — and of `Os::ValidatedFile`
+//! ([`ValidatedFile`]), the object that pairs a file with its
+//! `<file>.CRC32` hash file name.
 //!
-//! C++ sources: `Os/ValidateFile.hpp`, `Os/ValidateFileCommon.cpp`; tests
-//! `Os/test/ut/OsValidateFileTest.cpp` and the `ValidateFile` interop case in
-//! `Utils/test/ut/CRCCheckerTester.cpp`.
+//! C++ sources: `Os/ValidateFile.hpp`, `Os/ValidateFileCommon.cpp`,
+//! `Os/ValidatedFile.{hpp,cpp}`; tests `Os/test/ut/OsValidateFileTest.cpp`
+//! and the `ValidateFile` interop case in `Utils/test/ut/CRCCheckerTester.cpp`
+//! (upstream has no `ValidatedFile` unit test; `Svc::BufferLogger`'s tests
+//! exercise it, and so do the ones below).
 //! Analysis: `docs/cpp-analysis/os.md` (ValidateFile section) and the
 //! ComLogger sidecar section of `docs/cpp-analysis/svc-misc.md`.
 //!
@@ -52,7 +56,7 @@
 //! either API here.
 
 use fprime_config::FwSizeType;
-use fprime_fw::SerBuf;
+use fprime_fw::{FwDefaultString, SerBuf, StringFormatStatus, fw_assert};
 use fprime_os::file::{self, File, Mode, WaitType};
 use fprime_os::filesystem;
 
@@ -323,6 +327,105 @@ pub fn create_validation_from_hash_buffer(
         return translate_status(status, StatusFileType::HashFile);
     }
     Status::ValidationOk
+}
+
+/// A file paired with its `<file>.CRC32` hash file (port of
+/// `Os::ValidatedFile`, `Os/ValidatedFile.{hpp,cpp}`).
+///
+/// A thin object wrapper over the free functions above: it fixes the hash
+/// file name to `<file name>` + [`Hash::get_file_extension_string`] (built
+/// with [`Hash::add_file_extension`], as upstream) and keeps the hash value
+/// from the last validation or hash-file creation.
+///
+/// It lives in this module for the same reason the free functions do (see
+/// "Placement" above): upstream it is an `Os` class built on `Utils::Hash`.
+/// Like them it is `std`-only. The C++ `Fw::String` members are
+/// [`FwDefaultString`]s (`FW_FIXED_LENGTH_STRING_SIZE`, 256 bytes).
+#[derive(Debug, Clone)]
+pub struct ValidatedFile {
+    /// C++ `m_fileName`.
+    file_name: FwDefaultString,
+    /// C++ `m_hashFileName`.
+    hash_file_name: FwDefaultString,
+    /// C++ `m_hashBuffer`: the hash after creating or loading a validation
+    /// file.
+    hash_buffer: HashBuffer,
+}
+
+impl ValidatedFile {
+    /// Construct a validated file (C++ `ValidatedFile(const char*)`).
+    ///
+    /// The file name is truncated to the string capacity as the C++
+    /// `Fw::String` assignment does. C++ parity: the hash file name not
+    /// fitting (`<file name>.CRC32` longer than 256 bytes) is an
+    /// `FW_ASSERT` — a truncated hash file name would silently validate
+    /// against the wrong file.
+    #[must_use]
+    pub fn new(file_name: &str) -> Self {
+        let mut name = FwDefaultString::new();
+        name.set(file_name);
+        let mut hash_file_name = FwDefaultString::new();
+        let status = Hash::add_file_extension(name.as_bytes(), &mut hash_file_name);
+        fw_assert!(status == StringFormatStatus::Success, status as i32);
+        Self {
+            file_name: name,
+            hash_file_name,
+            hash_buffer: HashBuffer::new(),
+        }
+    }
+
+    /// Validate the file against its hash file (C++ `validate()`); on
+    /// [`Status::ValidationOk`] the stored hash is kept
+    /// ([`get_hash_buffer`](Self::get_hash_buffer)), on any other status it
+    /// is left unmodified.
+    pub fn validate(&mut self) -> Status {
+        validate_with_hash_buffer(
+            self.file_name.as_str().unwrap_or_default(),
+            self.hash_file_name.as_str().unwrap_or_default(),
+            &mut self.hash_buffer,
+        )
+    }
+
+    /// Hash the file and write the hash file (C++ `createHashFile()`). The
+    /// hash is kept even when writing the hash file fails (see
+    /// [`create_validation_with_hash_buffer`]).
+    pub fn create_hash_file(&mut self) -> Status {
+        create_validation_with_hash_buffer(
+            self.file_name.as_str().unwrap_or_default(),
+            self.hash_file_name.as_str().unwrap_or_default(),
+            &mut self.hash_buffer,
+        )
+    }
+
+    /// Write a pre-computed hash to the hash file (C++
+    /// `createHashFile(const HashBuffer&)`). The hash is stored before the
+    /// write, so it is kept whatever the status.
+    pub fn create_hash_file_from(&mut self, hash_buffer: &HashBuffer) -> Status {
+        self.hash_buffer = hash_buffer.clone();
+        create_validation_from_hash_buffer(
+            self.hash_file_name.as_str().unwrap_or_default(),
+            &self.hash_buffer,
+        )
+    }
+
+    /// The file name (C++ `getFileName()`).
+    #[must_use]
+    pub fn get_file_name(&self) -> &FwDefaultString {
+        &self.file_name
+    }
+
+    /// The hash file name, `<file name>.CRC32` (C++ `getHashFileName()`).
+    #[must_use]
+    pub fn get_hash_file_name(&self) -> &FwDefaultString {
+        &self.hash_file_name
+    }
+
+    /// The hash from the last successful validation or hash-file creation
+    /// (C++ `getHashBuffer()`); empty until then.
+    #[must_use]
+    pub fn get_hash_buffer(&self) -> &HashBuffer {
+        &self.hash_buffer
+    }
 }
 
 #[cfg(test)]
@@ -689,5 +792,72 @@ mod tests {
             crc_checker::verify_checksum(&name, &mut expected, &mut actual),
             CrcStat::PassedFileCrcCheck
         );
+    }
+
+    #[test]
+    fn validated_file_names_its_hash_file_with_the_extension() {
+        let vf = ValidatedFile::new("buf/log.buf");
+        assert_eq!(vf.get_file_name().as_bytes(), b"buf/log.buf");
+        assert_eq!(vf.get_hash_file_name().as_bytes(), b"buf/log.buf.CRC32");
+        assert_eq!(vf.get_hash_buffer(), &HashBuffer::new());
+    }
+
+    #[test]
+    fn validated_file_creates_then_validates_and_keeps_the_hash() {
+        let dir = TempDir::new("validated");
+        let name = dir.write("data.bin", b"123456789");
+        let mut vf = ValidatedFile::new(&name);
+
+        // Missing hash file: the hash file is read first.
+        assert_eq!(vf.validate(), Status::ValidationFileDoesntExist);
+        assert_eq!(vf.get_hash_buffer(), &HashBuffer::new());
+
+        assert_eq!(vf.create_hash_file(), Status::ValidationOk);
+        assert_eq!(vf.get_hash_buffer().as_big_endian_u32(), 0xCBF4_3926);
+        assert_eq!(fs::read(sidecar(&name)).unwrap(), [0xCB, 0xF4, 0x39, 0x26]);
+
+        // A fresh object loads the hash through validate().
+        let mut other = ValidatedFile::new(&name);
+        assert_eq!(other.validate(), Status::ValidationOk);
+        assert_eq!(other.get_hash_buffer().as_big_endian_u32(), 0xCBF4_3926);
+
+        // A mismatch leaves the previously loaded hash in place.
+        fs::write(&name, b"tampered").unwrap();
+        assert_eq!(other.validate(), Status::ValidationFail);
+        assert_eq!(other.get_hash_buffer().as_big_endian_u32(), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn validated_file_writes_a_precomputed_hash_and_keeps_it_on_failure() {
+        let dir = TempDir::new("validated_pre");
+        let name = dir.write("data.bin", b"123456789");
+        let mut vf = ValidatedFile::new(&name);
+        let digest = Hash::hash(b"123456789");
+        assert_eq!(vf.create_hash_file_from(&digest), Status::ValidationOk);
+        assert_eq!(vf.get_hash_buffer(), &digest);
+        assert_eq!(vf.validate(), Status::ValidationOk);
+
+        // The hash is stored before the write, so a failed write keeps it.
+        let mut missing = ValidatedFile::new(&dir.file("no/such/dir/data.bin"));
+        assert_eq!(
+            missing.create_hash_file_from(&digest),
+            Status::ValidationFileDoesntExist
+        );
+        assert_eq!(missing.get_hash_buffer(), &digest);
+    }
+
+    #[test]
+    fn validated_file_accepts_the_longest_name_whose_hash_name_fits() {
+        let longest = "f".repeat(FwDefaultString::max_length() - HASH_EXTENSION_STRING.len());
+        let vf = ValidatedFile::new(&longest);
+        assert_eq!(vf.get_hash_file_name().len(), FwDefaultString::max_length());
+    }
+
+    #[test]
+    #[should_panic]
+    fn validated_file_asserts_when_the_hash_name_does_not_fit() {
+        // C++ parity: FW_ASSERT on the addFileExtension format status.
+        let too_long = "f".repeat(FwDefaultString::max_length() - HASH_EXTENSION_STRING.len() + 1);
+        let _ = ValidatedFile::new(&too_long);
     }
 }
