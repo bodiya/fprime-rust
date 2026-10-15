@@ -814,7 +814,7 @@ mod tests {
         let (comp, ground) = build();
         comp.base.set_id_base(0x0100_7000);
         comp.reg_commands();
-        assert_eq!(*ground.regs.lock().unwrap(), vec![0x0100_7000, 0x0100_6001]);
+        assert_eq!(*ground.regs.lock().unwrap(), vec![0x0100_7000, 0x0100_7001]);
     }
 
     /// Upstream `test_enable`.
