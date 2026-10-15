@@ -129,10 +129,11 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust) and the optional
 | Area | Components / features |
 | --- | --- |
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
-| Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!`, `serializable_port!` (component/port scaffolding and port serialization) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
+| Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types), `component_msg_types!`, `component_sm_ids!`, `input_port_adapter!`, `async_input_port_adapter!`, `serializable_port!` (component/port scaffolding and port serialization) and `fpp_state_machine!` (FPP internal state machines) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
 | FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits (serializable ones via `serializable_port!`), component bases with handler traits (including `serial` ports), topology wiring (typed ↔ serial connections included), and the `TlmPacketizer` packet tables of telemetry packet sets, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary, generated from the pinned upstream commit and checked against the Rust ids by `cargo test`; `tools/gds-crosscheck.py` runs the stock `fprime-gds` tools against the Rust Ref binary: commands, events, telemetry, parameter save/reload and parameter files, file uplink/downlink, data-product downlink and decoding, `fprime-seqgen` sequences, under both F Prime and CCSDS framing (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
+| State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
@@ -169,9 +170,9 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-State-machine autocoding in `fpp-to-rust` (the front end parses state
-machines; the back end does not generate them yet), `FpySequencer`,
-state-machine autocoding (`Fw/Sm`), and `CfdpManager`. The SDLS security
+State machines in `fpp-to-rust` (the front end parses them and the
+`fpp_state_machine!` layer they would target exists; the back end does not
+emit it yet), `FpySequencer`, and `CfdpManager`. The SDLS security
 layer is ported, but `AesGcmEncryptor`/`AesGcmDecryptor` are only compiled
 with `fprime-svc`'s `aes-gcm` feature, and the Rust Ref, like upstream's
 (which uses `ComCcsds`, not `ComCcsdsSdls`), does not instantiate SDLS or

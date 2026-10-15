@@ -2445,3 +2445,178 @@ note: `ComCcsdsSdls` with the default `AggregationSize` can hand `TmFramer` a
 near-full aggregate plus the 2-byte SA index, which leaves an idle residual below
 7 bytes and asserts; `ComCfg.fpp` documents that projects inserting such a layer
 must subtract its overhead from `AggregationSize`. The test keeps aggregates small.
+
+### fprime-comp: state machines, `Fw/Sm` (ROADMAP item 11)
+
+The contract `fpp-to-cpp` generates for FPP state machines
+(`<M>StateMachineAc`, the implicit `<M>_State` enum) and for state machine
+instances in components (`SmId`, `<m>_sendSignal_<s>`, `sendSignalStart`,
+`<m>_sendSignalFinish`, `smDispatch`, `<m>_stateMachineInvoke`), checked
+against the C++ that fpp-to-cpp 3.3.0 (the version upstream pins) emits for
+the FppTest `state_machine` models, `Svc.FpySequencer` and
+`Svc.ComAggregator`.
+
+```text
+fprime_comp::fpp_state_machine! { state machine M: <State repr> { actions {..} guards {..}
+                                  signals {..} initial ..; states {..} choices {..} } }
+  generates, in the invoking module (one machine per module):
+  State            fpp_enum!: __FPRIME_UNINITIALIZED = 0, leaf states 1.. (Serialize, FppSized, ...)
+  Signal           __FPRIME_INITIAL_TRANSITION = 0, signals 1..; as_repr(), TryFrom/Into FwEnumStoreType
+  trait Handlers   fn action_<a>(&self, sm_id: FwEnumStoreType, signal: Signal[, value]);
+                   fn guard_<g>(&self, sm_id, signal[, value]) -> bool
+  StateMachine     new() (const), init(sm_id, &H), get_state() -> State, id(),
+                   send_signal_<s>(&H[, value]), dispatch_signal(&H, signal, msg),
+                   MAX_SIGNAL_DATA_SIZE, SIGNAL_MSG_SIZE
+  Sender<'a, N>    (pub SmSender<'a, N>): send_signal_<s>([value]) -> enqueue
+  hidden           __SmNode, __SmEnter, __SmEntry, __SmExit, __SmAction, __SmGuard
+fprime_comp::component_sm_ids! { impl C { SM_ID_A, SM_ID_B } }   // FwEnumStoreType consts from 0
+fprime_comp::sm
+  SmCore, SmNode, lca, for_each_exit, for_each_entry, max_size   // the macro's runtime
+  SIGNAL_HEADER_SIZE = 8, SM_SIGNAL_BUFFER_SERIALIZED_SIZE = 130, EXTERNAL_SIGNAL_MSG_SIZE = 144
+  SmSender<'a, N>::new(&QueuedBase, msg_type, sm_id, priority, QueueFullPolicy)
+      .with_overflow_hook(&dyn SmOverflowHook); send(signal, Option<&dyn Serialize>)
+  trait SmOverflowHook { sm_overflow_hook(&self, sm_id, signal, msg: &mut dyn SerBufAny) }
+  write_signal_header(buf, msg_type, sm_id, signal); read_signal_header(msg) -> (sm_id, signal)
+  StrArg::new(&str, max_len) (Serialize, truncating); str_of(&FwString<N>) -> &str
+  trait ExternalStateMachine { type Signal; type Parent: ?Sized; init(&Parent, sm_id);
+      update(&Parent, sm_id, Signal, &SmSignalBuffer); dispatch(.., raw signal, ..) -> MsgDispatchStatus }
+  ExternalSmSender<'a, N>::new(..).with_overflow_hook(&dyn ExternalSmOverflowHook); invoke(signal, &data)
+  trait ExternalSmOverflowHook { external_sm_overflow_hook(&self, sm_id, signal, &SmSignalBuffer) }
+  read_external_signal(msg, &mut SmSignalBuffer) -> (sm_id, signal)
+fprime_fw::SmSignalBuffer = LinearBuffer<FW_SM_SIGNAL_BUFFER_MAX_SIZE = 128>; FwString::CAPACITY
+```
+
+**Wire format** (byte-exact with the generated C++): an internal signal is
+`[msg_type i32][port_num i16 = 0][sm_id i32][signal i32][value]`, the value
+serialized as is (a string as `[u16 len][bytes]` truncated to the signal's
+declared size); an external signal is
+`[msg_type i32][port_num i16 = 0][sm_id i32][signal i32][u16 len][data]`.
+Decode failures and leftover bytes assert on dispatch, as in C++; an unknown
+internal `sm_id` or signal asserts, an unknown external `sm_id` is
+`MsgDispatchStatus::Error`.
+
+**Semantics** (what the C++ autocoder flattens into `switch` arms, and the
+runtime walks): a signal is handled by the innermost state, from the current
+leaf outwards, that has a transition on it; a false guard means no transition
+(no fall-through to the parent); a state with no transition ignores the
+signal; a signal before `init` asserts. A transition from source `S` to
+target `T` runs the exit actions from the current leaf up to, not including,
+`sm::lca(S, T)` (the deepest state that is `S` or an ancestor of it and a
+proper ancestor of `T` — so a transition to `S` itself, or to an ancestor,
+exits and re-enters it), then its own actions, then the entry actions of
+the states strictly between that state and `T`, then enters `T`: a state
+runs its entry actions and then its initial transition, or (a leaf) becomes
+the current state; a choice calls its guard and takes a branch, exiting from
+the choice's parent. Every action and guard gets the state machine id and
+the triggering signal (`__FPRIME_INITIAL_TRANSITION` during `init`), and a
+typed one the value (a choice's value converted to the choice's type with
+`Into`).
+
+**Generator contract** (`fpp-to-rust`, ROADMAP item 15). For a state
+machine definition `M` with members, in the module that holds `M`'s nested
+definitions:
+
+- do **not** emit the implicit `State` enum symbol; invoke
+  `fprime_comp::fpp_state_machine!` with `state machine M: <u8|u16|u32>` (the
+  implicit enum's representation, `transform.rs`);
+- `actions { a => action_a [(mode T)], .. }` and `guards { g => guard_g
+  [(mode T)], .. }`: `mode` is `val` for `ArgKind::Copy` types, `str` for any
+  string type (`T` = `FwString<N>`, `N` the declared or default size; the
+  handler takes `&str`), `ref` otherwise;
+- `signals { s = k => send_signal_s [(mode T)] { S => [if g] [do { a, .. }]
+  [enter X]; .. } .. }`: signals numbered from 1 in **name order**; under
+  each signal, one line per state `S` that has `on s` (any order), with no
+  `enter` for an internal transition;
+- `initial [do { .. }] enter X;` (the machine's initial transition);
+- `states { state S [= k] [in P] { [initial [do { .. }] enter X;] [entry do
+  { .. }] [exit do { .. }] } .. }`: **every** state, under its qualified
+  name with `.` replaced by `_` (`S1.S2` is `S1_S2`), with its parent's;
+  leaf states numbered from 1 in the order of those names (as the `State`
+  enum), composites with their initial transition and no number;
+- `choices { choice C [in P] [(mode T)] { if g [do { .. }] enter X else
+  [do { .. }] enter Y } .. }`: `T` is FPP's inferred type of the choice;
+- a signal's value type must implement `Default`, `Serialize`,
+  `Deserialize` and `FppSized` (generated FPP types do).
+
+For a component with `state machine instance` members:
+
+- message types, after every async port, async command and internal port:
+  `EXTERNAL_STATE_MACHINE_SIGNAL` if any instance is external, then
+  `INTERNAL_STATE_MACHINE_SIGNAL` if any is internal;
+- `SmId`: **all** instances, internal and external, sorted by name, from 0
+  (`component_sm_ids!`); `init` initializes them in that order, after the
+  base init and **before** the queue is created (so an initial transition
+  cannot send signals through the queue);
+- the queue message size covers `M::StateMachine::SIGNAL_MSG_SIZE` for every
+  internal machine type and `sm::EXTERNAL_SIGNAL_MSG_SIZE` for external
+  ones;
+- an internal instance `m: M [priority p] [policy]` is a field
+  `M::StateMachine`, with `m_get_state()` and a sender `M::Sender(
+  SmSender::new(queue, MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL, SM_ID_m, p
+  (default 0), policy (default Assert)))` — plus `.with_overflow_hook(self)`
+  for `hook`, the component implementing `SmOverflowHook` by dispatching on
+  `sm_id` to its `m_state_machine_overflow_hook`; the component implements
+  `M::Handlers` (forwarding to its handler trait's
+  `<fqIdent(M)>_action_<a>` / `_guard_<g>`), once per machine type;
+- dispatch: `INTERNAL_STATE_MACHINE_SIGNAL => { read port_num; let (sm_id,
+  signal) = sm::read_signal_header(msg); match sm_id { SM_ID_m =>
+  self.m.dispatch_signal(self, signal, msg), _ => fw_assert!(false) }; Ok }`;
+- an external instance `m: E` is a field of a user type implementing
+  `ExternalStateMachine` (bound like an abstract type), sent to with
+  `ExternalSmSender::invoke` and dispatched with `sm::read_external_signal`
+  then `self.m.dispatch(self, sm_id, signal, &data)`.
+
+`crates/fprime-comp/tests/sm_instance.rs` and `sm_external.rs` are written
+in exactly that shape and serve as the reference output.
+
+**Deviations from C++**:
+
+- Hierarchy is walked at run time (parent table, `sm::lca`) instead of being
+  flattened at code-generation time, because `macro_rules!` cannot flatten
+  it; the walks are allocation-free and bounded by the nesting depth, and
+  `tests/sm_traces.rs` checks the resulting call order against the
+  reference compiler's C++ for every leaf state, signal and guard path of
+  20 machines (golden traces from `tools/sm-traces.py`).
+- `Handlers` methods take `&self` (components keep state behind their own
+  locks; a standalone test harness uses interior mutability) and receive
+  the state machine id as `FwEnumStoreType` rather than the component's
+  `SmId` enum — the macro is independent of any component.
+- State lives in atomics (`SmCore`), so every operation takes `&self` and
+  `get_state()` works from any thread, including from an action mid
+  transition (it returns the old state, as in C++). A signal delivered to an
+  instance while one of its transitions is running — re-entry from an
+  action, or two threads at once — asserts; C++ does not detect it.
+- FPP string values are `&str` for actions, guards, choices and
+  `send_signal_*` (C++ `const Fw::StringBase&`). Through a queue they are
+  truncated byte-wise to the signal's declared size, as in C++; a UTF-8
+  sequence split by that truncation is dropped on the receiving side.
+- Overflow hooks are one trait implementation per component dispatching on
+  the state machine id, not one virtual function per instance; the external
+  hook also receives the id. A `hook` instance without a hook asserts.
+- External machines get their parent (the C++ `<M>_Interface*` member) as a
+  parameter of `init`/`update`, so a component owns its machines without a
+  reference cycle; an external signal value that is not one of the
+  machine's signals is a dispatch error (C++ `static_cast`s it).
+- Signal values must be serializable into the queue message, so a signal
+  carrying an `Fw.Buffer` (C++ serializes the buffer's pointer and size —
+  `Svc.ComAggregator`'s `fill`) needs a value type holding a
+  `BufferEscrow` token instead, as async buffer ports do.
+- `macro_rules!` cannot build identifiers, so the input names the
+  `action_*` / `guard_*` / `send_signal_*` methods and the flattened state
+  and choice names, and all discriminants are explicit; the leaf/composite
+  shape of each state is checked at compile time, and FPP's type rules
+  (typed actions only in transitions carrying a convertible value, untyped
+  entry/exit actions) are enforced by the trait bounds of the hidden
+  helpers.
+- The FPP front end (`fprime-fpp`, `transform.rs`) now numbers the implicit
+  `State` enum in name order; it used definition order, which differs from
+  `fpp-to-cpp` (`state A { state B }` and `state A_A` give `A_A = 1`,
+  `A_B = 2`).
+
+Tests: the FppTest `state_machine/internal` suites (state, choice, initial)
+in full; `internal_instance` through queued and active components for the
+untyped, abstract-type, string, enum, array, struct, `U16`→`U32`-choice and
+hierarchical-choice machines, the assert/drop/hook policies on overflow,
+priorities and the message bytes; `external_instance` (`SmTest` with `DeviceSm` and `HackSm`).
+The remaining `internal_instance` testers repeat the internal tests through
+the same queue path and are not duplicated.

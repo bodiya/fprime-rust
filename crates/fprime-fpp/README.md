@@ -194,7 +194,9 @@ printer and parser.
 
 ## Not generated (yet)
 
-State machine instances (`Fw/Sm` autocoding); instance init specifiers
+State machines and state machine instances (the target is
+`fprime_comp::fpp_state_machine!` and `fprime_comp::sm`; the contract is
+in `docs/api-notes.md`, "fprime-comp: state machines"); instance init specifiers
 (`phase ... "code"`); instances of hand-written components in a generated
 topology. Anonymous struct constants and abstract-type values are emitted
 as comments.

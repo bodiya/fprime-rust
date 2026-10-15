@@ -708,6 +708,35 @@ mod tests {
     }
 
     #[test]
+    fn str_arg_truncates_like_string_base_serialize_to() {
+        let mut buf = LinearBuffer::<16>::new();
+        assert!(
+            buf.serialize(&StrArg::new("abcdef", 4), Endianness::Big)
+                .is_ok()
+        );
+        assert_eq!(buf.as_slice(), &[0, 4, b'a', b'b', b'c', b'd']);
+        // Content stops at the first NUL, as a C string does.
+        let mut buf = LinearBuffer::<16>::new();
+        assert!(
+            buf.serialize(&StrArg::new("ab\0cd", 80), Endianness::Big)
+                .is_ok()
+        );
+        assert_eq!(buf.as_slice(), &[0, 2, b'a', b'b']);
+        assert_eq!(StrArg::new("abcdef", 4).serialized_size(), 6);
+    }
+
+    #[test]
+    fn str_of_drops_a_split_utf8_tail() {
+        let mut s = fprime_fw::FwString::<3>::new();
+        s.set("aé!"); // 4 bytes, truncated to 3 at a character boundary
+        assert_eq!(s.as_bytes().len(), 3);
+        assert_eq!(str_of(&s), "a\u{e9}");
+        let mut t = fprime_fw::FwString::<2>::new();
+        t.set("aé"); // truncated inside 'é'
+        assert_eq!(str_of(&t), "a");
+    }
+
+    #[test]
     fn external_message_size_matches_cpp_buff_union() {
         // DATA_OFFSET (4 + 2) + 2 * sizeof(FwEnumStoreType) + (2 + 128).
         assert_eq!(EXTERNAL_SIGNAL_MSG_SIZE, 6 + 8 + 130);

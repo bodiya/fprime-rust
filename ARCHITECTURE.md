@@ -46,8 +46,9 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   express faithfully stays hand-written — the macros never half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
-  FpySequencer, state-machine autocoding (`Fw/Sm`) and CFDP. Everything
-  listed as a phase-1 gap in earlier revisions of this document
+  FpySequencer and CFDP. (`Fw/Sm` state machines are ported as the
+  `fpp_state_machine!` macro layer; `fpp-to-rust` does not emit it yet.)
+  Everything  listed as a phase-1 gap in earlier revisions of this document
   (CmdSequencer, file services, data products, TlmPacketizer, the CCSDS
   stack, ComLogger, the Linux drivers, ActiveTextLogger, GenericHub with
   the serialize ports it needs) has since been ported, as has zlib
@@ -548,6 +549,8 @@ generated (`Debug` covers diagnostics; no consumer needs it yet).
 | `input_port_adapter!` | SYNC/GUARDED input: adapter struct + port-trait impl forwarding to a named handler on the caller's thread + the `fn <name>(self: &Arc<Self>, port_num) -> PortRef<dyn XPort>` factory |
 | `async_input_port_adapter!` | ASYNC input: the same, plus the byte-exact envelope write (`[msg_type i32 BE][port_num i16 BE][args in order]`), the queue-full policy, an optional `pre_msg_hook`/`overflow_hook`, and the matching `fn <name>_deserialize(msg) -> Option<(args..)>` used by `dispatch_message` |
 | `serializable_port!` | a port trait's serialization (`<Port>PortSerializer`, `<Port>PortBuffer::CAPACITY`, `Input<Port>Port::invokeSerial`): both directions between the typed trait and `SerializePort`, from one argument list |
+| `component_sm_ids!` | the component's state machine ids (C++ `SmId`), numbered from 0 |
+| `fpp_state_machine!` | an FPP internal state machine (`<M>StateMachineAc`): `State`/`Signal` enums, the `Handlers` trait of actions and guards, `StateMachine` (`init`, `get_state`, `send_signal_*`, `dispatch_signal`) and the per-instance `Sender`, over the runtime in `comp::sm` (see `docs/api-notes.md`) |
 
 Port arguments are declared once, with a passing mode that fixes both the
 trait-method signature and the codec — `val x: T` (`x: T`), `ref x: T`

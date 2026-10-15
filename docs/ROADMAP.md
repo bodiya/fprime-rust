@@ -34,8 +34,8 @@ subsystems, then the strategic changes.
   wiring. `crates/fprime-fpp-demo` builds a model from FPP at build time
   and tests the generated code end to end; the whole upstream framework
   model and the Ref deployment analyze. Not generated: state machines
-  (`Fw/Sm`, item 11 below; serial ports and packet tables landed with
-  item 15). See
+  (`Fw/Sm`: the `fpp_state_machine!` target of item 11 exists, see item
+  15; serial ports and packet tables landed with item 15). See
   `crates/fprime-fpp/README.md`.
 
 - **Config constants into `fprime-config`** (item 1). `FW_FILE_BUFFER_MAX_SIZE`,
@@ -176,6 +176,22 @@ subsystems, then the strategic changes.
   plus the AES-256 GCM-spec vectors, and
   `crates/fprime-svc/tests/ccsds_sdls_chain.rs` runs upstream's
   `ComCcsdsSdls` wiring end to end with both cipher pairs.
+- **State machines, `Fw/Sm`** (item 11). `fprime_comp::fpp_state_machine!`
+  declares an FPP internal state machine — hierarchical states with
+  entry/exit actions, initial transitions, choices, guards, typed signals
+  and actions — and generates the `State`/`Signal` enums with the
+  `fpp-to-cpp` discriminants (both sorted by name), the `Handlers` trait
+  and `init`/`get_state`/`send_signal_*`. `fprime_comp::sm` is the runtime
+  and the component side: the byte-exact signal message
+  `[msg_type][port 0][sm_id][signal][data]` enqueued with the instance's
+  priority and queue-full policy and dispatched on the component thread,
+  the overflow hook, `component_sm_ids!`, and external (`init`/`update`)
+  machines with `Fw::SmSignalBuffer`. The FppTest `state_machine` suites
+  are ported, and `tools/sm-traces.py` golden traces check every leaf
+  state, signal and guard path of the `FpySequencer`, `ComAggregator` and
+  hierarchical FppTest machines against the reference compiler's C++.
+  The FPP front end now numbers the implicit `State` enum in name order,
+  as `fpp-to-cpp` does.
 
 ## Next: small follow-ups
 
@@ -191,18 +207,17 @@ the Ref deployment.
 ## Then: larger subsystems
 
 10. **`Svc::FpySequencer`.** Larger than `CmdSequencer`; needs the Fpy
-    bytecode dispatcher and its own state machine (see item 11).
-11. **State-machine autocoding (`Fw/Sm`).** A declarative-macro layer in the
-    style of `component_msg_types!`: states, signals, guards and actions
-    with the generated `init()`/`update()` shape and the `Signal` enum on the
-    wire.
+    bytecode dispatcher. Its state machine is already expressed with
+    `fpp_state_machine!` in `crates/fprime-comp/tests/sm_traces.rs`.
 
 ## Strategic
 
 13. **`no_std` OSAL seam.** `fprime-os` keeps the seam; making `fprime-fw`
     and `fprime-comp` `no_std` + `alloc` is the first real test of it.
 15. **FPP back-end gaps.** The front end is complete; the Rust back end
-    still lacks state-machine instances (needs item 11). Serial ports and
+    still lacks state machines and state-machine instances (it should emit
+    `fpp_state_machine!` and the instance plumbing documented in
+    `docs/api-notes.md`, "fprime-comp: state machines"). Serial ports and
     telemetry packet tables are done (see "Done in phase 2"). Still open
     here: instance init specifiers (`phase ... """code"""`), which is how
     upstream deployments call `setPacketList` on their packetizer, and
