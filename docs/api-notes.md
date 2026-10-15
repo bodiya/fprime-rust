@@ -3377,8 +3377,9 @@ Upstream behavior kept on purpose (all covered by tests):
   re-armed by the ACK timer can go out again after the FIN-ACK; an R1
   whose file cannot be created reports `RxFileTransferCompleted`.
 - `Svc/Subtopologies/FileHandlingCfdp` calls `configure(allocator)`
-  without the `fileQueueDepth` argument the component requires; the Rust
-  Ref instantiates neither it nor upstream's `FileHandling`-less variant.
+  without the `fileQueueDepth` argument the component requires. Upstream's
+  Ref does not use that subtopology (it uses `FileHandling`), and neither
+  does the Rust Ref.
 
 Tests: 128 unit tests (`cfdp_manager/tests`: PDU codec with literal
 vectors, every PDU type's round trip and error statuses, helpers, the
