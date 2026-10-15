@@ -67,12 +67,11 @@ pub trait DpWrittenPort: Send + Sync {
 }
 
 /// `procBufferSendOut` — the data-product processing fan-out (see the
-/// module header for why this is not `Fw.BufferSend`).
-pub trait DpProcPort: Send + Sync {
-    /// Process the packet in place; the header (and the `Fw::Buffer` size)
-    /// may be rewritten, after which `DpWriter` re-reads the header.
-    fn invoke(&self, port_num: FwIndexType, buffer: &mut Buffer);
-}
+/// module header for why this is not `Fw.BufferSend`). Defined next to its
+/// file-free implementer
+/// [`DpCompressProc`](crate::dp_compress_proc::DpCompressProc), so it
+/// stays available in `no_std` builds, where this module is not.
+pub use crate::dp_compress_proc::DpProcPort;
 
 /// `DpWriterNumProcPorts` (`default/config/AcConstants.fpp`).
 pub const DP_WRITER_NUM_PROC_PORTS: usize = 5;

@@ -30,13 +30,14 @@
 use crate::ccsds::types::{
     ApidSequenceCountPort, ErrorNotifyPort, FrameError, SpacePacketHeader, space_packet_subfields,
 };
+use alloc::format;
 use fprime_comp::{ComDataWithContextPort, EventGlue, OutputPort, PassiveBase, input_port_adapter};
 use fprime_config::{FwEventIdType, FwIndexType, FwSignedSizeType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Apid, Buffer, Endianness, FrameContext, LogSeverity, Pvn, SerBuf, SerializeStatus, fw_assert,
     fw_try,
 };
-use std::sync::{Arc, Mutex};
 
 /// `InvalidPacket` event id (FPP declaration order, relative).
 pub const EVENTID_INVALID_PACKET: FwEventIdType = 0;
@@ -107,7 +108,7 @@ impl SpacePacketDeframer {
 
     /// `dataIn` handler (guarded — runs under the component mutex).
     fn data_in_handler(&self, _port_num: FwIndexType, mut data: Buffer, context: &FrameContext) {
-        let _guard = self.guard.lock().unwrap();
+        let _guard = self.guard.lock();
 
         // (1) Strictly greater than the header size is required.
         if data.size() <= SpacePacketHeader::SERIALIZED_SIZE {

@@ -26,6 +26,9 @@
 //!   enum cannot hold arbitrary values, so unknown descriptors map to
 //!   `Apid::InvalidUninitialized`.
 
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferEscrow, BufferSendPort, CmdGlue, CmdPort,
     ComDataWithContextPort, ComPort, ComponentDispatch, EventGlue, MsgDispatchStatus, OutputPort,
@@ -36,14 +39,14 @@ use fprime_config::{
     FwOpcodeType, FwPacketDescriptorType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::buffer::BufferStorage;
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicU8, Ordering};
 use fprime_fw::{
     Apid, Buffer, CmdArgBuffer, CmdResponse, ComBuffer, Endianness, FrameContext, LinearBuffer,
     LogSeverity, SerBufAny, Serialize, SerializeStatus, Success, fw_assert,
 };
 use fprime_fw::{SerBuf, fw_try};
 use fprime_utils::{Queue as TypesQueue, QueueMode, QueueOverflowMode};
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Dictionary constants
@@ -290,7 +293,7 @@ impl ComQueue {
     /// the Rust `Types::Queue` owns its ring, so the allocator parameters
     /// are dropped). Asserts each priority is in range and each depth > 0.
     pub fn configure(&self, queue_config: &QueueConfigurationTable) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         // Validate every entry up front (C++ asserts inside the loop).
         for (entry_index, entry) in queue_config.entries.iter().enumerate() {
             fw_assert!(
@@ -404,7 +407,7 @@ impl ComQueue {
 
     /// `comStatusIn` handler: the flow-control state machine.
     fn com_status_in_handler(&self, _port_num: FwIndexType, condition: Success) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         match state.send_state {
             SendState::Waiting => {
                 if condition == Success::Success {
@@ -433,7 +436,7 @@ impl ComQueue {
             port_num >= 0 && (port_num as usize) < COM_PORT_COUNT,
             port_num as i32
         );
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let _ = self.enqueue_com(&mut state, port_num as usize, data);
     }
 
@@ -444,7 +447,7 @@ impl ComQueue {
             port_num as i32
         );
         let queue_num = port_num as usize + COM_PORT_COUNT;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         fw_assert!(queue_num < state.queues.len(), queue_num as i32);
 
         // Pre-emptive DROP_OLDEST: when the queue is full, pop the oldest
@@ -492,7 +495,7 @@ impl ComQueue {
 
     /// `run` handler: downlink queue-depth high-water marks.
     fn run_handler(&self, _port_num: FwIndexType, _context: u32) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         fw_assert!(state.queues.len() == TOTAL_PORT_COUNT);
         let mut com_depth = ComQueueDepth::default();
         for (i, out) in com_depth.0.iter_mut().enumerate() {
@@ -531,7 +534,7 @@ impl ComQueue {
         } else {
             // Com-buffer return: the data was copied at enqueue time, so
             // C++ drops it here; we recycle the storage for the next send.
-            *self.recycle.lock().unwrap() = Some(data.into_storage());
+            *self.recycle.lock() = Some(data.into_storage());
         }
     }
 
@@ -582,7 +585,7 @@ impl ComQueue {
                 .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
             return;
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         self.drain_queue(&mut state, queue_index as usize);
         drop(state);
         self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
@@ -590,7 +593,7 @@ impl ComQueue {
 
     /// `FLUSH_ALL_QUEUES()`.
     fn flush_all_queues_cmd_handler(&self, op_code: FwOpcodeType, cmd_seq: u32) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         for i in 0..TOTAL_PORT_COUNT {
             self.drain_queue(&mut state, i);
         }
@@ -619,7 +622,7 @@ impl ComQueue {
             return;
         }
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             // Update the matching entry (at most one per queue index).
             for meta in state.prioritized.iter_mut() {
                 if meta.index == queue_index as usize {
@@ -767,7 +770,6 @@ impl ComQueue {
         let storage = {
             self.recycle
                 .lock()
-                .unwrap()
                 .take()
                 .unwrap_or_else(|| vec![0u8; FW_COM_BUFFER_MAX_SIZE].into_boxed_slice())
         };
@@ -1456,7 +1458,7 @@ mod tests {
         assert_eq!(rec.data_out.lock().unwrap().len(), 2);
         return_last(&comp, &rec);
         assert_eq!(rec.buffer_returns.lock().unwrap().len(), 1); // unchanged
-        assert!(comp.recycle.lock().unwrap().is_some());
+        assert!(comp.recycle.lock().is_some());
     }
 
     /// The descriptor of the queued data becomes the context APID.
@@ -1706,6 +1708,7 @@ mod tests {
     /// message queue, exit, join.
     #[test]
     fn active_lifecycle_end_to_end() {
+        crate::test_platform::install();
         let (comp, rec) = build(&default_table());
         comp.active.queued.create_queue(16, MSG_SIZE);
         comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);

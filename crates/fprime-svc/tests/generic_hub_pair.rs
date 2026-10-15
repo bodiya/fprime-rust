@@ -32,6 +32,8 @@ use fprime_svc::generic_hub::GenericHub;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod no_std_platform;
+
 /// Buffer driver stand-in: one direction of the transport.
 struct Wire {
     /// The far side's allocator (the receiving driver's buffers).
@@ -179,6 +181,8 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 #[test]
 fn commands_events_serial_calls_and_buffers_cross_the_hub_pair() {
     const DISP_ID_BASE: u32 = 0x500;
+    // The dispatcher's task, in a `no_std` build (a no-op with `std`).
+    no_std_platform::install();
 
     // -- Construct ---------------------------------------------------------
     let hub_a = GenericHub::new("hubA");

@@ -40,6 +40,12 @@
 //!   becomes "store in flight + capacity of `TmFrameFixedSize`").
 //! - Like upstream, nothing counts invocations against the NIST SP 800-38D
 //!   2^32 random-IV bound per key; key rotation is the key source's job.
+//! - `no_std`: the IV still comes from `getrandom`, built with its
+//!   `custom` feature (turned on by this crate's `spin` feature). Hosted
+//!   targets keep the OS CSPRNG; on a target without one (bare metal) the
+//!   deployment registers its hardware RNG with
+//!   `getrandom::register_custom_getrandom!`, and a failing source fails
+//!   the frame with `ENCRYPTION_FAILURE`, as a failing `RAND_bytes` does.
 
 use crate::ccsds::aes_gcm_cipher::{AES_256_KEY_LEN, GCM_IV_LEN, GCM_TAG_LEN, seal};
 use crate::ccsds::sdls_auth_mask::SdlsTmAuthMask;
@@ -47,13 +53,14 @@ use crate::ccsds::types::{
     CcsdsSdlsDataPort, CcsdsSdlsEncryptionPort, SdlsKeyBuffer, SdlsKeyPort, SdlsStatus,
     TM_FRAME_FIXED_SIZE, TMHeader, TMTrailer,
 };
+use alloc::vec;
 use fprime_comp::{
     ComDataWithContextPort, EventGlue, OutputPort, PassiveBase, PortRef, input_port_adapter,
 };
 use fprime_config::{FwEventIdType, FwIndexType};
 use fprime_fw::buffer::BufferStorage;
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, FrameContext, LogSeverity, SerBuf, SerBufAny, SerializeStatus, fw_assert};
-use std::sync::{Arc, Mutex};
 use zeroize::Zeroize;
 
 /// Largest output frame the downstream chain carries: the TM data field
@@ -111,7 +118,7 @@ impl AesGcmEncryptor {
 
     /// True while the output store is free for the next frame.
     pub fn owns_output_buffer(&self) -> bool {
-        self.store.lock().unwrap().is_some()
+        self.store.lock().is_some()
     }
 
     /// `encryptIn` — GUARDED `Svc.Ccsds.CcsdsSdlsEncryption`.
@@ -129,12 +136,12 @@ impl AesGcmEncryptor {
         data: Buffer,
         context: &FrameContext,
     ) {
-        let mut cache = self.guard.lock().unwrap();
+        let mut cache = self.guard.lock();
 
         // The previous frame is still downstream and the store holds
         // unsent ciphertext: overwriting it would let the new MAC cover a
         // substitution. Drop this frame instead.
-        let Some(mut storage) = self.store.lock().unwrap().take() else {
+        let Some(mut storage) = self.store.lock().take() else {
             self.evt.log_event(
                 self.base.get_id_base(),
                 EVENTID_OUTPUT_BUFFER_BUSY,
@@ -149,7 +156,7 @@ impl AesGcmEncryptor {
         // Store layout: IV (12) | ciphertext (N) | MAC (16).
         let plain_len = data.size();
         if plain_len + GCM_IV_LEN + GCM_TAG_LEN > MAX_OUTPUT_SIZE {
-            *self.store.lock().unwrap() = Some(storage);
+            *self.store.lock() = Some(storage);
             self.fail_frame(data, context, SdlsStatus::EncryptionFailure);
             return;
         }
@@ -161,7 +168,7 @@ impl AesGcmEncryptor {
             .invoke(p.port_num, security_association_index, &mut key);
         if key_status != SdlsStatus::Success || key.get_size() != AES_256_KEY_LEN {
             key.bytes_mut().zeroize();
-            *self.store.lock().unwrap() = Some(storage);
+            *self.store.lock() = Some(storage);
             self.fail_frame(data, context, SdlsStatus::KeyError);
             return;
         }
@@ -170,7 +177,7 @@ impl AesGcmEncryptor {
         let mut iv = [0u8; GCM_IV_LEN];
         if getrandom::getrandom(&mut iv).is_err() {
             key.bytes_mut().zeroize();
-            *self.store.lock().unwrap() = Some(storage);
+            *self.store.lock() = Some(storage);
             self.fail_frame(data, context, SdlsStatus::EncryptionFailure);
             return;
         }
@@ -190,7 +197,7 @@ impl AesGcmEncryptor {
         // The cipher has its key schedule; wipe the stack copy.
         key.bytes_mut().zeroize();
         let Some(tag) = tag else {
-            *self.store.lock().unwrap() = Some(storage);
+            *self.store.lock() = Some(storage);
             self.fail_frame(data, context, SdlsStatus::EncryptionFailure);
             return;
         };
@@ -225,7 +232,7 @@ impl AesGcmEncryptor {
         }
         // Only the output store is ever emitted: anything else is a wiring
         // error.
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock();
         fw_assert!(store.is_none());
         fw_assert!(
             data.capacity() == TM_FRAME_FIXED_SIZE,

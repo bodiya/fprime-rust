@@ -24,10 +24,11 @@
 //! crate is next revised.
 
 use crate::event_manager::EventSeverityFilter;
+use alloc::string::String;
 use fprime_comp::{LogTextPort, PassiveBase, PortRef};
 use fprime_config::{FwEventIdType, FwIndexType, FwTimeBaseStoreType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{LogSeverity, TextLogString, Time, fw_assert, fw_log};
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Config constants (default/config/PassiveTextLoggerCfg.hpp).
@@ -113,7 +114,7 @@ impl PassiveTextLogger {
             filtered_ids.len() as i32,
             PASSIVE_TEXT_LOGGER_ID_FILTER_SIZE as i32
         );
-        let mut filter = self.id_filter.lock().unwrap();
+        let mut filter = self.id_filter.lock();
         filter.count = filtered_ids.len();
         filter.ids[..filtered_ids.len()].copy_from_slice(filtered_ids);
     }
@@ -142,7 +143,7 @@ impl PassiveTextLogger {
             return;
         }
         {
-            let filter = self.id_filter.lock().unwrap();
+            let filter = self.id_filter.lock();
             if filter.ids[..filter.count].contains(&id) {
                 return;
             }
@@ -188,6 +189,7 @@ impl LogTextPort for PassiveTextLogger {
 mod tests {
     use super::*;
     use fprime_fw::TimeBase;
+    use std::sync::Mutex;
 
     /// Recording global logger. The `fw::logger` registry is process-wide,
     /// so these tests serialize on [`TEST_LOCK`] and assert on

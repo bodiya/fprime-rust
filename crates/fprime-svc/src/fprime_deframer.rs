@@ -16,9 +16,9 @@
 use crate::fprime_framer::{HEADER_SIZE, MIN_FRAME_SIZE, START_WORD, TRAILER_SIZE};
 use fprime_comp::{ComDataWithContextPort, EventGlue, OutputPort, PassiveBase, input_port_adapter};
 use fprime_config::{FwEventIdType, FwIndexType, FwPacketDescriptorType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Apid, Buffer, FrameContext, LogSeverity, SerBuf, SerializeStatus, fw_assert};
 use fprime_utils::Hash;
-use std::sync::{Arc, Mutex};
 
 /// Relative event ids (FPP declaration order).
 pub const EVENTID_INVALID_BUFFER_RECEIVED: FwEventIdType = 0;
@@ -71,7 +71,7 @@ impl FprimeDeframer {
 
     /// `dataIn` handler (guarded — runs under the component mutex).
     fn data_in_handler(&self, _port_num: FwIndexType, mut data: Buffer, context: &FrameContext) {
-        let _guard = self.guard.lock().unwrap();
+        let _guard = self.guard.lock();
 
         if data.size() < MIN_FRAME_SIZE {
             // Too short to hold header + trailer.

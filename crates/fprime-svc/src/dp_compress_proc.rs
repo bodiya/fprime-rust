@@ -63,7 +63,7 @@
 //!   FPP requires product ports on a component that declares a record; they
 //!   are declared here for wiring parity and never invoked.
 
-use crate::dp_writer::DpProcPort;
+use alloc::format;
 use fprime_comp::{
     CmdGlue, CmdPort, EventGlue, EventThrottle, OutputPort, PassiveBase, PortRef, PrmGlue,
 };
@@ -72,11 +72,11 @@ use fprime_config::{
     FwSizeType,
 };
 use fprime_fw::dp::{DpContainer, DpGetPort, DpSendPort};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Enabled, Endianness, ExtBuf, LogSeverity, ParamBuffer,
     ParamValid, SerBuf, Serialize, fpp_enum, fpp_struct, fw_assert, fw_try,
 };
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Svc/DpCompressProc/Types and Ports
@@ -102,6 +102,16 @@ fpp_struct! {
         /// The algorithm the rest of the record is encoded with.
         algorithm: CompressionAlgorithm { get_algorithm, set_algorithm },
     }
+}
+
+/// `procBufferSendOut` of `Svc::DpWriter` — the data-product processing
+/// fan-out (see the `dp_writer` module header for why this is not
+/// `Fw.BufferSend`); re-exported as `dp_writer::DpProcPort`. It lives here,
+/// with its file-free implementer, so it exists in `no_std` builds too.
+pub trait DpProcPort: Send + Sync {
+    /// Process the packet in place; the header (and the `Fw::Buffer` size)
+    /// may be rewritten, after which `DpWriter` re-reads the header.
+    fn invoke(&self, port_num: FwIndexType, buffer: &mut Buffer);
 }
 
 /// The `ref buffer: Fw.Buffer` argument of `Svc.CompressChunk`: a borrowed
@@ -352,7 +362,7 @@ impl DpCompressProc {
         let enable_ok =
             valid == ParamValid::Valid && buf.deserialize(&mut enable, Endianness::Big).is_ok();
 
-        let mut params = self.params.lock().unwrap();
+        let mut params = self.params.lock();
         if chunk_ok {
             params.chunk_size = chunk_size;
             params.chunk_size_valid = ParamValid::Valid;
@@ -372,14 +382,14 @@ impl DpCompressProc {
     /// `paramGet_CHUNK_SIZE`.
     #[must_use]
     pub fn param_get_chunk_size(&self) -> (FwSizeStoreType, ParamValid) {
-        let params = self.params.lock().unwrap();
+        let params = self.params.lock();
         (params.chunk_size, params.chunk_size_valid)
     }
 
     /// `paramGet_ENABLE`.
     #[must_use]
     pub fn param_get_enable(&self) -> (Enabled, ParamValid) {
-        let params = self.params.lock().unwrap();
+        let params = self.params.lock();
         (params.enable, params.enable_valid)
     }
 
@@ -421,7 +431,7 @@ impl DpCompressProc {
         // The Rust container owns its buffer: lend it for the duration of
         // the call and always hand it back (C++ `DpContainer container(0,
         // fwBuffer)` is a view).
-        let mut container = DpContainer::with_buffer(0, std::mem::take(buffer));
+        let mut container = DpContainer::with_buffer(0, core::mem::take(buffer));
         self.process_container(&mut container, buffer_size);
         *buffer = container.take_buffer();
     }
@@ -504,7 +514,7 @@ impl DpCompressProc {
             return;
         }
         {
-            let mut params = self.params.lock().unwrap();
+            let mut params = self.params.lock();
             params.chunk_size = val;
             params.chunk_size_valid = ParamValid::Valid;
         }
@@ -524,7 +534,7 @@ impl DpCompressProc {
             return;
         };
         {
-            let mut params = self.params.lock().unwrap();
+            let mut params = self.params.lock();
             params.enable = val;
             params.enable_valid = ParamValid::Valid;
         }
@@ -550,7 +560,7 @@ impl DpCompressProc {
         }
         let mut buf = ParamBuffer::new();
         let status = {
-            let params = self.params.lock().unwrap();
+            let params = self.params.lock();
             if id == Self::PARAMID_CHUNK_SIZE {
                 buf.serialize_u16_be(params.chunk_size)
             } else {
@@ -976,6 +986,7 @@ mod tests {
     use super::*;
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, PrmGetPort, PrmSetPort};
     use fprime_fw::{LogBuffer, Time};
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x0410_0000;
     const DP_ID: FwDpIdType = 0x0000_1234;

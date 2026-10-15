@@ -30,9 +30,16 @@
 //!   status is ignored (C++ parity).
 //!
 //! The component has no commands, events or telemetry.
+//!
+//! `no_std`: the component builds without `std` and prints through
+//! `Fw::Logger` as above; the log file (`LogFile`,
+//! `ActiveTextLogger::set_log_file`) needs `Os::File` and is `std`-only.
 
+#[cfg(feature = "std")]
 mod log_file;
 
+use alloc::string::String;
+#[cfg(feature = "std")]
 pub use log_file::LogFile;
 
 pub use fprime_config::active_text_logger::{
@@ -51,11 +58,11 @@ use fprime_config::{
     FW_INTERNAL_INTERFACE_STRING_MAX_SIZE, FwEnumStoreType, FwEventIdType, FwIndexType,
     FwQueuePriorityType, FwSizeType, FwTimeBaseStoreType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Endianness, InternalInterfaceString, LinearBuffer, LogSeverity, SerBuf, SerBufAny,
     TextLogString, Time, fw_assert, logger,
 };
-use std::sync::{Arc, Mutex};
 
 /// Queue message type of the internal `TextQueue` port (0 is EXIT).
 pub const MSG_TYPE_TEXT_QUEUE: FwEnumStoreType = 1;
@@ -94,6 +101,7 @@ pub struct ActiveTextLogger {
     id_filter: Mutex<IdFilter>,
     /// C++ `m_log_file`. DEVIATION: guarded by a mutex — C++ lets
     /// `set_log_file` (any thread) race the component thread's writes.
+    #[cfg(feature = "std")]
     log_file: Mutex<LogFile>,
 }
 
@@ -119,6 +127,7 @@ impl ActiveTextLogger {
                 ids: [0; ID_FILTER_SIZE],
                 count: 0,
             }),
+            #[cfg(feature = "std")]
             log_file: Mutex::new(LogFile::new()),
         })
     }
@@ -139,7 +148,7 @@ impl ActiveTextLogger {
             filtered_ids.len() as i32,
             ID_FILTER_SIZE as i32
         );
-        let mut filter = self.id_filter.lock().unwrap();
+        let mut filter = self.id_filter.lock();
         filter.count = filtered_ids.len();
         filter.ids[..filtered_ids.len()].copy_from_slice(filtered_ids);
     }
@@ -161,8 +170,11 @@ impl ActiveTextLogger {
     ///
     /// The C++ `maxBackups` defaults to 10 ([`Self::DEFAULT_MAX_BACKUPS`]);
     /// Rust has no default arguments, so it is passed explicitly.
+    ///
+    /// `std`-only (the log file is an `Os::File`).
+    #[cfg(feature = "std")]
     pub fn set_log_file(&self, file_name: &str, max_size: u32, max_backups: u32) -> bool {
-        self.log_file.lock().unwrap().set_log_file(
+        self.log_file.lock().set_log_file(
             file_name,
             FwSizeType::from(max_size),
             FwSizeType::from(max_backups),
@@ -187,7 +199,7 @@ impl ActiveTextLogger {
             return;
         }
         {
-            let filter = self.id_filter.lock().unwrap();
+            let filter = self.id_filter.lock();
             if filter.ids[..filter.count].contains(&id) {
                 return;
             }
@@ -253,7 +265,8 @@ impl ActiveTextLogger {
             None => logger::log_message(&String::from_utf8_lossy(text.as_bytes())),
         }
         // Print to file if there is one; the status is ignored (C++ parity).
-        let _ = self.log_file.lock().unwrap().write_to_log(text.as_bytes());
+        #[cfg(feature = "std")]
+        let _ = self.log_file.lock().write_to_log(text.as_bytes());
     }
 }
 
@@ -300,7 +313,9 @@ impl ActiveComponent for ActiveTextLogger {
     }
 }
 
-#[cfg(test)]
+// The `no_std` build has no log file, and these tests (like upstream's)
+// observe the output through it; see `no_std_tests` for that build.
+#[cfg(all(test, feature = "std"))]
 mod tests {
     //! Ports of `Svc/ActiveTextLogger/test/ut` (Nominal.Logging,
     //! Nominal.WorkstationTime, OffNominal.FileHandling,
@@ -398,7 +413,7 @@ mod tests {
     }
 
     fn log_file(comp: &ActiveTextLogger) -> std::sync::MutexGuard<'_, LogFile> {
-        comp.log_file.lock().unwrap()
+        comp.log_file.lock()
     }
 
     #[test]
@@ -831,6 +846,48 @@ mod tests {
             .map(|id| line(id, time, "ACTIVITY_HI", "ordered"))
             .collect();
         assert_eq!(lines(&name), expected);
+    }
+
+    #[test]
+    fn queue_message_size_is_envelope_plus_internal_string() {
+        assert_eq!(QUEUE_MSG_SIZE, 6 + 2 + 256);
+    }
+}
+
+/// `no_std` build: the queue/dispatch path and the filters, without the log
+/// file (the console output goes to the process-global `Fw::Logger`).
+#[cfg(all(test, not(feature = "std")))]
+mod no_std_tests {
+    use super::*;
+    use fprime_fw::TimeBase;
+    use fprime_os::queue::BlockingType;
+
+    fn invoke(comp: &Arc<ActiveTextLogger>, id: FwEventIdType, severity: LogSeverity) {
+        let mut time = Time::new(TimeBase::TbNone, 0, 0, 0);
+        let mut text = TextLogString::from("x");
+        let port = comp.text_logger_in(0);
+        port.target
+            .invoke(port.port_num, id, &mut time, severity, &mut text);
+    }
+
+    fn do_dispatch(comp: &Arc<ActiveTextLogger>) -> MsgDispatchStatus {
+        comp.active
+            .queued
+            .do_dispatch(comp.as_ref(), BlockingType::NonBlocking)
+    }
+
+    #[test]
+    fn lines_are_queued_filtered_and_dispatched_to_the_console() {
+        let comp = ActiveTextLogger::new("atlNoStd");
+        comp.init(1);
+        comp.configure(&[7]);
+        invoke(&comp, 7, LogSeverity::WarningHi); // ID-filtered
+        invoke(&comp, 8, LogSeverity::Diagnostic); // severity-filtered
+        invoke(&comp, 9, LogSeverity::WarningHi); // queued
+        invoke(&comp, 10, LogSeverity::WarningHi); // queue full: dropped
+        assert_eq!(comp.active.queued.get_num_msgs_dropped(), 1);
+        assert_eq!(do_dispatch(&comp), MsgDispatchStatus::Ok);
+        assert_eq!(do_dispatch(&comp), MsgDispatchStatus::Empty);
     }
 
     #[test]

@@ -20,6 +20,7 @@
 //! `NumBytes` are plain fields behind the component-thread state mutex,
 //! exactly as in C++.
 
+use alloc::format;
 use fprime_comp::escrow::BufferEscrow;
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferGetPort, BufferSendPort, CmdGlue, CmdPort,
@@ -31,12 +32,12 @@ use fprime_config::{
     FwIndexType, FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::dp::{DpGetPort, DpRequestPort, DpResponsePort, DpSendPort};
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicU32, Ordering};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, LinearBuffer, LogSeverity, SerBuf, SerBufAny,
     Success, fw_assert,
 };
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Dictionary constants
@@ -144,9 +145,9 @@ impl DpManager {
             cmd: CmdGlue::new(),
             evt: EventGlue::new(),
             tlm: TlmGlue::new(),
-            product_response_out: std::array::from_fn(|_| OutputPort::new()),
-            buffer_get_out: std::array::from_fn(|_| OutputPort::new()),
-            product_send_out: std::array::from_fn(|_| OutputPort::new()),
+            product_response_out: core::array::from_fn(|_| OutputPort::new()),
+            buffer_get_out: core::array::from_fn(|_| OutputPort::new()),
+            product_send_out: core::array::from_fn(|_| OutputPort::new()),
             num_successful_allocations: AtomicU32::new(0),
             num_failed_allocations: AtomicU32::new(0),
             buffer_allocation_failed_throttle: EventThrottle::new(Self::THROTTLE_10),
@@ -271,7 +272,7 @@ impl DpManager {
     fn product_send_handler(&self, port_num: FwIndexType, _id: FwDpIdType, buffer: Buffer) {
         check_port_num(port_num);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.num_data_products = state.num_data_products.wrapping_add(1);
             state.num_bytes = state.num_bytes.wrapping_add(buffer.size() as u64);
         }
@@ -285,7 +286,7 @@ impl DpManager {
         let successful = self.num_successful_allocations.load(Ordering::Relaxed);
         let failed = self.num_failed_allocations.load(Ordering::Relaxed);
         let (successful, failed, products, bytes) = {
-            let state = &mut *self.state.lock().unwrap();
+            let state = &mut *self.state.lock();
             (
                 changed_u32(&mut state.last_successful_allocations, successful),
                 changed_u32(&mut state.last_failed_allocations, failed),
@@ -577,6 +578,7 @@ mod tests {
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, LogTextPort, TimePort, TlmPort};
     use fprime_fw::{LogBuffer, TextLogString, Time, TimeBase, TlmBuffer};
     use fprime_os::queue::{BlockingType, Status as QueueStatus};
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x2000;
 
@@ -905,7 +907,7 @@ mod tests {
         port.target.invoke(port.port_num, 77, Buffer::allocate(200));
         h.drain();
         assert_eq!(*h.sends.sent.lock().unwrap(), vec![(2, 200)]);
-        let state = h.comp.state.lock().unwrap();
+        let state = h.comp.state.lock();
         assert_eq!(state.num_data_products, 1);
         // NumBytes counts the WHOLE buffer, not the packet size (C++ parity).
         assert_eq!(state.num_bytes, 200);

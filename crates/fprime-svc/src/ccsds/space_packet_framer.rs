@@ -29,11 +29,11 @@ use fprime_comp::{
     PassiveBase, PortRef, SuccessConditionPort, input_port_adapter,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwSizeType};
+use fprime_fw::sync::Arc;
 use fprime_fw::{
     Buffer, Endianness, FrameContext, LengthMode, LogSeverity, SerBuf, SerializeStatus, Success,
     fw_assert,
 };
-use std::sync::Arc;
 
 /// `NoBufferAvailable` event id (FPP declaration order, relative).
 pub const EVENTID_NO_BUFFER_AVAILABLE: FwEventIdType = 0;

@@ -23,13 +23,14 @@
 //! outstanding allocation's), and a miss produces `BufferContextNotFound`
 //! + default context — all identical to C++.
 
+use alloc::format;
 use fprime_comp::{
     BufferSendPort, CmdResponsePort, ComDataWithContextPort, ComPort, EventGlue, OutputPort,
     PassiveBase, PortRef,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwOpcodeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Apid, Buffer, CmdResponse, ComBuffer, FrameContext, LogSeverity, SerBuf};
-use std::sync::{Arc, Mutex};
 
 /// `Svc::FprimeRouterCfg::BufferContextTableSize`.
 pub const BUFFER_CONTEXT_TABLE_SIZE: usize = 50;
@@ -189,7 +190,7 @@ impl FprimeRouter {
         packet_buffer: Buffer,
         context: &FrameContext,
     ) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         match context.apid {
             // Command packet: copy into a stack ComBuffer and forward.
             Apid::FwPacketCommand => {
@@ -252,7 +253,7 @@ impl FprimeRouter {
     /// `fileBufferReturnIn` handler (guarded): restore the saved context and
     /// return the buffer upstream.
     fn file_buffer_return_in_handler(&self, _port_num: FwIndexType, buffer: Buffer) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let context = match self.take_context(&mut state, &buffer) {
             Some(context) => context,
             None => {

@@ -26,6 +26,8 @@
 //! - `EventsDropped` telemetry (id 0, on change) surfaces the component
 //!   base `m_msgsDropped` counter fed by the `drop`-policy queue sends.
 
+use alloc::format;
+use alloc::vec::Vec;
 use fprime_comp::msg;
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComPort, ComponentDispatch, EventGlue,
@@ -41,12 +43,12 @@ use fprime_config::{
     FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType,
     FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicBool, Ordering};
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, ComBuffer, Endianness, LinearBuffer, LogBuffer, LogPacket,
     LogSeverity, SerBuf, SerBufAny, Serialize, SerializeStatus, Time, fw_assert, fw_log,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // FPP types.
@@ -174,7 +176,7 @@ impl EventSeverityFilter {
     /// All levels enabled (events pass through), as the C++ constructor.
     pub fn new() -> Self {
         Self {
-            enabled: std::array::from_fn(|_| AtomicBool::new(true)),
+            enabled: core::array::from_fn(|_| AtomicBool::new(true)),
         }
     }
 
@@ -436,7 +438,7 @@ impl EventManager {
             return;
         }
         // ID filter (lock scope = the find only, C++ parity).
-        let id_filtered = self.id_filter.lock().unwrap().contains(id);
+        let id_filtered = self.id_filter.lock().contains(id);
         if id_filtered && severity != LogSeverity::Fatal {
             return;
         }
@@ -502,7 +504,7 @@ impl EventManager {
     fn run_handler(&self, _port_num: FwIndexType, _context: u32) {
         let dropped = self.active.queued.get_num_msgs_dropped();
         let changed = {
-            let mut last = self.last_dropped.lock().unwrap();
+            let mut last = self.last_dropped.lock();
             if *last == Some(dropped) {
                 false
             } else {
@@ -600,7 +602,7 @@ impl EventManager {
         let id_base = self.id_base();
         if id_enabled == EventManagerEnabled::Enabled {
             // Add the ID.
-            let inserted = self.id_filter.lock().unwrap().insert(id);
+            let inserted = self.id_filter.lock().insert(id);
             if inserted {
                 // C++ order: response first, then the event.
                 self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
@@ -624,7 +626,7 @@ impl EventManager {
             }
         } else {
             // Remove the ID.
-            let removed = self.id_filter.lock().unwrap().remove(id);
+            let removed = self.id_filter.lock().remove(id);
             if removed {
                 self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
                 self.evt.log_event(
@@ -687,7 +689,7 @@ impl EventManager {
         }
         // Snapshot the ID filter under the lock; log after release (C++
         // parity: LogRecv is sync and takes the same lock).
-        let (ids, count) = self.id_filter.lock().unwrap().snapshot();
+        let (ids, count) = self.id_filter.lock().snapshot();
         for &id in &ids[..count] {
             self.evt.log_event(
                 id_base,
@@ -898,6 +900,7 @@ mod tests {
     use super::*;
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogTextPort, TimePort, TlmPort};
     use fprime_fw::{TextLogString, TimeBase, TlmBuffer};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x200;
 
@@ -1398,6 +1401,7 @@ mod tests {
 
     #[test]
     fn active_lifecycle_end_to_end() {
+        crate::test_platform::install();
         let (comp, ground) = build();
         comp.active.start(
             &comp,

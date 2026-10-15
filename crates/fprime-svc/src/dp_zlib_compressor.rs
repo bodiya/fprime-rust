@@ -59,6 +59,8 @@
 //!   in either library (zlib returns `Z_OK`), only `ZLibNoCompression`.
 
 use crate::dp_compress_proc::{ChunkBuffer, CompressChunkPort, CompressionAlgorithm};
+use alloc::boxed::Box;
+use alloc::format;
 use fprime_comp::{
     BufferGetPort, BufferSendPort, CmdGlue, CmdPort, EventGlue, EventThrottle, OutputPort,
     PassiveBase, PortRef, PrmGlue,
@@ -67,13 +69,13 @@ use fprime_config::{
     FW_LOG_STRING_MAX_SIZE, FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwPrmIdType,
     FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, FwDefaultString, LogSeverity, ParamBuffer,
     ParamValid, SerBuf, fpp_enum, fw_assert, fw_try,
 };
 use miniz_oxide::DataFormat;
 use miniz_oxide::deflate::core::{CompressorOxide, TDEFLFlush, TDEFLStatus, compress};
-use std::sync::{Arc, Mutex};
 
 fpp_enum! {
     /// `Svc.ZLibData` (`Types/ZLib.fpp`) — declared upstream, unused by the
@@ -277,7 +279,7 @@ impl DpZLibCompressor {
         let mut size: FwSizeType = 0;
         let size_ok = valid == ParamValid::Valid && buf.deserialize_u64_be(&mut size).is_ok();
 
-        let mut params = self.params.lock().unwrap();
+        let mut params = self.params.lock();
         if level_ok {
             params.compression_level = level;
             params.compression_level_valid = ParamValid::Valid;
@@ -297,14 +299,14 @@ impl DpZLibCompressor {
     /// `paramGet_CompressionLevel`.
     #[must_use]
     pub fn param_get_compression_level(&self) -> (i8, ParamValid) {
-        let params = self.params.lock().unwrap();
+        let params = self.params.lock();
         (params.compression_level, params.compression_level_valid)
     }
 
     /// `paramGet_ZLibBufferSize`.
     #[must_use]
     pub fn param_get_zlib_buffer_size(&self) -> (FwSizeType, ParamValid) {
-        let params = self.params.lock().unwrap();
+        let params = self.params.lock();
         (params.zlib_buffer_size, params.zlib_buffer_size_valid)
     }
 
@@ -423,7 +425,7 @@ impl DpZLibCompressor {
         }
 
         let (status, total_out) = {
-            let mut compressor = self.compressor.lock().unwrap();
+            let mut compressor = self.compressor.lock();
             compressor.reset();
             compressor.set_format_and_level(DataFormat::Zlib, level as u8);
             let (status, _consumed, total_out) = compress(
@@ -471,7 +473,7 @@ impl DpZLibCompressor {
             return;
         }
         {
-            let mut params = self.params.lock().unwrap();
+            let mut params = self.params.lock();
             params.compression_level = val;
             params.compression_level_valid = ParamValid::Valid;
         }
@@ -491,7 +493,7 @@ impl DpZLibCompressor {
             return;
         }
         {
-            let mut params = self.params.lock().unwrap();
+            let mut params = self.params.lock();
             params.zlib_buffer_size = val;
             params.zlib_buffer_size_valid = ParamValid::Valid;
         }
@@ -517,7 +519,7 @@ impl DpZLibCompressor {
         }
         let mut buf = ParamBuffer::new();
         let status = {
-            let params = self.params.lock().unwrap();
+            let params = self.params.lock();
             if id == Self::PARAMID_COMPRESSION_LEVEL {
                 buf.serialize_i8_be(params.compression_level)
             } else {
@@ -718,6 +720,7 @@ mod tests {
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, PrmSetPort};
     use fprime_fw::{LogBuffer, Time};
     use miniz_oxide::inflate::decompress_to_vec_zlib;
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x0410_1000;
     /// Upstream's `header_size` (`sizeof(FwDpIdType) + CompressionMetadata::SERIALIZED_SIZE`).

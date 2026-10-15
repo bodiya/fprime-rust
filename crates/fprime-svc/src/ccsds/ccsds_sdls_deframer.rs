@@ -25,14 +25,15 @@
 use crate::ccsds::types::{
     CcsdsSdlsDataPort, CcsdsSdlsEncryptionPort, ErrorNotifyPort, FrameError, SdlsStatus,
 };
+use alloc::format;
 use fprime_comp::{
     ComDataWithContextPort, EventGlue, OutputPort, PassiveBase, PortRef, input_port_adapter,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwSignedSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, Endianness, FrameContext, LogSeverity, SerBuf, Serialize, SerializeStatus, fw_assert,
 };
-use std::sync::{Arc, Mutex};
 
 /// `InsufficientLength()` — WARNING_HI.
 pub const EVENTID_INSUFFICIENT_LENGTH: FwEventIdType = 0;
@@ -82,7 +83,7 @@ impl CcsdsSdlsDeframer {
     }
 
     fn data_in_handler(&self, _port_num: FwIndexType, mut data: Buffer, context: &FrameContext) {
-        let _guard = self.guard.lock().unwrap();
+        let _guard = self.guard.lock();
         if data.size() < SA_INDEX_SIZE {
             self.evt.log_event(
                 self.base.get_id_base(),

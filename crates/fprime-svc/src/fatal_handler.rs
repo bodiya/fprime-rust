@@ -1,8 +1,10 @@
 //! # FatalHandler — port of `Svc::FatalHandler` (passive)
 //!
 //! C++ sources: `Svc/FatalHandler/FatalHandler.fpp`,
-//! `Svc/FatalHandler/FatalHandlerComponentLinuxImpl.cpp` (the unix impl is
-//! the one ported; baremetal spins, VxWorks suspends).
+//! `Svc/FatalHandler/FatalHandlerComponentLinuxImpl.cpp` (the unix impl,
+//! ported for the `std` build) and
+//! `Svc/FatalHandler/FatalHandlerComponentBaremetalImpl.cpp` (ported for
+//! the `no_std` build; VxWorks suspends and is not ported).
 //! Analysis: `docs/cpp-analysis/svc-core.md` (FatalHandler section).
 //!
 //! Single sync `FatalReceive` input (`Svc.FatalEvent`), normally wired to
@@ -17,12 +19,27 @@
 //!   so tests (and projects) can observe the shutdown instead of dying —
 //!   the C++ equivalent is choosing a different platform impl at build
 //!   time.
+//!
+//! `no_std` (upstream's bare-metal impl, which CMake selects with
+//! `FPRIME_USE_BAREMETAL_SCHEDULER`): there is no process to exit, so the
+//! handler logs `FATAL <id>handled.` through `Fw::Logger` (upstream's
+//! format string, missing space included), with no flush delay, and the
+//! default terminal action spins forever (`while (true) {}` — "returning
+//! might be bad"). A deployment that wants a reset, a safe-mode entry or
+//! its `#[panic_handler]` instead installs that with
+//! [`FatalHandler::set_exit_action`] (for example
+//! `Box::new(|_| panic!("FATAL"))` hands control to the panic handler,
+//! which must not resume).
 
+use alloc::boxed::Box;
 use fprime_comp::{FatalEventPort, PassiveBase, PortRef};
 use fprime_config::{FwEventIdType, FwIndexType};
-use fprime_fw::{TimeInterval, fw_log};
+#[cfg(feature = "std")]
+use fprime_fw::TimeInterval;
+use fprime_fw::fw_log;
+use fprime_fw::sync::{Arc, Mutex};
+#[cfg(feature = "std")]
 use fprime_os::Task;
-use std::sync::{Arc, Mutex};
 
 /// The terminal action invoked after the FATAL is logged and flushed.
 pub type FatalExitAction = Box<dyn Fn(FwEventIdType) + Send + Sync>;
@@ -40,19 +57,14 @@ impl FatalHandler {
     pub fn new(name: &str) -> Arc<Self> {
         Arc::new(Self {
             base: PassiveBase::new(name),
-            exit_action: Mutex::new(Box::new(|_id| {
-                // C++ logs and raises SIGABRT before exit(1); the abort
-                // signal / core dump is not reproducible without libc.
-                fw_log!("Exiting with error code 1.\n");
-                std::process::exit(1);
-            })),
+            exit_action: Mutex::new(Box::new(default_exit_action)),
         })
     }
 
     /// Replace the terminal action (call before wiring/start; tests use
     /// this to observe the shutdown instead of dying).
     pub fn set_exit_action(&self, action: FatalExitAction) {
-        *self.exit_action.lock().unwrap() = action;
+        *self.exit_action.lock() = action;
     }
 
     /// `FatalReceive` — SYNC `Svc.FatalEvent` input.
@@ -65,10 +77,38 @@ impl FatalHandler {
 
     /// `FatalReceive_handler` (unix impl): log, delay 1s so the FATAL
     /// event flushes downlink, then run the terminal action.
+    #[cfg(feature = "std")]
     fn fatal_receive_handler(&self, _port_num: FwIndexType, id: FwEventIdType) {
         fw_log!("FATAL {} handled.\n", id);
         let _ = Task::delay(TimeInterval::new(1, 0));
-        (self.exit_action.lock().unwrap())(id);
+        (self.exit_action.lock())(id);
+    }
+
+    /// `FatalReceive_handler` (bare-metal impl): log, then run the terminal
+    /// action (default: spin forever). No flush delay, as upstream.
+    #[cfg(not(feature = "std"))]
+    fn fatal_receive_handler(&self, _port_num: FwIndexType, id: FwEventIdType) {
+        // C++ parity: `"FATAL %" PRI_FwEventIdType "handled.\n"` — the
+        // bare-metal impl has no space before "handled".
+        fw_log!("FATAL {}handled.\n", id);
+        (self.exit_action.lock())(id);
+    }
+}
+
+/// The unix impl's terminal action: log and exit the process.
+#[cfg(feature = "std")]
+fn default_exit_action(_id: FwEventIdType) {
+    // C++ logs and raises SIGABRT before exit(1); the abort
+    // signal / core dump is not reproducible without libc.
+    fw_log!("Exiting with error code 1.\n");
+    std::process::exit(1);
+}
+
+/// The bare-metal impl's terminal action: never return.
+#[cfg(not(feature = "std"))]
+fn default_exit_action(_id: FwEventIdType) {
+    loop {
+        core::hint::spin_loop();
     }
 }
 
@@ -81,8 +121,10 @@ impl FatalEventPort for FatalHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
+    #[cfg(feature = "std")]
     #[test]
     fn injected_exit_action_receives_id_after_one_second_delay() {
         let comp = FatalHandler::new("fatalHandler");
@@ -100,6 +142,23 @@ mod tests {
         // The handler delays 1s (event-flush grace) before terminating.
         assert!(elapsed >= Duration::from_millis(950), "elapsed {elapsed:?}");
         assert_eq!(*seen.lock().unwrap(), vec![0xDEAD]);
+    }
+
+    /// The bare-metal handler does not delay before the terminal action.
+    #[cfg(not(feature = "std"))]
+    #[test]
+    fn baremetal_handler_runs_the_exit_action_without_delay() {
+        let comp = FatalHandler::new("fatalHandler");
+        let seen: Arc<Mutex<Vec<FwEventIdType>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        comp.set_exit_action(Box::new(move |id| {
+            seen_clone.lock().unwrap().push(id);
+        }));
+        let port = comp.fatal_receive_in(0);
+        let start = Instant::now();
+        port.target.invoke(port.port_num, 0xBEEF);
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert_eq!(*seen.lock().unwrap(), vec![0xBEEF]);
     }
 
     #[test]

@@ -15,13 +15,14 @@
 //! parity); `encryptReturnIn` is sync.
 
 use crate::ccsds::types::{CcsdsSdlsDataPort, CcsdsSdlsEncryptionPort, SdlsStatus};
+use alloc::format;
 use fprime_comp::{
     ComDataWithContextPort, EventGlue, EventThrottle, OutputPort, PassiveBase, PortRef,
     input_port_adapter,
 };
 use fprime_config::{FwEventIdType, FwIndexType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, FrameContext, LogSeverity, SerBuf};
-use std::sync::{Arc, Mutex};
 
 /// `NullCipherInUse(securityAssociationIndex: U16)` — WARNING_HI,
 /// throttle 5.
@@ -73,7 +74,7 @@ impl ClearTextEncryptor {
         data: Buffer,
         context: &FrameContext,
     ) {
-        let _guard = self.guard.lock().unwrap();
+        let _guard = self.guard.lock();
         // Make the absence of security visible: a flight configuration must
         // never route traffic here.
         if self.null_cipher_throttle.ok_to_emit() {

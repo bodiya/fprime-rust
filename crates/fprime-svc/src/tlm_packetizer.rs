@@ -57,6 +57,10 @@
 //! configuration and the packet flags live on the component thread only
 //! (`Run`, `controlIn`, the commands) and are held in a plain mutex.
 
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComPort, ComponentDispatch, EventGlue,
     EventThrottle, MsgDispatchStatus, OutputPort, PingPort, PrmGlue, QueueFullPolicy, SchedPort,
@@ -66,13 +70,12 @@ use fprime_config::{
     FW_COM_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType,
     FwOpcodeType, FwPrmIdType, FwQueuePriorityType, FwSizeType, FwTlmPacketizeIdType,
 };
+use fprime_fw::sync::{Arc, Mutex, RwLock};
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, ComBuffer, ComPacketType, Deserialize, Enabled, Endianness, ExtBuf,
     LogBuffer, LogSeverity, ParamBuffer, ParamValid, SerBuf, SerBufAny, Serialize, SerializeStatus,
     Time, TlmBuffer, TlmValid, fpp_array, fpp_enum, fw_assert, fw_try,
 };
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, RwLock};
 
 use crate::tlm_chan::TlmGetPort;
 
@@ -278,14 +281,14 @@ impl Default for SectionEnabled {
     }
 }
 
-impl std::ops::Index<usize> for SectionEnabled {
+impl core::ops::Index<usize> for SectionEnabled {
     type Output = Enabled;
     fn index(&self, index: usize) -> &Enabled {
         &self.0[index]
     }
 }
 
-impl std::ops::IndexMut<usize> for SectionEnabled {
+impl core::ops::IndexMut<usize> for SectionEnabled {
     fn index_mut(&mut self, index: usize) -> &mut Enabled {
         &mut self.0[index]
     }
@@ -702,8 +705,8 @@ impl TlmPacketizer {
             packet_list.len() as i32
         );
 
-        let mut table = self.table.write().unwrap();
-        let mut state = self.lock.lock().unwrap();
+        let mut table = self.table.write();
+        let mut state = self.lock.lock();
 
         // Reset key data members in case of re-entrant calls.
         table.channels.clear();
@@ -839,7 +842,7 @@ impl TlmPacketizer {
         local_id: FwPrmIdType,
         buf: &mut dyn SerBufAny,
     ) -> SerializeStatus {
-        let ctrl = self.ctrl.lock().unwrap();
+        let ctrl = self.ctrl.lock();
         match local_id {
             Self::PARAMID_SECTION_ENABLED => {
                 ctrl.section_enabled.serialize_to(buf, Endianness::Big)
@@ -865,7 +868,7 @@ impl TlmPacketizer {
         buf: &mut dyn SerBufAny,
     ) -> SerializeStatus {
         if prm_stat.is_ok() {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             match local_id {
                 Self::PARAMID_SECTION_ENABLED => {
                     return ctrl.section_enabled.deserialize_from(buf, Endianness::Big);
@@ -903,7 +906,7 @@ impl TlmPacketizer {
         time_tag: &mut Time,
         val: &mut TlmBuffer,
     ) {
-        let table = self.table.read().unwrap();
+        let table = self.table.read();
         fw_assert!(table.configured);
 
         let Some(&entry_index) = table.indices.get(&id) else {
@@ -935,7 +938,7 @@ impl TlmPacketizer {
             }
             // C++ parity: the lock is taken and released ONCE PER PACKET, so
             // a concurrent Run can interleave between packets.
-            let mut state = self.lock.lock().unwrap();
+            let mut state = self.lock.lock();
             {
                 let fill = &mut state.fill_buffers[pkt];
                 fill.updated = true;
@@ -957,7 +960,7 @@ impl TlmPacketizer {
         time_tag: &mut Time,
         val: &mut TlmBuffer,
     ) -> TlmValid {
-        let table = self.table.read().unwrap();
+        let table = self.table.read();
         fw_assert!(table.configured);
 
         let Some(&entry_index) = table.indices.get(&id) else {
@@ -972,7 +975,7 @@ impl TlmPacketizer {
             return TlmValid::Invalid;
         }
         {
-            let state = self.lock.lock().unwrap();
+            let state = self.lock.lock();
             if !state.has_value[entry_index] {
                 drop(state);
                 val.reset_ser();
@@ -990,7 +993,7 @@ impl TlmPacketizer {
             if offset == -1 {
                 continue;
             }
-            let state = self.lock.lock().unwrap();
+            let state = self.lock.lock();
             let fill = &state.fill_buffers[pkt];
             *time_tag = fill.latest_time;
             let start = offset as usize;
@@ -1011,7 +1014,7 @@ impl TlmPacketizer {
     /// `Run_handler` — component thread.
     fn run_handler(&self, _port_num: FwIndexType, _context: u32) {
         let num_packets = {
-            let table = self.table.read().unwrap();
+            let table = self.table.read();
             fw_assert!(table.configured);
             table.num_packets
         };
@@ -1022,7 +1025,7 @@ impl TlmPacketizer {
 
             // Lock only to capture the update status and reset the flag.
             let (is_new_data, entry_group) = {
-                let mut state = self.lock.lock().unwrap();
+                let mut state = self.lock.lock();
                 let fill = &mut state.fill_buffers[pkt];
                 let captured = (fill.updated, fill.level);
                 fill.updated = false;
@@ -1035,7 +1038,7 @@ impl TlmPacketizer {
             // tick allocation-free.
             let mut sends: [Option<(FwIndexType, u32)>; NUM_SECTIONS] = [None; NUM_SECTIONS];
             {
-                let mut ctrl = self.ctrl.lock().unwrap();
+                let mut ctrl = self.ctrl.lock();
                 #[allow(clippy::needless_range_loop)]
                 for section in 0..NUM_SECTIONS {
                     // Keep a REQUESTED marking so it bypasses the checks.
@@ -1108,7 +1111,7 @@ impl TlmPacketizer {
             }
 
             let send_buffer = {
-                let state = self.lock.lock().unwrap();
+                let state = self.lock.lock();
                 state.fill_buffers[pkt].clone()
             };
             let mut buffer = send_buffer.buffer;
@@ -1140,7 +1143,7 @@ impl TlmPacketizer {
         enabled: Enabled,
     ) {
         if (section.as_repr() as usize) < NUM_SECTIONS {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             ctrl.section_enabled[section.as_repr() as usize] = enabled;
         } else {
             self.log_section_unconfigurable(section, enabled);
@@ -1189,7 +1192,7 @@ impl TlmPacketizer {
             tlm_group as i32
         );
         let configs = {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             let config = &mut ctrl.group_configs[section_index as usize][tlm_group as usize];
             config.rate_logic = rate_logic;
             config.min = min_delta;
@@ -1203,7 +1206,7 @@ impl TlmPacketizer {
     /// 25-slot table that never resets.
     fn missing_channel(&self, id: FwChanIdType) {
         let emit = {
-            let mut slots = self.missing.lock().unwrap();
+            let mut slots = self.missing.lock();
             let mut emit = false;
             for slot in slots.iter_mut() {
                 if slot.checked && slot.id == id {
@@ -1262,7 +1265,7 @@ impl TlmPacketizer {
             return;
         }
         let configs = {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             for section in 0..NUM_SECTIONS {
                 for group in 0..NUM_CONFIGURABLE_TLMPACKETIZER_GROUPS {
                     ctrl.group_configs[section][group].enabled = if (group as FwChanIdType) <= level
@@ -1305,10 +1308,10 @@ impl TlmPacketizer {
         }
 
         let now = self.evt.time_get();
-        let num_packets = self.table.read().unwrap().num_packets;
+        let num_packets = self.table.read().num_packets;
         let mut found = None;
         {
-            let mut state = self.lock.lock().unwrap();
+            let mut state = self.lock.lock();
             for pkt in 0..num_packets {
                 if state.fill_buffers[pkt].id == id {
                     // Gotcha: this also marks the SHARED fill buffer updated,
@@ -1323,7 +1326,7 @@ impl TlmPacketizer {
         match found {
             Some(pkt) => {
                 {
-                    let mut ctrl = self.ctrl.lock().unwrap();
+                    let mut ctrl = self.ctrl.lock();
                     ctrl.packet_flags[section_index as usize][pkt].update_flag =
                         UpdateFlag::Requested;
                 }
@@ -1371,7 +1374,7 @@ impl TlmPacketizer {
             return;
         }
         let section_enabled = {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             ctrl.section_enabled[section_index as usize] = enable;
             ctrl.section_enabled
         };
@@ -1422,7 +1425,7 @@ impl TlmPacketizer {
             return;
         }
         let configs = {
-            let mut ctrl = self.ctrl.lock().unwrap();
+            let mut ctrl = self.ctrl.lock();
             let config = &mut ctrl.group_configs[section_index as usize][tlm_group as usize];
             if force {
                 config.force_enabled = enable;
@@ -1753,6 +1756,7 @@ mod tests {
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, LogTextPort, TimePort};
     use fprime_fw::{TextLogString, TimeBase};
     use fprime_os::task::{Status as TaskStatus, TASK_DEFAULT};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x7000;
 
@@ -2584,7 +2588,7 @@ mod tests {
             )
             .is_ok()
         );
-        assert_eq!(comp.ctrl.lock().unwrap().group_configs, configs);
+        assert_eq!(comp.ctrl.lock().group_configs, configs);
 
         // A not-OK parameter status leaves the value alone.
         let mut other = SectionConfigs::default();
@@ -2600,7 +2604,7 @@ mod tests {
             ),
             SerializeStatus::DeserTypeMismatch
         );
-        assert_eq!(comp.ctrl.lock().unwrap().group_configs, configs);
+        assert_eq!(comp.ctrl.lock().group_configs, configs);
 
         // SECTION_ENABLED is 2 bytes.
         let mut buf = ParamBuffer::new();
@@ -2670,6 +2674,7 @@ mod tests {
 
     #[test]
     fn end_to_end_on_the_component_thread() {
+        crate::test_platform::install();
         let (comp, ground) = configured(&[true, true]);
         comp.reg_commands();
         comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);

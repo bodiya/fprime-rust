@@ -6,8 +6,8 @@
 //! inflate the `ZLIB_DEFLATE` payloads and concatenate — the result must be
 //! the original record bytes.
 //!
-//! Only built with `--features zlib`.
-#![cfg(feature = "zlib")]
+//! Only built with `--features zlib` (and `std`: `DpWriter` writes files).
+#![cfg(all(feature = "zlib", feature = "std"))]
 
 use fprime_comp::BufferSendPort;
 use fprime_config::{FwDpIdType, FwSizeType, dp_compression};

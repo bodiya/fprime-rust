@@ -57,14 +57,15 @@ use crate::ccsds::types::{
     AOS_MAX_FRAME_FIXED_SIZE, AOSHeader, AOSTrailer, MPduHeader, SPACECRAFT_ID, Tfvn,
     aos_header_subfields, pvn_bitfield,
 };
+use alloc::vec;
 use fprime_comp::{
     ComDataWithContextPort, OutputPort, PassiveBase, PortRef, SuccessConditionPort,
     input_port_adapter,
 };
 use fprime_config::FwIndexType;
 use fprime_fw::buffer::BufferStorage;
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, Endianness, ExtBuf, FrameContext, SerBuf, Success, fw_assert};
-use std::sync::{Arc, Mutex};
 
 /// SPP idle data pattern (`AosFramer::SPP_IDLE_DATA_PATTERN`).
 pub const SPP_IDLE_DATA_PATTERN: u8 = idle_packet::DATA_PATTERN;
@@ -219,7 +220,7 @@ impl AosFramer {
             i32::from(idle_pvns)
         );
 
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         // The FECF is constant for a physical channel in a mission phase.
         st.fecf = frame_error_control_field;
         st.spacecraft_id = spacecraft_id;
@@ -233,18 +234,18 @@ impl AosFramer {
 
     /// True while VC 0's frame store is held by this component.
     pub fn owns_frame_buffer(&self) -> bool {
-        self.state.lock().unwrap().vcs[0].frame.is_some()
+        self.state.lock().vcs[0].frame.is_some()
     }
 
     /// VC 0's virtual frame count (the count the next header will carry).
     pub fn virtual_frame_count(&self) -> u32 {
-        self.state.lock().unwrap().vcs[0].virtual_frame_count
+        self.state.lock().vcs[0].virtual_frame_count
     }
 
     /// Set VC 0's virtual frame count (test hook mirroring the C++ tester's
     /// direct member access).
     pub fn set_virtual_frame_count(&self, count: u32) {
-        self.state.lock().unwrap().vcs[0].virtual_frame_count = count;
+        self.state.lock().vcs[0].virtual_frame_count = count;
     }
 
     /// `comStatusIn` — SYNC: forwarded upstream when connected.
@@ -261,7 +262,7 @@ impl AosFramer {
     fn data_in_handler(&self, _port_num: FwIndexType, data: Buffer, context: &FrameContext) {
         let mut out = Outputs::default();
         {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock();
             let vc_index = Self::get_vc_struct(&st, context);
             // The rest of the com stack must comply with the communication
             // adapter interface: one frame in flight.
@@ -285,7 +286,7 @@ impl AosFramer {
     ) {
         let mut out = Outputs::default();
         {
-            let mut st = self.state.lock().unwrap();
+            let mut st = self.state.lock();
             let vc_index = Self::get_vc_struct(&st, context);
             let vc = &mut st.vcs[vc_index];
             fw_assert!(vc.frame.is_none());

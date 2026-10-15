@@ -23,6 +23,9 @@
 //!   wins, and INCOMPARABLE time bases prefer the inactive entry only if
 //!   its updated flag is set.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::vec::Vec;
 use fprime_comp::msg;
 use fprime_comp::{
     ActiveBase, ActiveComponent, ComPort, ComponentDispatch, EventGlue, EventThrottle,
@@ -33,12 +36,12 @@ use fprime_config::{
     FwChanIdType, FwEnumStoreType, FwEventIdType, FwIdType, FwIndexType, FwQueuePriorityType,
     FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Endianness, LinearBuffer, LogSeverity, SerBuf, SerBufAny, SerializeStatus, Time,
     TimeComparison, TlmBuffer, TlmPacket, TlmValid, fw_assert, fw_try,
 };
 use fprime_os::RawTime;
-use std::sync::{Arc, Mutex};
 
 // C++ parity: the static_asserts at the top of TlmChan.cpp.
 const _: () = {
@@ -225,7 +228,7 @@ impl TlmChan {
 
         // Address substitute for the C++ stack-address fold.
         let local: u32 = 0;
-        let raw = std::ptr::from_ref(&local) as usize as u64;
+        let raw = core::ptr::from_ref(&local) as usize as u64;
         let folded_stack = (raw ^ (raw >> 32)) as u32;
 
         let seed = folded_time ^ folded_stack;
@@ -288,7 +291,7 @@ impl TlmChan {
     ) {
         let mut exhausted = false;
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let index = self.do_hash(id);
             let active = state.active;
             let set = &mut state.sets[active];
@@ -379,7 +382,7 @@ impl TlmChan {
         time_tag: &mut Time,
         val: &mut TlmBuffer,
     ) -> TlmValid {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
         let index = self.do_hash(id);
 
         let active_set = &state.sets[state.active];
@@ -442,7 +445,7 @@ impl TlmChan {
         // active store; producers then write into it while we drain the
         // inactive one.
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.active = 1 - state.active;
             let active = state.active;
             // Deferred-entry drop (C++ parity): entries skipped by the cap
@@ -466,7 +469,7 @@ impl TlmChan {
             // updated flag; safe Rust locks around both — the inactive store
             // is written by no one else, so contention is unchanged).
             loop {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock();
                 let inactive = 1 - state.active;
                 let entry = &mut state.sets[inactive].buckets[entry_idx];
                 if !(entry.updated && entry.used) {
@@ -511,7 +514,7 @@ impl TlmChan {
 
         if entries_deferred > 0 {
             let cumulative = {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock();
                 state.proc_cap_count += 1;
                 state.proc_cap_count
             };
@@ -673,6 +676,7 @@ mod tests {
     use fprime_comp::{LogPort, LogTextPort, TimePort};
     use fprime_fw::{ComBuffer, LogBuffer, TextLogString, TimeBase};
     use fprime_os::task::{Status as TaskStatus, TASK_DEFAULT};
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x400;
 
@@ -851,7 +855,7 @@ mod tests {
             assert_eq!(bytes, vec![i as u8]);
         }
         // Structural check: one chain of length 3 hanging off the slot.
-        let state = comp.state.lock().unwrap();
+        let state = comp.state.lock();
         let set = &state.sets[state.active];
         let mut chain = Vec::new();
         let mut cur = set.slots[target];
@@ -872,7 +876,7 @@ mod tests {
         assert_eq!(valid, TlmValid::Valid);
         assert_eq!(time.get_seconds(), 2);
         assert_eq!(bytes, vec![2]);
-        assert_eq!(comp.state.lock().unwrap().sets[0].free, 1);
+        assert_eq!(comp.state.lock().sets[0].free, 1);
     }
 
     #[test]
@@ -882,7 +886,7 @@ mod tests {
         for id in 0..HASH_BUCKETS as u32 {
             recv(&comp, id, t(1), &[0xEE]);
         }
-        assert_eq!(comp.state.lock().unwrap().sets[0].free, HASH_BUCKETS);
+        assert_eq!(comp.state.lock().sets[0].free, HASH_BUCKETS);
         // 12 new ids: all dropped, only 10 events (throttle 10).
         for id in 0..12u32 {
             recv(&comp, 10_000 + id, t(2), &[0xDD]);
@@ -965,7 +969,7 @@ mod tests {
         let comp = TlmChan::new_with_seed("noPkt", 1);
         recv(&comp, 1, t(1), &[1]);
         comp.run_handler(0, 0);
-        let state = comp.state.lock().unwrap();
+        let state = comp.state.lock();
         assert_eq!(state.active, 0);
         // The entry is untouched (still updated).
         let set = &state.sets[0];
@@ -1045,7 +1049,7 @@ mod tests {
         // Force the inactive entry's updated flag on (the deferred-entry
         // situation) and verify the preference flips.
         {
-            let mut state = comp.state.lock().unwrap();
+            let mut state = comp.state.lock();
             let active = state.active;
             let inactive = 1 - active;
             let idx = comp.do_hash(9);
@@ -1102,6 +1106,7 @@ mod tests {
 
     #[test]
     fn active_lifecycle_run_and_ping_end_to_end() {
+        crate::test_platform::install();
         let (comp, pkts, _events) = build();
         let ping = Arc::new(PingRecorder::default());
         comp.ping_out.connect(ping.clone(), 0);

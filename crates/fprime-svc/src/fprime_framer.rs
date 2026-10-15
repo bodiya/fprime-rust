@@ -19,9 +19,9 @@ use fprime_comp::{
     PassiveBase, PortRef, SuccessConditionPort,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwSizeType};
+use fprime_fw::sync::Arc;
 use fprime_fw::{Buffer, FrameContext, LengthMode, SerBuf, Success, fw_assert};
 use fprime_utils::Hash;
-use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // F Prime frame protocol constants (Svc/FprimeProtocol).

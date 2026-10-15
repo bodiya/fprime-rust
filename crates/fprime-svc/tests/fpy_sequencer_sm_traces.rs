@@ -7,6 +7,8 @@
 //! generates for `FpySequencerStateMachine.fppi`
 //! (`crates/fprime-comp/tests/sm_traces/FpySequencer.txt`). The checker is
 //! the one `fprime-comp`'s `sm_traces.rs` uses for its machines.
+// `FpySequencer` runs sequence files: `std`-only.
+#![cfg(feature = "std")]
 #![allow(non_snake_case)]
 
 #[path = "../../fprime-comp/tests/sm_trace_replay/mod.rs"]

@@ -27,6 +27,9 @@
 //!   parses the opcode (config permitting), emits the throttled (5)
 //!   `CommandDroppedQueueOverflow` event, and counts the drop.
 
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
 use fprime_comp::msg;
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, CmdRegPort, CmdResponsePort, ComPort,
@@ -40,12 +43,11 @@ use fprime_config::{
     CMD_DISPATCHER_COMMAND_PORTS, CMD_DISPATCHER_SEQUENCE_PORTS, FwChanIdType, FwEnumStoreType,
     FwEventIdType, FwIndexType, FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     CmdArgBuffer, CmdPacket, CmdResponse, CmdStringArg, ComBuffer, DeserialStatus, Deserialize,
     Endianness, LinearBuffer, LogSeverity, SerBuf, SerBufAny, Serialize, fw_assert,
 };
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // Dictionary constants (from CmdDispatcher.fpp).
@@ -265,8 +267,8 @@ impl CmdDispatcher {
             cmd: CmdGlue::new(),
             evt: EventGlue::new(),
             tlm: TlmGlue::new(),
-            comp_cmd_send: std::array::from_fn(|_| fprime_comp::OutputPort::new()),
-            seq_cmd_status: std::array::from_fn(|_| fprime_comp::OutputPort::new()),
+            comp_cmd_send: core::array::from_fn(|_| fprime_comp::OutputPort::new()),
+            seq_cmd_status: core::array::from_fn(|_| fprime_comp::OutputPort::new()),
             ping_out: fprime_comp::OutputPort::new(),
             dropped_throttle: EventThrottle::new(Self::COMMAND_DROPPED_THROTTLE),
             state: Mutex::new(CmdDispatcherState::new()),
@@ -352,7 +354,7 @@ impl CmdDispatcher {
     /// mutex across the event emission (C++ guarded ports hold the mutex
     /// for the whole handler).
     fn comp_cmd_reg_handler(&self, port_num: FwIndexType, op_code: FwOpcodeType) {
-        let state = &mut *self.state.lock().unwrap();
+        let state = &mut *self.state.lock();
         if let Some(&existing_port) = state.entry_table.get(&op_code) {
             // Re-registration must target the same port (C++ FW_ASSERT).
             fw_assert!(existing_port == port_num, op_code as i32);
@@ -450,23 +452,17 @@ impl CmdDispatcher {
         }
 
         let op_code = cmd_pkt.get_opcode();
-        let entry_port = self
-            .state
-            .lock()
-            .unwrap()
-            .entry_table
-            .get(&op_code)
-            .copied();
+        let entry_port = self.state.lock().entry_table.get(&op_code).copied();
 
         let connected_target =
             entry_port.filter(|&p| self.comp_cmd_send[p as usize].is_connected());
 
         if let Some(entry_port) = connected_target {
-            let seq = self.state.lock().unwrap().seq;
+            let seq = self.state.lock().seq;
             // Track the command only if the caller's status port is
             // connected (C++ parity).
             if self.seq_cmd_status[port_num as usize].is_connected() {
-                let inserted = self.state.lock().unwrap().sequence_tracker.insert(
+                let inserted = self.state.lock().sequence_tracker.insert(
                     seq,
                     SequenceTrackerEntry {
                         op_code,
@@ -512,7 +508,7 @@ impl CmdDispatcher {
                     buf.serialize_i32_be(entry_port as i32)
                 },
             );
-            self.state.lock().unwrap().num_cmds_dispatched += 1;
+            self.state.lock().num_cmds_dispatched += 1;
         } else {
             // Unknown opcode OR unconnected target port (the checks are
             // ANDed in C++, so both fail the same way).
@@ -523,12 +519,12 @@ impl CmdDispatcher {
                 &format!("Invalid opcode 0x{:X} received", get_event_opcode(op_code)),
                 |buf| buf.serialize_u32_be(get_event_opcode(op_code)),
             );
-            self.state.lock().unwrap().num_cmd_errors += 1;
+            self.state.lock().num_cmd_errors += 1;
             self.seq_status_reply(port_num, op_code, context, CmdResponse::InvalidOpcode);
         }
 
         // m_seq increments even on the invalid-opcode path (C++ parity).
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.seq = state.seq.wrapping_add(1);
     }
 
@@ -549,7 +545,7 @@ impl CmdDispatcher {
                 |buf| buf.serialize_u32_be(get_event_opcode(op_code)),
             );
         } else {
-            self.state.lock().unwrap().num_cmd_errors += 1;
+            self.state.lock().num_cmd_errors += 1;
             self.evt.log_event(
                 self.id_base(),
                 Self::EVENTID_OP_CODE_ERROR,
@@ -569,7 +565,7 @@ impl CmdDispatcher {
             );
         }
         // Look for the command source.
-        let tracked = self.state.lock().unwrap().sequence_tracker.remove(cmd_seq);
+        let tracked = self.state.lock().sequence_tracker.remove(cmd_seq);
         if let Some(tracked) = tracked {
             fw_assert!(op_code == tracked.op_code, op_code as i32);
             fw_assert!(
@@ -593,7 +589,7 @@ impl CmdDispatcher {
             }
         }
         let (dropped, errors, dispatched) = {
-            let state = &mut *self.state.lock().unwrap();
+            let state = &mut *self.state.lock();
             (
                 changed(&mut state.last_dropped, state.num_cmds_dropped),
                 changed(&mut state.last_errors, state.num_cmd_errors),
@@ -669,7 +665,7 @@ impl CmdDispatcher {
                 },
             );
         }
-        self.state.lock().unwrap().num_cmds_dropped += 1;
+        self.state.lock().num_cmds_dropped += 1;
     }
 
     // -- Own command handlers (component thread) ----------------------------
@@ -761,7 +757,7 @@ impl CmdDispatcher {
                 .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
             return;
         }
-        self.state.lock().unwrap().sequence_tracker.clear();
+        self.state.lock().sequence_tracker.clear();
         self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
     }
 }
@@ -1015,6 +1011,7 @@ mod tests {
     use super::*;
     use fprime_comp::{LogPort, LogTextPort, TimePort, TlmPort};
     use fprime_fw::{LogBuffer, TextLogString, Time, TimeBase, TlmBuffer};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x100;
 
@@ -1750,6 +1747,7 @@ mod tests {
 
     #[test]
     fn active_lifecycle_end_to_end() {
+        crate::test_platform::install();
         let (comp, ground) = build();
         let target = Arc::new(TargetStub::default());
         let seq_stub = Arc::new(SeqStub::default());

@@ -29,16 +29,17 @@
 //! check on an `UNINIT` parameter).
 
 use crate::ccsds::types::{CcsdsSdlsDataPort, CcsdsSdlsEncryptionPort, SdlsStatus};
+use alloc::format;
 use fprime_comp::{
     BufferGetPort, BufferSendPort, CmdGlue, CmdPort, ComDataWithContextPort, EventGlue, OutputPort,
     PassiveBase, PortRef, PrmGlue, SuccessConditionPort, input_port_adapter,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwOpcodeType, FwPrmIdType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, Endianness, FrameContext, LengthMode, LogSeverity,
     ParamBuffer, ParamValid, SA_INDEX_UNSET, SerBuf, Serialize, Success, fw_assert,
 };
-use std::sync::{Arc, Mutex};
 
 /// `SA_INDEX_PRM_SET` opcode (implicit parameter-set command).
 pub const OPCODE_SA_INDEX_PRM_SET: FwOpcodeType = 0;
@@ -130,7 +131,7 @@ impl CcsdsSdlsFramer {
         let valid = self
             .prm
             .get_param(self.base.get_id_base(), PARAMID_SA_INDEX, &mut buf);
-        let mut params = self.params.lock().unwrap();
+        let mut params = self.params.lock();
         match valid {
             ParamValid::Valid | ParamValid::Default => {
                 let mut value = 0u16;
@@ -150,7 +151,7 @@ impl CcsdsSdlsFramer {
 
     /// The generated `paramGet_SA_INDEX(valid)`.
     pub fn param_get_sa_index(&self) -> (u16, ParamValid) {
-        let params = self.params.lock().unwrap();
+        let params = self.params.lock();
         (params.sa_index, params.sa_index_valid)
     }
 
@@ -305,7 +306,7 @@ impl CcsdsSdlsFramer {
                     return;
                 }
                 {
-                    let mut params = self.params.lock().unwrap();
+                    let mut params = self.params.lock();
                     params.sa_index = value;
                     params.sa_index_valid = ParamValid::Valid;
                 }
@@ -322,7 +323,7 @@ impl CcsdsSdlsFramer {
                         .cmd_response(op_code, cmd_seq, CmdResponse::ExecutionError);
                     return;
                 }
-                let value = self.params.lock().unwrap().sa_index;
+                let value = self.params.lock().sa_index;
                 let mut buf = ParamBuffer::new();
                 let status = buf.serialize_u16_be(value);
                 fw_assert!(status.is_ok(), status as i32);

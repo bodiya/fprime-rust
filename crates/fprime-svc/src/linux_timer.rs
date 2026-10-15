@@ -17,13 +17,22 @@
 //!
 //! [`LinuxTimer::tick`] is the non-blocking helper: one immediate
 //! timestamp + `CycleOut` invocation, for tests and manual driving.
+//!
+//! `no_std`: the same loop over the platform seam — the timestamps and the
+//! elapsed handler time come from `Os::RawTime::now`
+//! (`Platform::raw_time_now`, a realtime rather than a monotonic clock)
+//! and the sleep is `Os::Task::delay` (`Platform::delay`). When a clock
+//! read fails the full interval is slept, which is exactly upstream's
+//! `LinuxTimerTaskDelay` fixed delay. A bare-metal superloop that has a
+//! hardware tick usually calls [`LinuxTimer::tick`] from it instead.
 
 use fprime_comp::{CyclePort, OutputPort, PassiveBase};
+use fprime_fw::sync::Arc;
+use fprime_fw::sync::{AtomicBool, Ordering};
 use fprime_fw::{TimeInterval, fw_log};
 use fprime_os::RawTime;
 use fprime_os::rawtime::Status as RawTimeStatus;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 /// `Svc::LinuxTimer`.
@@ -52,6 +61,7 @@ impl LinuxTimer {
 
     /// C++ `startTimer(interval)`: blocks the calling thread, emitting a
     /// `CycleOut` tick per interval until [`quit`](Self::quit) is called.
+    #[cfg(feature = "std")]
     pub fn start_timer(&self, interval: TimeInterval) {
         let period = Duration::new(
             u64::from(interval.get_seconds()),
@@ -69,6 +79,43 @@ impl LinuxTimer {
             if let Some(remaining) = period.checked_sub(elapsed) {
                 let interval =
                     TimeInterval::new(remaining.as_secs() as u32, remaining.subsec_micros());
+                let _ = fprime_os::Task::delay(interval);
+            }
+        }
+    }
+
+    /// C++ `startTimer(interval)`: blocks the calling thread, emitting a
+    /// `CycleOut` tick per interval until [`quit`](Self::quit) is called.
+    /// `no_std`: elapsed time from `RawTime`, sleep from `Os::Task::delay`.
+    #[cfg(not(feature = "std"))]
+    pub fn start_timer(&self, interval: TimeInterval) {
+        const USEC_PER_SEC: u64 = 1_000_000;
+        let period_us =
+            u64::from(interval.get_seconds()) * USEC_PER_SEC + u64::from(interval.get_useconds());
+        loop {
+            if self.quit.load(Ordering::Relaxed) {
+                return;
+            }
+            let mut iteration_start = RawTime::new();
+            let start_ok = iteration_start.now() == RawTimeStatus::OpOk;
+            self.tick();
+            // Sleep only the remaining interval so handler time does not
+            // accumulate into rate drift; without a clock reading, the
+            // whole interval (upstream's fixed delay).
+            let mut elapsed_us = 0;
+            let mut now = RawTime::new();
+            if start_ok && now.now() == RawTimeStatus::OpOk {
+                let mut elapsed = TimeInterval::new(0, 0);
+                if now.get_time_interval(&iteration_start, &mut elapsed) == RawTimeStatus::OpOk {
+                    elapsed_us = u64::from(elapsed.get_seconds()) * USEC_PER_SEC
+                        + u64::from(elapsed.get_useconds());
+                }
+            }
+            if let Some(remaining) = period_us.checked_sub(elapsed_us) {
+                let interval = TimeInterval::new(
+                    (remaining / USEC_PER_SEC) as u32,
+                    (remaining % USEC_PER_SEC) as u32,
+                );
                 let _ = fprime_os::Task::delay(interval);
             }
         }
@@ -123,6 +170,7 @@ mod tests {
 
     #[test]
     fn tick_invokes_cycle_out_with_a_fresh_timestamp() {
+        crate::test_platform::install();
         let timer = LinuxTimer::new("linuxTimer");
         let rec = Arc::new(CycleRecorder::default());
         timer.cycle_out.connect(rec.clone(), 3);
@@ -143,6 +191,7 @@ mod tests {
 
     #[test]
     fn quit_makes_start_timer_return() {
+        crate::test_platform::install();
         let timer = LinuxTimer::new("linuxTimer");
         let rec = Arc::new(CycleRecorder::default());
         timer.cycle_out.connect(rec.clone(), 0);

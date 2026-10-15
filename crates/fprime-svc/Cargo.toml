@@ -12,10 +12,10 @@ workspace = true
 
 [dependencies]
 fprime-config.workspace = true
-fprime-fw.workspace = true
-fprime-os.workspace = true
-fprime-utils.workspace = true
-fprime-comp.workspace = true
+fprime-fw = { path = "../fprime-fw", default-features = false }
+fprime-os = { path = "../fprime-os", default-features = false }
+fprime-utils = { path = "../fprime-utils", default-features = false }
+fprime-comp = { path = "../fprime-comp", default-features = false }
 
 # Third-party dependencies exist only behind optional, off-by-default
 # features (user-approved; the default build is zero-dependency):
@@ -30,12 +30,43 @@ fprime-comp.workspace = true
 #   (`ccsds::aes_gcm_encryptor` / `ccsds::aes_gcm_decryptor`) on RustCrypto
 #   `aes-gcm`, with IVs from the OS CSPRNG via `getrandom` and key wiping
 #   via `zeroize`. Without the feature they are not compiled at all.
+#
+# Both compose with the `no_std` build: `miniz_oxide` and `aes-gcm` are
+# `no_std` crates (built without their `std` features here), and in a
+# `no_std` build `spin` turns on getrandom's `custom` feature, so on a
+# target with no OS RNG (bare metal) the deployment supplies the CSPRNG
+# with `getrandom::register_custom_getrandom!` (hosted targets keep the OS
+# source).
 miniz_oxide = { version = "0.9", optional = true, default-features = false, features = ["with-alloc"] }
 aes-gcm = { version = "0.10.3", optional = true, default-features = false, features = ["aes", "zeroize"] }
 getrandom = { version = "0.2.15", optional = true }
 zeroize = { version = "1.8", optional = true }
 
 [features]
-default = []
+default = ["std"]
+# Hosted build: every component, including the ones that need a file
+# system, the console or the process (see the crate docs).
+std = ["fprime-fw/std", "fprime-os/std", "fprime-utils/std", "fprime-comp/std"]
+# `no_std` + `alloc` build (ROADMAP "no_std beyond the core"): every
+# component that needs no file system or console, over `spin` locks and
+# the `fprime_os::platform` seam. Build with
+# `--no-default-features --features spin`.
+spin = [
+    "fprime-fw/spin",
+    "fprime-os/spin",
+    "fprime-utils/spin",
+    "fprime-comp/spin",
+    "getrandom?/custom",
+]
+# Component queues on the ISR-safe `Os::Generic::LocklessPriorityQueue`
+# (forwarded to fprime-comp / fprime-os).
+lockless-queue = ["fprime-comp/lockless-queue"]
 zlib = ["dep:miniz_oxide"]
 aes-gcm = ["dep:aes-gcm", "dep:getrandom", "dep:zeroize"]
+
+# A `#![no_std]` file-free deployment (rate groups, command dispatch,
+# events, telemetry, F Prime framing) driven by a superloop, built as a
+# library: proves the no_std component set wires up without `std`.
+[[example]]
+name = "no_std_deployment"
+crate-type = ["lib"]

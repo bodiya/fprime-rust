@@ -19,14 +19,16 @@
 use crate::ccsds::crc16::Crc16;
 use crate::ccsds::types::{SPACECRAFT_ID, TCHeader, TCTrailer, tc_subfields};
 use crate::fprime_framer::{HEADER_SIZE, MIN_FRAME_SIZE, START_WORD};
+use alloc::boxed::Box;
+use alloc::format;
 use fprime_comp::{
     BufferGetPort, BufferSendPort, ComDataWithContextPort, EventGlue, OutputPort, PassiveBase,
     PortRef,
 };
 use fprime_config::{FwEventIdType, FwIndexType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, Endianness, ExtBuf, FrameContext, LogSeverity, SerBuf, fw_assert};
 use fprime_utils::{CircularBuffer, Hash};
-use std::sync::{Arc, Mutex};
 
 /// Relative event ids (FPP declaration order).
 pub const EVENTID_NO_BUFFER_AVAILABLE: FwEventIdType = 0;
@@ -293,7 +295,7 @@ impl FrameAccumulator {
     /// allocates the accumulation ring (the Rust `CircularBuffer` owns its
     /// storage, so the allocator/id parameters are dropped).
     pub fn configure(&self, detector: Box<dyn FrameDetector>, store_size: usize) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.ring = Some(CircularBuffer::new(store_size));
         state.detector = Some(detector);
     }
@@ -323,7 +325,7 @@ impl FrameAccumulator {
     /// ALWAYS returns the incoming buffer immediately.
     fn data_in_handler(&self, _port_num: FwIndexType, buffer: Buffer, context: &FrameContext) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if buffer.is_valid() {
                 self.process_buffer(&mut state, buffer.data(), context);
             }

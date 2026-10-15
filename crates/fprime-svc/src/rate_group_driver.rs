@@ -15,9 +15,9 @@
 use fprime_comp::{CyclePort, OutputPort, PassiveBase, PortRef};
 use fprime_config::{FwIndexType, FwSizeType, RATE_GROUP_DRIVER_CYCLE_PORTS};
 use fprime_fw::fw_assert;
+use fprime_fw::sync::{Arc, OnceLock};
+use fprime_fw::sync::{AtomicU64, Ordering};
 use fprime_os::RawTime;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
 
 /// One entry of the divider table (`RateGroupDriver::Divider`).
 /// `divisor == 0` marks the entry unused (the default).

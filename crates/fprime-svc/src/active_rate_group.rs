@@ -19,6 +19,7 @@
 //! ([`fprime_config::active_rate_group::OVERRUN_THROTTLE`]), distinct from
 //! FPP event throttling.
 
+use alloc::format;
 use fprime_comp::{
     ActiveBase, ActiveComponent, ComponentDispatch, CyclePort, EventGlue, EventThrottle,
     MsgDispatchStatus, OutputPort, PingPort, QueueFullPolicy, SchedPort, TlmGlue,
@@ -28,11 +29,11 @@ use fprime_config::{
     FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType, FwQueuePriorityType,
     RATE_GROUP_MEMBER_OUT_PORTS, active_rate_group::OVERRUN_THROTTLE,
 };
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicBool, Ordering};
 use fprime_fw::{LogSeverity, SerBuf, SerBufAny, fw_assert};
 use fprime_os::RawTime;
 use fprime_os::rawtime::Status as RawTimeStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 component_msg_types! {
     /// Queue message types — the C++ generated `<Comp>_MSG_TYPE` set
@@ -134,7 +135,7 @@ impl ActiveRateGroup {
     /// C++ `configure(ContextArray)`: copy the per-port context values.
     /// Must be called before the first cycle (the handler asserts).
     pub fn configure(&self, contexts: [u32; RATE_GROUP_MEMBER_OUT_PORTS]) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.contexts = contexts;
         state.num_contexts = RATE_GROUP_MEMBER_OUT_PORTS;
     }
@@ -152,7 +153,7 @@ impl ActiveRateGroup {
     fn cycle_in_handler(&self, _port_num: FwIndexType, cycle_start: &RawTime) {
         // C++ parity: FW_ASSERT(m_numContexts != 0) — configure() missing.
         let contexts = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             fw_assert!(state.num_contexts != 0);
             state.contexts
         };
@@ -195,7 +196,7 @@ impl ActiveRateGroup {
         let mut emit_slips: Option<u32> = None;
         let mut slip_event_cycle: Option<u32> = None;
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if cycle_time > state.max_time {
                 state.max_time = cycle_time;
             }
@@ -355,6 +356,7 @@ mod tests {
     use fprime_fw::{LogBuffer, TextLogString, Time, TlmBuffer};
     use fprime_os::queue::BlockingType;
     use fprime_os::task::{Status as TaskStatus, TASK_DEFAULT};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x400;
 
@@ -563,6 +565,7 @@ mod tests {
 
     #[test]
     fn cycle_slip_detected_via_sender_thread_flag() {
+        crate::test_platform::install();
         let (comp, ground, member) = build_slipping();
         let cycle = comp.cycle_in(0);
         cycle
@@ -682,6 +685,7 @@ mod tests {
 
     #[test]
     fn full_lifecycle_preamble_logs_rate_group_started() {
+        crate::test_platform::install();
         let (comp, ground) = build(2);
         comp.active.start(&comp, 100, TASK_DEFAULT, TASK_DEFAULT);
         let cycle = comp.cycle_in(0);

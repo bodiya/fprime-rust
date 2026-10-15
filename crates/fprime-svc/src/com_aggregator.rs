@@ -64,6 +64,8 @@
 
 use crate::ccsds::idle_packet;
 use crate::ccsds::types::{AGGREGATION_SIZE, SpacePacketHeader, tm_subfields};
+use alloc::vec;
+use alloc::vec::Vec;
 use fprime_comp::sm::{self, SmSender};
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferEscrow, ComDataWithContextPort, ComponentDispatch,
@@ -75,12 +77,12 @@ use fprime_config::{
     FwQueuePriorityType, FwSizeType,
 };
 use fprime_fw::buffer::BufferStorage;
+use fprime_fw::sync::{Arc, Mutex, MutexGuard};
+use fprime_fw::sync::{AtomicBool, Ordering};
 use fprime_fw::{
     Buffer, Deserialize, Endianness, ExtBuf, FppSized, FrameContext, SerBufAny, Serialize,
     SerializeStatus, Success, fw_assert,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Aggregation capacity without spanning
 /// (`ComAggregator::NON_SPANNING_CAPACITY`): room is left for the TM
@@ -420,7 +422,7 @@ impl ComAggregator {
     /// True while the aggregation store is held by this component (C++
     /// `m_bufferState == OWNED`).
     pub fn owns_aggregate(&self) -> bool {
-        self.store.lock().unwrap().is_some()
+        self.store.lock().is_some()
     }
 
     /// Number of `fill` buffers in flight on the queue (deposited by
@@ -433,7 +435,7 @@ impl ComAggregator {
     /// owned).
     pub fn aggregate_bytes(&self) -> Vec<u8> {
         let fill = self.aggregate_size();
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock();
         store
             .as_ref()
             .map(|s| s[..fill].to_vec())
@@ -441,7 +443,7 @@ impl ComAggregator {
     }
 
     fn lock_state(&self) -> MutexGuard<'_, AggState> {
-        self.state.lock().unwrap()
+        self.state.lock()
     }
 
     /// The generated `aggregationMachine_sendSignal_*` functions: priority
@@ -492,7 +494,7 @@ impl ComAggregator {
         _context: &FrameContext,
     ) {
         // Runs on the returning caller's thread: take ownership back.
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock();
         fw_assert!(store.is_none());
         fw_assert!(data.capacity() == AGGREGATION_SIZE, data.capacity() as i32);
         *store = Some(data.into_storage());
@@ -554,7 +556,7 @@ impl ComAggregator {
                 st.fhp
             };
         }
-        let storage = self.store.lock().unwrap().take();
+        let storage = self.store.lock().take();
         fw_assert!(storage.is_some());
         let Some(storage) = storage else { return };
         let mut frame = Buffer::from_storage(storage, Buffer::NO_CONTEXT);
@@ -646,7 +648,7 @@ impl ComAggregator {
         // The idle packet's header starts at the current fill offset.
         Self::mark_first_header_if_unset(st);
         if residual >= idle_packet::MIN_SIZE {
-            let mut store = self.store.lock().unwrap();
+            let mut store = self.store.lock();
             fw_assert!(store.is_some());
             if let Some(storage) = store.as_mut() {
                 let mut ser = ExtBuf::new(&mut storage[st.fill..]);
@@ -698,7 +700,7 @@ impl ComAggregator {
     /// Append `held[start..start + len]` to the aggregate without a
     /// temporary copy (the held buffer and the store are distinct).
     fn copy_from_held(&self, st: &mut AggState, start: usize, len: usize) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock();
         fw_assert!(store.is_some());
         if let (Some(storage), Some((held, _))) = (store.as_mut(), st.held.as_ref()) {
             fw_assert!(st.fill + len <= storage.len(), st.fill as i32);
@@ -711,7 +713,7 @@ impl ComAggregator {
     /// Append raw bytes to the aggregate (the C++ `serializeFrom(...,
     /// OMIT_LENGTH)` + `FW_ASSERT(status == OK)`).
     fn write(&self, st: &mut AggState, bytes: &[u8]) {
-        let mut store = self.store.lock().unwrap();
+        let mut store = self.store.lock();
         // See the module docs: the store must be home before it is written.
         fw_assert!(store.is_some());
         if let Some(storage) = store.as_mut() {
@@ -1941,6 +1943,7 @@ mod tests {
     /// The active task runs the preamble and dispatches signals.
     #[test]
     fn active_task_lifecycle() {
+        crate::test_platform::install();
         let comp = ComAggregator::new("agg");
         comp.create_queue(10);
         let h = Arc::new(Harness::default());

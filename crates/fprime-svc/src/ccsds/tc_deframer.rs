@@ -31,12 +31,13 @@
 
 use crate::ccsds::crc16::Crc16;
 use crate::ccsds::types::{ErrorNotifyPort, FrameError, SPACECRAFT_ID, TCHeader, TCTrailer};
+use alloc::format;
 use fprime_comp::{ComDataWithContextPort, EventGlue, OutputPort, PassiveBase, input_port_adapter};
 use fprime_config::{FwEventIdType, FwIndexType, FwSignedSizeType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, Endianness, FrameContext, LogSeverity, SerBuf, SerializeStatus, fw_assert, fw_try,
 };
-use std::sync::{Arc, Mutex};
 
 /// `InvalidPacket` event id (FPP declaration order, relative).
 pub const EVENTID_INVALID_PACKET: FwEventIdType = 0;
@@ -104,7 +105,7 @@ impl TcDeframer {
     /// Restrict the deframer to one virtual channel and/or another
     /// spacecraft ID (C++ `configure`).
     pub fn configure(&self, vc_id: u16, spacecraft_id: u16, accept_all_vcid: bool) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.vc_id = vc_id;
         state.spacecraft_id = spacecraft_id;
         state.accept_all_vcid = accept_all_vcid;
@@ -126,7 +127,7 @@ impl TcDeframer {
 
     /// `dataIn` handler (guarded — runs under the component mutex).
     fn data_in_handler(&self, _port_num: FwIndexType, mut data: Buffer, context: &FrameContext) {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock();
 
         // (1) Too short to hold a header and a trailer. C++ parity: this is
         // the ONLY rejection that does not raise errorNotify.

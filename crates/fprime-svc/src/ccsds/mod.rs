@@ -26,6 +26,8 @@ pub mod clear_text_encryptor;
 pub mod crc16;
 pub mod idle_packet;
 pub mod sdls_auth_mask;
+// Reads key files: std-only.
+#[cfg(feature = "std")]
 pub mod sdls_file_key_manager;
 pub mod sdls_sa_router;
 pub mod space_packet_deframer;

@@ -41,8 +41,8 @@ use crate::ccsds::types::{
 };
 use fprime_comp::{ComDataWithContextPort, OutputPort, PassiveBase, PortRef, input_port_adapter};
 use fprime_config::{FwIndexType, FwSignedSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, FrameContext, SerBuf, SerBufAny};
-use std::sync::{Arc, Mutex};
 use zeroize::Zeroize;
 
 /// The AAD cache (C++ `m_aad`, `m_aadVcId`, `m_aadSaIndex`), touched only
@@ -98,7 +98,7 @@ impl AesGcmDecryptor {
         mut data: Buffer,
         context: &FrameContext,
     ) {
-        let mut cache = self.guard.lock().unwrap();
+        let mut cache = self.guard.lock();
 
         // Too short to hold an IV and a MAC.
         if data.size() < GCM_IV_LEN + GCM_TAG_LEN {

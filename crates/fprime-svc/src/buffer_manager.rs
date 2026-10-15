@@ -19,14 +19,18 @@
 //! back on return. The C++ data-pointer range asserts map to a storage
 //! capacity check.
 
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 use fprime_comp::{
     BufferGetPort, BufferSendPort, EventGlue, EventThrottle, PassiveBase, PortRef, SchedPort,
     TlmGlue,
 };
 use fprime_config::buffer_manager::MAX_NUM_BINS;
 use fprime_config::{FwChanIdType, FwEventIdType, FwIdType, FwIndexType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, BufferStorage, LogSeverity, SerBuf, SerializeStatus, fw_assert};
-use std::sync::{Arc, Mutex};
 
 /// One user bin: `num_buffers` buffers of `buffer_size` bytes each
 /// (C++ `BufferMgr::BufferBin`). Order bins by ascending `buffer_size` so
@@ -156,7 +160,7 @@ impl BufferManager {
         // C++ has a fixed BUFFERMGR_MAX_NUM_BINS-sized bin array.
         fw_assert!(bins.len() <= MAX_NUM_BINS, bins.len());
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         // Re-setup without cleanup would leak the C++ allocation; here it
         // is simply a misuse assert.
         fw_assert!(!state.setup);
@@ -195,7 +199,7 @@ impl BufferManager {
     /// once cleaned (their slots are gone — the C++ equivalent frees the
     /// arena out from under them).
     pub fn cleanup(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         fw_assert!(state.was_setup);
         if state.setup {
             state.slots = Box::new([]);
@@ -233,7 +237,7 @@ impl BufferManager {
     fn buffer_get_callee_handler(&self, _port_num: FwIndexType, size: FwSizeType) -> Buffer {
         let mut failed = false;
         let result = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             // C++ parity: FW_ASSERT(m_setup).
             fw_assert!(state.setup);
 
@@ -288,7 +292,7 @@ impl BufferManager {
     fn buffer_send_in_handler(&self, _port_num: FwIndexType, buffer: Buffer) {
         let mut empty_return = false;
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             fw_assert!(state.setup);
 
             // C++: data == nullptr && size == 0. An empty non-null buffer
@@ -333,7 +337,7 @@ impl BufferManager {
         // outside it.
         let mut writes: [Option<(FwChanIdType, u32)>; 5] = [None; 5];
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let values: [(FwChanIdType, u32); 5] = [
                 (Self::CHANID_HI_BUFFS, state.high_water),
                 (Self::CHANID_CURR_BUFFS, state.curr_buffs),
@@ -385,6 +389,7 @@ mod tests {
     use super::*;
     use fprime_comp::{LogPort, LogTextPort, TimePort, TlmPort};
     use fprime_fw::{LogBuffer, TextLogString, Time, TimeBase, TlmBuffer};
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x800;
     const MGR_ID: u16 = 0x0102;
@@ -570,7 +575,7 @@ mod tests {
         // Storage was recycled, not reallocated: user bytes persist.
         assert_eq!(b_again.data(), &[0x5A; 12][..]);
         send_back(&comp, b_again);
-        let state = comp.state.lock().unwrap();
+        let state = comp.state.lock();
         assert_eq!(state.curr_buffs, 0);
         assert_eq!(state.high_water, 1);
     }
@@ -582,7 +587,7 @@ mod tests {
         let mut b = get(&comp, 16);
         b.set_size(0); // users may shrink, even to zero
         send_back(&comp, b);
-        assert_eq!(comp.state.lock().unwrap().curr_buffs, 0);
+        assert_eq!(comp.state.lock().curr_buffs, 0);
     }
 
     #[test]
@@ -593,7 +598,7 @@ mod tests {
         for _ in 0..12 {
             send_back(&comp, Buffer::empty());
         }
-        assert_eq!(comp.state.lock().unwrap().empty_buffs, 12);
+        assert_eq!(comp.state.lock().empty_buffs, 12);
         let events = ground.events.lock().unwrap();
         assert_eq!(events.len(), 10);
         let abs_id = ID_BASE + BufferManager::EVENTID_NULL_EMPTY_BUFFER;
@@ -673,7 +678,7 @@ mod tests {
         send_back(&comp, b0);
         send_back(&comp, b1);
         send_back(&comp, b2);
-        let state = comp.state.lock().unwrap();
+        let state = comp.state.lock();
         assert_eq!(state.high_water, 3);
         assert_eq!(state.curr_buffs, 0);
     }

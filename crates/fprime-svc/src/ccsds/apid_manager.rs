@@ -19,10 +19,11 @@
 //! error return.
 
 use crate::ccsds::types::{ApidSequenceCountPort, space_packet_subfields};
+use alloc::format;
 use fprime_comp::{EventGlue, PassiveBase, input_port_adapter};
 use fprime_config::{FwEventIdType, FwIdType, FwIndexType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Apid, LogSeverity, SerBuf, fw_assert, fw_try};
-use std::sync::{Arc, Mutex};
 
 /// Sequence-count modulus: the counter is 14 bits (`1 << SeqCountWidth`).
 pub const SEQ_COUNT_MODULUS: u32 = 1 << space_packet_subfields::SEQ_COUNT_WIDTH;
@@ -137,7 +138,7 @@ impl ApidManager {
         apid: Apid,
         _unused: u16,
     ) -> u16 {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         Self::get_and_increment_locked(&mut state, apid)
     }
 
@@ -153,7 +154,7 @@ impl ApidManager {
         received_seq_count: u16,
     ) -> u16 {
         let mismatch = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let expected = Self::get_and_increment_locked(&mut state, apid);
             if received_seq_count == expected {
                 None

@@ -18,6 +18,8 @@
 //!   the entry still marches to `HLTH_PING_LATE`;
 //! - the ping key is a single global monotonically incrementing counter.
 
+use alloc::format;
+use alloc::vec::Vec;
 use fprime_comp::msg;
 use fprime_comp::{
     CmdGlue, CmdPort, ComponentDispatch, EventGlue, MsgDispatchStatus, OutputPort, PingPort,
@@ -27,12 +29,12 @@ use fprime_config::{
     FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIndexType,
     FwOpcodeType, FwQueuePriorityType, FwSizeType, HEALTH_PING_PORTS,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, CmdStringArg, Enabled, Endianness, LinearBuffer, LogSeverity,
     SerBuf, SerBufAny, fw_assert, fw_try,
 };
 use fprime_os::queue::BlockingType;
-use std::sync::{Arc, Mutex};
 
 /// Queue message types (0 is the EXIT sentinel).
 const MSG_TYPE_PING_RETURN: FwEnumStoreType = 1;
@@ -103,7 +105,7 @@ struct HealthState {
 impl Default for HealthState {
     fn default() -> Self {
         Self {
-            trackers: std::array::from_fn(|_| PingTracker::default()),
+            trackers: core::array::from_fn(|_| PingTracker::default()),
             num_entries: 0,
             key: 0,
             watchdog_code: 0,
@@ -189,7 +191,7 @@ impl Health {
     pub fn init(&self, queue_depth: FwSizeType) {
         self.queued
             .create_queue(queue_depth, MSG_SIZE as FwSizeType);
-        self.state.lock().unwrap().queue_depth = queue_depth;
+        self.state.lock().queue_depth = queue_depth;
     }
 
     /// C++ `regCommands()`.
@@ -209,7 +211,7 @@ impl Health {
     /// entries with zeroed counters/keys.
     pub fn set_ping_entries(&self, entries: &[PingEntry], watch_dog_code: u32) {
         fw_assert!(entries.len() <= HEALTH_PING_PORTS, entries.len());
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.num_entries = entries.len();
         state.watchdog_code = watch_dog_code;
         for (i, entry) in entries.iter().enumerate() {
@@ -251,7 +253,7 @@ impl Health {
     fn run_handler(&self, _port_num: FwIndexType, _context: u32) {
         // Drain own queue: up to queue_depth doDispatch calls, stop at
         // Empty, assert Ok otherwise (C++ parity).
-        let queue_depth = self.state.lock().unwrap().queue_depth;
+        let queue_depth = self.state.lock().queue_depth;
         for _ in 0..queue_depth {
             let status = self.queued.do_dispatch(self, BlockingType::NonBlocking);
             if status == MsgDispatchStatus::Empty {
@@ -264,7 +266,7 @@ impl Health {
         // until the lock is dropped (order preserved).
         let mut actions: Vec<SweepAction> = Vec::new();
         let watchdog_code = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.enabled == Enabled::Enabled {
                 for i in 0..state.num_entries {
                     if !state.trackers[i].enabled {
@@ -346,7 +348,7 @@ impl Health {
         );
         let port = port_num as usize;
         let wrong_key_name = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if key != state.trackers[port].key {
                 Some(state.trackers[port].entry.name.clone())
             } else {
@@ -378,7 +380,7 @@ impl Health {
     /// on a miss (C++ parity — the lookup helper itself logs).
     fn find_entry(&self, entry: &CmdStringArg) -> Option<usize> {
         let found = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             (0..state.num_entries).find(|&i| state.trackers[i].entry.name == *entry)
         };
         if found.is_none() {
@@ -410,7 +412,7 @@ impl Health {
                 .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
             return;
         };
-        self.state.lock().unwrap().enabled = enable;
+        self.state.lock().enabled = enable;
         self.evt.log_event(
             self.id_base(),
             Self::EVENTID_HLTH_CHECK_ENABLE,
@@ -447,7 +449,7 @@ impl Health {
                 .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
             return;
         };
-        self.state.lock().unwrap().trackers[index].enabled = enable == Enabled::Enabled;
+        self.state.lock().trackers[index].enabled = enable == Enabled::Enabled;
         self.evt.log_event(
             self.id_base(),
             Self::EVENTID_HLTH_CHECK_PING,
@@ -503,7 +505,7 @@ impl Health {
             return;
         }
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.trackers[index].entry.warn_cycles = FwSizeType::from(warning_value);
             state.trackers[index].entry.fatal_cycles = FwSizeType::from(fatal_value);
         }
@@ -648,6 +650,7 @@ mod tests {
     use super::*;
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, LogTextPort, TlmPort};
     use fprime_fw::{LogBuffer, TextLogString, Time, TlmBuffer};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x600;
 
@@ -909,7 +912,7 @@ mod tests {
     fn queue_drain_is_bounded_by_queue_depth() {
         let (comp, ground) = build(&[], 8);
         // Shrink the drain bound below the queue capacity to observe it.
-        comp.state.lock().unwrap().queue_depth = 2;
+        comp.state.lock().queue_depth = 2;
         let opcode = ID_BASE + Health::OPCODE_HLTH_ENABLE;
         for seq in 0..4 {
             send_cmd(&comp, opcode, seq, &[Enabled::Enabled as u8]);
@@ -1077,7 +1080,7 @@ mod tests {
         arg.extend_from_slice(&5u32.to_be_bytes());
         arg.extend_from_slice(&3u32.to_be_bytes());
         send_cmd(&comp, opcode, 8, &arg);
-        comp.state.lock().unwrap().enabled = Enabled::Disabled; // quiet sweep
+        comp.state.lock().enabled = Enabled::Disabled; // quiet sweep
         run(&comp);
         assert_eq!(
             *ground.responses.lock().unwrap(),
@@ -1092,7 +1095,7 @@ mod tests {
             "Health ping for compA invalid values: WARN 5 FATAL 3"
         );
         // Thresholds unchanged.
-        let state = comp.state.lock().unwrap();
+        let state = comp.state.lock();
         assert_eq!(state.trackers[0].entry.warn_cycles, 2);
         assert_eq!(state.trackers[0].entry.fatal_cycles, 4);
     }

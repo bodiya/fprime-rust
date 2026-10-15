@@ -20,13 +20,13 @@ use fprime_comp::{
     glue,
 };
 use fprime_config::{FwChanIdType, FwIndexType, FwOpcodeType, RATE_GROUP_MEMBER_OUT_PORTS};
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicU32, Ordering};
 use fprime_fw::{
     CmdArgBuffer, CmdResponse, Endianness, SerBuf, SerBufAny, Serialize, SerializeStatus,
     fw_assert, fw_try,
 };
 use fprime_os::RawTime;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// `PassiveRateGroupCfg::PortCycleTime` — enable per-port cycle-time
 /// measurement/telemetry (C++ default `true`).
@@ -126,7 +126,7 @@ impl PassiveRateGroup {
     /// C++ `configure(ContextArray)` — the `rawTimeSource` parameter is
     /// not ported (the Rust OSAL has a single RawTime source).
     pub fn configure(&self, contexts: [u32; RATE_GROUP_MEMBER_OUT_PORTS]) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.contexts = contexts;
         state.num_contexts = RATE_GROUP_MEMBER_OUT_PORTS;
     }
@@ -149,7 +149,7 @@ impl PassiveRateGroup {
     /// `CycleIn_handler` — caller's thread.
     fn cycle_in_handler(&self, _port_num: FwIndexType, cycle_start: &RawTime) {
         let contexts = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             // C++ parity: FW_ASSERT(m_numContexts != 0).
             fw_assert!(state.num_contexts != 0);
             state.contexts
@@ -185,13 +185,13 @@ impl PassiveRateGroup {
         self.max_time.fetch_max(cycle_time, Ordering::Relaxed);
         let max_time = self.max_time.load(Ordering::Relaxed);
 
-        let hwm_snapshot = CycleTimes(std::array::from_fn(|i| {
+        let hwm_snapshot = CycleTimes(core::array::from_fn(|i| {
             self.port_cycle_time_hwm[i].load(Ordering::Relaxed)
         }));
 
         // Cycle counter + on-change decisions under the state lock.
         let (cycles, emit_max, emit_hwm) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.cycles += 1;
             let emit_max = if state.prev_max_tlm != Some(max_time) {
                 state.prev_max_tlm = Some(max_time);
@@ -286,6 +286,7 @@ mod tests {
     use super::*;
     use fprime_comp::{CmdRegPort, CmdResponsePort, TlmPort};
     use fprime_fw::{Time, TlmBuffer};
+    use std::sync::Mutex;
 
     const ID_BASE: u32 = 0x500;
 

@@ -577,8 +577,9 @@ fn unknown_sa_uplink_is_dropped() {
     assert_eq!(*chain.ground.receive_returned.lock().unwrap(), 1);
 }
 
-/// `ComCcsdsSdls` with the AES-256-GCM pair, keyed from a file.
-#[cfg(feature = "aes-gcm")]
+/// `ComCcsdsSdls` with the AES-256-GCM pair, keyed from a file (so
+/// `std`-only: `SdlsFileKeyManager` reads the key file).
+#[cfg(all(feature = "aes-gcm", feature = "std"))]
 mod aes {
     use super::*;
     use aes_gcm::aead::AeadInPlace;

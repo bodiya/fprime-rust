@@ -36,16 +36,17 @@
 use crate::ccsds::crc16::Crc16;
 use crate::ccsds::idle_packet;
 use crate::ccsds::types::{SPACECRAFT_ID, TM_FRAME_FIXED_SIZE, TMHeader, TMTrailer, tm_subfields};
+use alloc::vec;
 use fprime_comp::{
     ComDataWithContextPort, OutputPort, PassiveBase, PortRef, SuccessConditionPort,
     input_port_adapter,
 };
 use fprime_config::FwIndexType;
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, BufferStorage, Endianness, FrameContext, LengthMode, SerBuf, SerBufAny, Success,
     fw_assert,
 };
-use std::sync::{Arc, Mutex};
 
 /// Idle-data fill pattern (`Utils::IdlePacket::DATA_PATTERN`).
 pub const IDLE_DATA_PATTERN: u8 = idle_packet::DATA_PATTERN;
@@ -114,7 +115,7 @@ impl TmFramer {
     /// True while the frame buffer is held by this component (the C++
     /// `BufferOwnershipState::OWNED`).
     pub fn owns_frame_buffer(&self) -> bool {
-        self.state.lock().unwrap().frame_storage.is_some()
+        self.state.lock().frame_storage.is_some()
     }
 
     /// `comStatusIn` — SYNC `Fw.SuccessCondition` input: forwarded upstream.
@@ -156,7 +157,7 @@ impl TmFramer {
         );
 
         let mut frame_buffer = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             // C++ parity: FW_ASSERT(m_bufferState == OWNED). Exactly one
             // frame may be in flight; ComQueue's one-outstanding-send flow
             // control is what guarantees it.
@@ -253,7 +254,7 @@ impl TmFramer {
     /// `dataReturnIn` handler: take the frame buffer back. No deallocation —
     /// the storage is reused for the next frame.
     fn data_return_in_handler(&self, _port_num: FwIndexType, frame_buffer: Buffer) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         // C++ parity: the returned buffer must be OUR frame buffer. The
         // pointer-range assert maps to "we are not currently holding it and
         // it has the frame capacity".

@@ -46,16 +46,17 @@ use crate::ccsds::types::{
     ErrorNotifyPort, FrameError, MPduHeader, SPACECRAFT_ID, SpacePacketHeader, Tfvn,
     aos_header_subfields, epp_subfields, m_pdu_subfields, pvn_bitfield, space_packet_subfields,
 };
+use alloc::format;
 use fprime_comp::{
     BufferGetPort, BufferSendPort, ComDataWithContextPort, EventGlue, OutputPort, PassiveBase,
     TlmGlue, input_port_adapter,
 };
 use fprime_config::{FwChanIdType, FwEventIdType, FwIndexType, FwSizeType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Apid, Buffer, Deserialize, Endianness, ExtBuf, FrameContext, LogSeverity, Pvn, SerBuf,
     SerializeStatus, fw_assert, fw_try,
 };
-use std::sync::{Arc, Mutex};
 
 /// Number of accepted virtual channels (`AosDeframer.NumVcs`).
 pub const NUM_VCS: usize = 1;
@@ -227,7 +228,7 @@ impl AosDeframer {
         fw_assert!(self.allocate.is_connected());
         fw_assert!(self.deallocate.is_connected());
 
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.fixed_frame_size = fixed_frame_size;
         st.fecf_enabled = frame_error_control_field;
         st.spacecraft_id = spacecraft_id;
@@ -246,7 +247,7 @@ impl AosDeframer {
 
     /// `dataIn` (guarded): the VC_RECEIVE.indication service primitive.
     fn data_in_handler(&self, _port_num: FwIndexType, mut data: Buffer, context: &FrameContext) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         fw_assert!(st.fixed_frame_size > 0, st.fixed_frame_size as i32);
 
         if data.size() < st.fixed_frame_size as usize {

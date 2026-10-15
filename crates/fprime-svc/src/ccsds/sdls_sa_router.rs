@@ -36,8 +36,8 @@ use fprime_config::sdls::{
     SA_MAP, SA_ROUTER_MAP_ENTRY_COUNT, SA_ROUTER_MAX_OUTSTANDING_BUFFERS, SA_ROUTER_PORT_COUNT,
 };
 use fprime_config::{FwEventIdType, FwIndexType};
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{Buffer, FrameContext, LogSeverity, SerializeStatus, fw_assert};
-use std::sync::{Arc, Mutex};
 
 /// `TrackingTableFull()` — WARNING_HI.
 pub const EVENTID_TRACKING_TABLE_FULL: FwEventIdType = 0;
@@ -147,7 +147,7 @@ impl SdlsSaRouter {
     /// frame is routed). Each direction needs its own table: an SA is
     /// simplex (CCSDS 355.0-B-2 2.3.1.1).
     pub fn configure(&self, sa_map: &SaMap) {
-        let mut map = self.sa_map.lock().unwrap();
+        let mut map = self.sa_map.lock();
         map.clear();
         for (i, entry) in sa_map.iter().enumerate() {
             let inserted = map.insert(entry.security_association_index, entry.port_index);
@@ -157,7 +157,7 @@ impl SdlsSaRouter {
 
     /// Number of outstanding (tracked) processed buffers.
     pub fn outstanding_count(&self) -> usize {
-        self.outstanding.lock().unwrap().len()
+        self.outstanding.lock().len()
     }
 
     // -- Input ports ------------------------------------------------------------
@@ -215,8 +215,8 @@ impl SdlsSaRouter {
         data: Buffer,
         context: &FrameContext,
     ) {
-        let _guard = self.guard.lock().unwrap();
-        let found = self.sa_map.lock().unwrap().find(security_association_index);
+        let _guard = self.guard.lock();
+        let found = self.sa_map.lock().find(security_association_index);
         let mut error_status = SdlsStatus::UnknownSa;
         if let Some(output_port) = found {
             if output_port >= 0 && (output_port as usize) < SA_ROUTER_PORT_COUNT {
@@ -233,7 +233,6 @@ impl SdlsSaRouter {
         let inserted = self
             .outstanding
             .lock()
-            .unwrap()
             .insert(data.context(), ROUTER_ERROR_PORT);
         if !inserted {
             self.log_tracking_table_full();
@@ -246,7 +245,7 @@ impl SdlsSaRouter {
 
     fn data_return_in_handler(&self, _port_num: FwIndexType, data: Buffer, context: &FrameContext) {
         let found = {
-            let mut table = self.outstanding.lock().unwrap();
+            let mut table = self.outstanding.lock();
             let found = table.find(data.context());
             if found.is_some() {
                 table.remove(data.context());
@@ -289,11 +288,7 @@ impl SdlsSaRouter {
         data: Buffer,
         context: &FrameContext,
     ) {
-        let inserted = self
-            .outstanding
-            .lock()
-            .unwrap()
-            .insert(data.context(), port_num);
+        let inserted = self.outstanding.lock().insert(data.context(), port_num);
         if !inserted {
             // Table full: drop the data, ownership back to the component.
             self.log_tracking_table_full();

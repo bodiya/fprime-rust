@@ -68,6 +68,8 @@
 //! Rust's `Sync` requirement and the introspection accessors; it is never
 //! held across an output-port call.
 
+use alloc::boxed::Box;
+use alloc::format;
 use fprime_comp::escrow::BufferEscrow;
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferSendPort, CmdGlue, CmdPort, ComponentDispatch, EventGlue,
@@ -78,11 +80,11 @@ use fprime_config::{
     FW_CMD_ARG_BUFFER_MAX_SIZE, FwChanIdType, FwEnumStoreType, FwEventIdType, FwIdType,
     FwIndexType, FwOpcodeType, FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, LinearBuffer, LogSeverity, SerBuf, SerBufAny,
     SerializeStatus, fpp_enum, fw_assert, fw_try,
 };
-use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
 // FPP types (Commands.fppi)
@@ -360,7 +362,7 @@ impl BufferAccumulator {
         );
         let capacity = usize::try_from(max_num_buffers).unwrap_or(usize::MAX);
         let fifo = ArrayFifoBuffer::with_capacity(capacity);
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.allocator_id = identifier;
         st.buffer_queue = fifo;
         st.mode = initial_mode;
@@ -371,7 +373,7 @@ impl BufferAccumulator {
     /// teardown, after the task is joined). The FIFO returns to the
     /// unallocated state; still-queued buffers are dropped.
     pub fn deallocate_queue(&self) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.state.lock();
         st.buffer_queue = ArrayFifoBuffer::default();
     }
 
@@ -392,25 +394,25 @@ impl BufferAccumulator {
     /// The current operating mode.
     #[must_use]
     pub fn mode(&self) -> OpState {
-        self.state.lock().unwrap().mode
+        self.state.lock().mode
     }
 
     /// Number of buffers currently queued (`BA_NumQueuedBuffers`).
     #[must_use]
     pub fn num_queued_buffers(&self) -> FwSizeType {
-        self.state.lock().unwrap().buffer_queue.size() as FwSizeType
+        self.state.lock().buffer_queue.size() as FwSizeType
     }
 
     /// FIFO capacity (0 before [`Self::allocate_queue`]).
     #[must_use]
     pub fn queue_capacity(&self) -> FwSizeType {
-        self.state.lock().unwrap().buffer_queue.capacity() as FwSizeType
+        self.state.lock().buffer_queue.capacity() as FwSizeType
     }
 
     /// The allocator identifier recorded by [`Self::allocate_queue`].
     #[must_use]
     pub fn allocator_id(&self) -> FwEnumStoreType {
-        self.state.lock().unwrap().allocator_id
+        self.state.lock().allocator_id
     }
 
     // -- Input-port factories ----------------------------------------------
@@ -452,7 +454,7 @@ impl BufferAccumulator {
     /// send if armed and report the queue depth.
     fn buffer_send_in_fill_handler(&self, _port_num: FwIndexType, buffer: Buffer) {
         let (accepted, full, rejected, send) = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             match st.buffer_queue.enqueue(buffer) {
                 Ok(()) => {
                     let accepted = st.num_warnings > 0;
@@ -482,7 +484,7 @@ impl BufferAccumulator {
         if send {
             self.send_stored_buffer();
         }
-        let queued = self.state.lock().unwrap().buffer_queue.size();
+        let queued = self.state.lock().buffer_queue.size();
         self.tlm_write_num_queued_buffers(queued as u32);
     }
 
@@ -492,7 +494,7 @@ impl BufferAccumulator {
         let port = self.buffer_send_out_return.get();
         port.target.invoke(port.port_num, buffer);
         let send = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             st.wait_for_buffer = false;
             if st.mode == OpState::Drain || st.num_drained < st.num_to_drain {
                 st.send = true;
@@ -517,7 +519,7 @@ impl BufferAccumulator {
     /// its last buffer is SENT; always report the queue depth.
     fn send_stored_buffer(&self) {
         let outcome = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             fw_assert!(st.send);
             let mut drained = None;
             let mut stalled = None;
@@ -574,7 +576,7 @@ impl BufferAccumulator {
     /// drained buffer is still out, answer `OK`.
     fn ba_set_mode_cmd_handler(&self, op_code: FwOpcodeType, cmd_seq: u32, mode: OpState) {
         let cancelled = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             if st.num_to_drain > 0 {
                 st.num_to_drain = 0;
                 st.num_drained = 0;
@@ -588,7 +590,7 @@ impl BufferAccumulator {
                 .cmd_response(drain_op_code, drain_cmd_seq, CmdResponse::Ok);
         }
         let send = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             st.mode = mode;
             if mode == OpState::Drain {
                 if st.wait_for_buffer {
@@ -626,7 +628,7 @@ impl BufferAccumulator {
             Start { non_block: Option<u32>, send: bool },
         }
         let next = {
-            let st = &mut *self.state.lock().unwrap();
+            let st = &mut *self.state.lock();
             if st.num_drained < st.num_to_drain {
                 Next::StillDraining(st.num_drained as u32, st.num_to_drain as u32)
             } else if st.mode == OpState::Drain {
@@ -955,6 +957,7 @@ mod tests {
     use fprime_fw::{LogBuffer, TextLogString, Time, TimeBase, TlmBuffer};
     use fprime_os::task::TASK_DEFAULT;
     use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     const ID_BASE: FwIdType = 0x4000;
     /// `MAX_NUM_BUFFERS` of the C++ tester.
@@ -1227,7 +1230,7 @@ mod tests {
         }
 
         fn state<R>(&self, f: impl FnOnce(&BufferAccumulatorState) -> R) -> R {
-            f(&self.comp.state.lock().unwrap())
+            f(&self.comp.state.lock())
         }
     }
 
@@ -1898,6 +1901,7 @@ mod tests {
     /// Runs on its own thread like any active component.
     #[test]
     fn active_task_round_trip() {
+        crate::test_platform::install();
         let t = Tester::new();
         t.comp.active.start(&t.comp, 21, TASK_DEFAULT, TASK_DEFAULT);
         let port = t.comp.buffer_send_in_fill(0);

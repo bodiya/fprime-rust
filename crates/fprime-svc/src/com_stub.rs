@@ -44,9 +44,9 @@ use fprime_comp::{
     BufferSendPort, ComDataWithContextPort, OutputPort, PassiveBase, PortRef, SuccessConditionPort,
 };
 use fprime_config::FwIndexType;
+use fprime_fw::sync::{Arc, Mutex};
+use fprime_fw::sync::{AtomicBool, Ordering};
 use fprime_fw::{Buffer, FrameContext, Success, fw_assert, fw_log};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// `Drv::ByteStreamStatus` (repr U8) — duplicated here per the module-header
 /// seam note; `fprime-drv` owns the canonical copy for driver code.
@@ -258,7 +258,7 @@ impl ComStub {
     /// and hand the buffer to the driver. Status and ownership come back on
     /// `drvAsyncSendReturnIn`.
     fn handle_asynchronous_send(&self, send_buffer: Buffer, context: &FrameContext) {
-        self.async_state.lock().unwrap().stored_context = *context;
+        self.async_state.lock().stored_context = *context;
         let p = self.drv_async_send_out.get();
         p.target.invoke(p.port_num, send_buffer);
     }
@@ -279,12 +279,12 @@ impl ComStub {
             self.handle_async_retry(fw_buffer);
         } else {
             // Return buffer ownership and send status.
-            let stored_context = self.async_state.lock().unwrap().stored_context;
+            let stored_context = self.async_state.lock().stored_context;
             let p = self.data_return_out.get();
             p.target.invoke(p.port_num, fw_buffer, &stored_context);
             self.reinitialize
                 .store(send_status != ByteStreamStatus::OpOk, Ordering::Relaxed);
-            self.async_state.lock().unwrap().retry_count = 0;
+            self.async_state.lock().retry_count = 0;
             let mut com_success = if send_status == ByteStreamStatus::OpOk {
                 Success::Success
             } else {
@@ -299,7 +299,7 @@ impl ComStub {
     /// [`RETRY_LIMIT`]; on exhaustion return it upstream with FAILURE and
     /// re-arm the reinitialize handshake.
     fn handle_async_retry(&self, fw_buffer: Buffer) {
-        let mut state = self.async_state.lock().unwrap();
+        let mut state = self.async_state.lock();
         fw_assert!(state.retry_count <= RETRY_LIMIT, state.retry_count);
         if state.retry_count < RETRY_LIMIT {
             // Attempt retry if under the limit.
@@ -321,7 +321,7 @@ impl ComStub {
             p.target.invoke(p.port_num, &mut com_status);
             fw_log!("ComStub RETRY_LIMIT exceeded, skipped sending data");
             // C++ parity: the count is reset only after the status/log calls.
-            self.async_state.lock().unwrap().retry_count = 0;
+            self.async_state.lock().retry_count = 0;
         }
     }
 
@@ -737,7 +737,7 @@ mod tests {
         }
 
         fn retry_count(&self) -> FwIndexType {
-            self.stub.async_state.lock().unwrap().retry_count
+            self.stub.async_state.lock().retry_count
         }
 
         fn data_in(&self, buffer: Buffer, context: &FrameContext) {
@@ -1095,7 +1095,7 @@ mod tests {
             *rec.statuses.lock().unwrap(),
             vec![Success::Success, Success::Success]
         );
-        assert_eq!(stub.async_state.lock().unwrap().retry_count, 0);
+        assert_eq!(stub.async_state.lock().retry_count, 0);
     }
 
     /// An async driver completing on its own thread: ownership round-trips

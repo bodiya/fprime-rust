@@ -10,12 +10,20 @@
 //! context (default 0), seconds and microseconds. A clock read failure
 //! (time before the epoch) reports zero time, matching the C++
 //! `clock_gettime` failure path.
+//!
+//! `no_std`: the clock is `Os::RawTime::now`, i.e. the registered
+//! `fprime_os::platform::Platform::raw_time_now` (a realtime clock is the
+//! platform's to provide); a failed read — including no platform
+//! registered (`NOT_SUPPORTED`) — reports zero time, the same failure path.
 
 use fprime_comp::{PassiveBase, PortRef, TimePort};
 use fprime_config::FwIndexType;
+use fprime_fw::sync::Arc;
+use fprime_fw::sync::{AtomicU8, Ordering};
 use fprime_fw::{Time, TimeBase};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+#[cfg(not(feature = "std"))]
+use fprime_os::{RawTime, rawtime::Status as RawTimeStatus};
+#[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `Svc::PosixTime`.
@@ -50,9 +58,19 @@ impl PosixTime {
     fn time_get_port_handler(&self, _port_num: FwIndexType, time: &mut Time) {
         // C++ parity: report zero rather than garbage when the clock read
         // fails (SystemTime before the epoch).
+        #[cfg(feature = "std")]
         let (seconds, useconds) = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(duration) => (duration.as_secs() as u32, duration.subsec_micros()),
             Err(_) => (0, 0),
+        };
+        #[cfg(not(feature = "std"))]
+        let (seconds, useconds) = {
+            let mut now = RawTime::new();
+            if now.now() == RawTimeStatus::OpOk {
+                (now.get_seconds() as u32, now.get_nanoseconds() / 1000)
+            } else {
+                (0, 0)
+            }
         };
         time.set_time_base(TimeBase::TbWorkstationTime);
         time.set_time_context(self.time_context.load(Ordering::Relaxed));
@@ -72,6 +90,7 @@ mod tests {
 
     #[test]
     fn fills_workstation_time_with_context_zero() {
+        crate::test_platform::install();
         let comp = PosixTime::new("posixTime");
         let port = comp.time_get_port_in(0);
         let mut time = Time::default();
@@ -95,6 +114,7 @@ mod tests {
 
     #[test]
     fn successive_reads_are_monotonic_non_decreasing() {
+        crate::test_platform::install();
         let comp = PosixTime::new("posixTime");
         let port = comp.time_get_port_in(0);
         let mut t1 = Time::default();

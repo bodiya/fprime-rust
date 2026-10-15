@@ -89,11 +89,11 @@ use fprime_config::{
     FwSignedSizeType, FwSizeStoreType, FwSizeType,
 };
 use fprime_fw::fpp::FppSized;
+use fprime_fw::sync::Arc;
 use fprime_fw::{
     Buffer, CmdResponse, ComBuffer, Endianness, ExtBuf, LengthMode, LinearBuffer, LogBuffer,
     LogSeverity, SerBuf, SerBufAny, SerializeStatus, Time, TlmBuffer, fw_assert,
 };
-use std::sync::Arc;
 
 /// Size of the message header: `[type U32][port U32][size FwBuffSizeType]`
 /// (C++ `sizeof(U32) + sizeof(U32) + sizeof(FwBuffSizeType)`).
@@ -207,17 +207,17 @@ impl GenericHub {
     pub fn new(name: &str) -> Arc<Self> {
         Arc::new(Self {
             base: PassiveBase::new(name),
-            buffer_in_return: std::array::from_fn(|_| OutputPort::new()),
-            cmd_resp_out: std::array::from_fn(|_| OutputPort::new()),
+            buffer_in_return: core::array::from_fn(|_| OutputPort::new()),
+            cmd_resp_out: core::array::from_fn(|_| OutputPort::new()),
             allocate: OutputPort::new(),
             deallocate: OutputPort::new(),
             to_buffer_driver: OutputPort::new(),
             from_buffer_driver_return: OutputPort::new(),
             event_out: OutputPort::new(),
             tlm_out: OutputPort::new(),
-            serial_out: std::array::from_fn(|_| OutputPort::new()),
-            buffer_out: std::array::from_fn(|_| OutputPort::new()),
-            cmd_disp_out: std::array::from_fn(|_| OutputPort::new()),
+            serial_out: core::array::from_fn(|_| OutputPort::new()),
+            buffer_out: core::array::from_fn(|_| OutputPort::new()),
+            cmd_disp_out: core::array::from_fn(|_| OutputPort::new()),
         })
     }
 
