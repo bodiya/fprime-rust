@@ -48,45 +48,11 @@
 
 mod sm_harness;
 
+mod sm_trace_replay;
+
 use fprime_comp::config::FwEnumStoreType;
 use sm_harness::TestStruct;
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
-
-/// Records the trace and plays back scripted guard outcomes.
-#[derive(Default)]
-struct Recorder {
-    trace: Mutex<Vec<String>>,
-    script: Mutex<VecDeque<bool>>,
-}
-
-impl Recorder {
-    fn action(&self, name: &str) {
-        self.trace.lock().unwrap().push(format!("a:{name}"));
-    }
-
-    fn guard(&self, name: &str) -> bool {
-        self.trace.lock().unwrap().push(format!("g:{name}"));
-        self.script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or_else(|| panic!("unscripted guard {name}"))
-    }
-
-    fn arm(&self, outcomes: &str) {
-        self.trace.lock().unwrap().clear();
-        *self.script.lock().unwrap() = outcomes.chars().map(|c| c == '1').collect();
-    }
-
-    fn finish(&self) -> String {
-        assert!(
-            self.script.lock().unwrap().is_empty(),
-            "scripted guards left over"
-        );
-        self.trace.lock().unwrap().join(" ")
-    }
-}
+use sm_trace_replay::{Recorder, check};
 
 /// One machine under test: `fpp_state_machine!` plus a recording
 /// `Handlers` impl and signal dispatch by name.
@@ -164,118 +130,6 @@ macro_rules! traced_machine {
         $sm.$sfn($r, &<$ty as Default>::default())
     };
     (@send $sm:ident, $r:ident, $sfn:ident [str $ty:ty]) => { $sm.$sfn($r, "") };
-}
-
-/// One golden line.
-struct Step {
-    from: Option<(String, String)>,
-    outcomes: String,
-    trace: String,
-    to: String,
-}
-
-fn parse(golden: &str) -> Vec<Step> {
-    golden
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|line| {
-            let (head, rest) = line.split_once(" [").expect("head");
-            let (outcomes, rest) = rest.split_once("] -> ").expect("outcomes");
-            let (trace, to) = rest.rsplit_once(" ; ").expect("final");
-            let from = if head == "init" {
-                None
-            } else {
-                let (leaf, signal) = head.split_once(' ').expect("leaf signal");
-                Some((leaf.to_string(), signal.to_string()))
-            };
-            Step {
-                from,
-                outcomes: outcomes.to_string(),
-                trace: trace.trim().to_string(),
-                to: to.to_string(),
-            }
-        })
-        .collect()
-}
-
-/// Check one machine against its golden traces. `make` builds a fresh
-/// machine and runs `init` with the recorder.
-fn check<M>(
-    golden: &str,
-    make: impl Fn(&Recorder) -> M,
-    send: impl Fn(&M, &Recorder, &str),
-    state: impl Fn(&M) -> String,
-) {
-    let steps = parse(golden);
-    // Shortest path (in golden steps) from init to every reachable leaf.
-    let mut paths: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut frontier: VecDeque<String> = VecDeque::new();
-    for (i, s) in steps.iter().enumerate() {
-        if s.from.is_none() && !paths.contains_key(&s.to) {
-            paths.insert(s.to.clone(), vec![i]);
-            frontier.push_back(s.to.clone());
-        }
-    }
-    while let Some(leaf) = frontier.pop_front() {
-        for (i, s) in steps.iter().enumerate() {
-            if let Some((from, _)) = &s.from {
-                if *from == leaf && s.to != "-" && !paths.contains_key(&s.to) {
-                    let mut p = paths[&leaf].clone();
-                    p.push(i);
-                    paths.insert(s.to.clone(), p);
-                    frontier.push_back(s.to.clone());
-                }
-            }
-        }
-    }
-
-    let mut checked = 0;
-    for (i, step) in steps.iter().enumerate() {
-        let r = Recorder::default();
-        let (path, leaf) = match &step.from {
-            None => (vec![], None),
-            Some((leaf, _)) => match paths.get(leaf) {
-                Some(p) => (p.clone(), Some(leaf.clone())),
-                None => panic!("leaf {leaf} unreachable in the golden data"),
-            },
-        };
-        // Replay the path (its first step is an init line).
-        let mut sm = None;
-        for &j in &path {
-            let s = &steps[j];
-            r.arm(&s.outcomes);
-            match &s.from {
-                None => sm = Some(make(&r)),
-                Some((_, signal)) => send(sm.as_ref().unwrap(), &r, signal),
-            }
-            r.finish();
-        }
-        r.arm(&step.outcomes);
-        let sm = match &step.from {
-            None => make(&r),
-            Some((_, signal)) => {
-                let sm = sm.unwrap();
-                assert_eq!(Some(state(&sm)), leaf);
-                send(&sm, &r, signal);
-                sm
-            }
-        };
-        let trace = r.finish();
-        let line = golden
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .nth(i)
-            .unwrap();
-        assert_eq!(trace, step.trace, "trace of `{line}`");
-        let expected = if step.to == "-" {
-            leaf.clone().unwrap()
-        } else {
-            step.to.clone()
-        };
-        assert_eq!(state(&sm), expected, "final state of `{line}`");
-        checked += 1;
-    }
-    assert_eq!(checked, steps.len());
 }
 
 macro_rules! check_machine {
