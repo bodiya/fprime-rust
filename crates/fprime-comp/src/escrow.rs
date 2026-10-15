@@ -7,8 +7,18 @@
 //! where C++ would serialize the pointer (same 8-byte wire width, so the
 //! message layout is unchanged); the dispatch side claims the token back on
 //! the component thread.
+//!
+//! Where an `Fw.Buffer` is a *member of a serialized value* rather than a
+//! port argument — a state machine signal value such as
+//! `Svc.ComDataContextPair` — the value holds an [`EscrowedBuffer`]: the
+//! token plus the buffer's descriptor, serialized exactly as C++
+//! `Fw::Buffer::serializeTo` lays the buffer out, with the token in the
+//! pointer slot.
 
-use fprime_fw::{Buffer, fw_assert};
+use fprime_config::FwSizeType;
+use fprime_fw::{
+    Buffer, Deserialize, Endianness, FppSized, SerBufAny, Serialize, SerializeStatus, fw_assert,
+};
 use std::sync::{Mutex, PoisonError};
 
 /// Token layout: `[generation: u32][slot index: u32]`. The generation
@@ -109,6 +119,145 @@ impl BufferEscrow {
     }
 }
 
+/// An `Fw.Buffer` held in a [`BufferEscrow`], as a plain serializable value
+/// (ROADMAP item 11's buffer-carrying signal values).
+///
+/// C++ serializes an `Fw::Buffer` value as its pointer, size, context,
+/// offset and capacity (`Fw::Buffer::serializeTo`, `SERIALIZED_SIZE = 3 *
+/// sizeof(FwSizeType) + sizeof(U32) + sizeof(U8*)`); this type writes the
+/// same fields in the same order with the escrow token in the pointer slot
+/// (8 bytes, the 64-bit host pointer width), so a message carrying it is
+/// the C++ message byte for byte except for the opaque pointer value. The
+/// descriptor fields are a snapshot taken at [`EscrowedBuffer::deposit`];
+/// the buffer itself cannot change while it is escrowed.
+///
+/// Ownership moves exactly once: [`EscrowedBuffer::deposit`] moves the
+/// buffer into the escrow, and the one [`EscrowedBuffer::claim`] moves it
+/// out. The value is deliberately not `Clone`; a second claim of the same
+/// token (through a deserialized copy) asserts in [`BufferEscrow::claim`],
+/// and a value never claimed leaves its buffer in the escrow (the C++
+/// equivalent leaks the buffer). The default value is the serialized form
+/// of a default C++ `Fw::Buffer` (all zero) and is not claimable.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EscrowedBuffer {
+    token: u64,
+    size: FwSizeType,
+    context: u32,
+    offset: FwSizeType,
+    capacity: FwSizeType,
+}
+
+impl EscrowedBuffer {
+    /// Deposit `buffer` in `escrow` and describe it.
+    pub fn deposit(escrow: &BufferEscrow, buffer: Buffer) -> Self {
+        let size = buffer.size() as FwSizeType;
+        let context = buffer.context();
+        let offset = buffer.offset() as FwSizeType;
+        let capacity = buffer.capacity() as FwSizeType;
+        Self {
+            token: escrow.deposit(buffer),
+            size,
+            context,
+            offset,
+            capacity,
+        }
+    }
+
+    /// Claim the buffer back from `escrow` (the escrow this value was
+    /// deposited in). Asserts on a stale or already-claimed token, and if
+    /// the claimed buffer does not match the descriptor.
+    pub fn claim(&self, escrow: &BufferEscrow) -> Buffer {
+        let buffer = escrow.claim(self.token);
+        fw_assert!(
+            buffer.size() as FwSizeType == self.size,
+            buffer.size() as i32
+        );
+        fw_assert!(buffer.context() == self.context, buffer.context() as i32);
+        fw_assert!(
+            buffer.offset() as FwSizeType == self.offset,
+            buffer.offset() as i32
+        );
+        fw_assert!(
+            buffer.capacity() as FwSizeType == self.capacity,
+            buffer.capacity() as i32
+        );
+        buffer
+    }
+
+    /// The escrow token (serialized in the C++ pointer slot).
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    /// The buffer's window size (C++ `getSize`).
+    pub fn size(&self) -> usize {
+        self.size as usize
+    }
+
+    /// The buffer's context word (C++ `getContext`).
+    pub fn context(&self) -> u32 {
+        self.context
+    }
+
+    /// The buffer's window offset (C++ `m_offset`).
+    pub fn offset(&self) -> usize {
+        self.offset as usize
+    }
+
+    /// The buffer's capacity (C++ `getCapacity`).
+    pub fn capacity(&self) -> usize {
+        self.capacity as usize
+    }
+}
+
+impl Serialize for EscrowedBuffer {
+    fn serialize_to(&self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+        let fields: [&dyn Serialize; 5] = [
+            &self.token,
+            &self.size,
+            &self.context,
+            &self.offset,
+            &self.capacity,
+        ];
+        for field in fields {
+            let status = field.serialize_to(buf, e);
+            if !status.is_ok() {
+                return status;
+            }
+        }
+        SerializeStatus::Ok
+    }
+
+    fn serialized_size(&self) -> usize {
+        Self::SERIALIZED_SIZE
+    }
+}
+
+impl Deserialize for EscrowedBuffer {
+    fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+        let fields: [&mut dyn Deserialize; 5] = [
+            &mut self.token,
+            &mut self.size,
+            &mut self.context,
+            &mut self.offset,
+            &mut self.capacity,
+        ];
+        for field in fields {
+            let status = field.deserialize_from(buf, e);
+            if !status.is_ok() {
+                return status;
+            }
+        }
+        SerializeStatus::Ok
+    }
+}
+
+impl FppSized for EscrowedBuffer {
+    /// C++ `Fw::Buffer::SERIALIZED_SIZE` on a 64-bit host: 36.
+    const SERIALIZED_SIZE: usize =
+        3 * size_of::<FwSizeType>() + size_of::<u32>() + size_of::<u64>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +323,49 @@ mod tests {
             let _ = escrow.claim(42);
         }));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn escrowed_buffer_has_the_cpp_buffer_layout() {
+        use fprime_fw::{LinearBuffer, SerBuf};
+        let escrow = BufferEscrow::new();
+        let mut buffer = Buffer::allocate(10);
+        buffer.advance(2);
+        buffer.set_size(5);
+        buffer.set_context(0xA1B2_C3D4);
+        let value = EscrowedBuffer::deposit(&escrow, buffer);
+        assert_eq!(EscrowedBuffer::SERIALIZED_SIZE, 36);
+        assert_eq!(value.size(), 5);
+        let mut msg = LinearBuffer::<64>::new();
+        assert!(msg.serialize(&value, Endianness::Big).is_ok());
+        let mut expected = value.token().to_be_bytes().to_vec();
+        expected.extend_from_slice(&5u64.to_be_bytes()); // size
+        expected.extend_from_slice(&0xA1B2_C3D4u32.to_be_bytes()); // context
+        expected.extend_from_slice(&2u64.to_be_bytes()); // offset
+        expected.extend_from_slice(&10u64.to_be_bytes()); // capacity
+        assert_eq!(msg.as_slice(), &expected[..]);
+        let mut read_back = EscrowedBuffer::default();
+        assert!(msg.deserialize(&mut read_back, Endianness::Big).is_ok());
+        assert_eq!(read_back, value);
+        let buffer = read_back.claim(&escrow);
+        assert_eq!((buffer.offset(), buffer.size()), (2, 5));
+        assert!(escrow.is_empty());
+        // A second claim of the same token asserts.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = value.claim(&escrow);
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_escrowed_buffer_is_a_default_cpp_buffer() {
+        use fprime_fw::{LinearBuffer, SerBuf};
+        let mut msg = LinearBuffer::<64>::new();
+        assert!(
+            msg.serialize(&EscrowedBuffer::default(), Endianness::Big)
+                .is_ok()
+        );
+        assert_eq!(msg.as_slice(), &[0u8; 36][..]);
     }
 
     #[test]

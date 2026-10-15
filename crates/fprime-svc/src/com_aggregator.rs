@@ -14,32 +14,27 @@
 //! ## The aggregation state machine
 //!
 //! Upstream drives everything through the FPP state machine
-//! `AggregationMachine`; every input port is `sync` and only *sends a
+//! `Svc.AggregationMachine`; every input port is `sync` and only *sends a
 //! signal* onto the component queue, so all actions and guards run serially
-//! on the component's own thread. FPP state-machine autocoding is not
-//! ported (ROADMAP item 11), so the machine is hand-written here as
-//! [`AggregationState`] plus a private `dispatch_signal`, keeping the
-//! FPP transition table exactly:
+//! on the component's own thread. The machine is [`aggregation_machine`],
+//! an [`fpp_state_machine!`](fprime_comp::fpp_state_machine) expansion of
+//! the FPP definition (checked against the reference compiler's C++ in
+//! `fprime-comp/tests/sm_traces.rs`), and the component holds the
+//! `aggregationMachine` instance (no `priority`, default `assert` queue-full
+//! policy) with the generated component plumbing: [`ComAggregator`]
+//! implements [`aggregation_machine::Handlers`] (the C++
+//! `Svc_AggregationMachine_action_*` / `_guard_*` overrides), sends signals
+//! through an [`aggregation_machine::Sender`] and dispatches
+//! `INTERNAL_STATE_MACHINE_SIGNAL` messages to the instance.
 //!
-//! ```text
-//! WAIT_STATUS: fill    -> doHold
-//!              status  -> IS_GOOD_STATUS
-//!              timeout -> (ignored)
-//! FILL:        fill    -> IS_FULL_THEN_SEND
-//!              timeout -> if isNotEmpty { doSend } -> WAIT_STATUS
-//!              status  -> assertNoStatus
-//! IS_FULL_THEN_SEND:   isFull   ? { doSplitHold, doSend } -> WAIT_STATUS : WILL_FILL_THEN_SEND
-//! WILL_FILL_THEN_SEND: willFill ? { doFill, doSend } -> WAIT_STATUS : { doFill } -> FILL
-//! IS_GOOD_STATUS:      isGood   ? { doClear } -> SPAN_CHECK : { doNoteFailure } -> WAIT_STATUS
-//! SPAN_CHECK:          isSpanFull ? { doSend } -> WAIT_STATUS : FILL
-//! ```
-//!
-//! The signal message on the queue mirrors the C++ generated
-//! `sendSignalStart`: `[INTERNAL_STATE_MACHINE_SIGNAL i32][port 0 i16]
-//! [smId i32][signal i32][signal data]`, sent at priority 0 with the
-//! default `assert` overflow policy. The `Svc.ComDataContextPair` data of a
-//! `fill` signal carries the buffer as a [`BufferEscrow`] token where C++
-//! serializes the `Fw::Buffer` pointer.
+//! The queue message is the C++ one byte for byte:
+//! `[INTERNAL_STATE_MACHINE_SIGNAL = 1 i32][port 0 i16][smId 0 i32]
+//! [signal i32][value]` with the signals `fill = 1`, `status = 2`,
+//! `timeout = 3` (`fpp-to-cpp` numbers them in name order). The `fill`
+//! value is a [`ComDataContextPair`]: its `Fw.Buffer` is an
+//! [`EscrowedBuffer`], serialized in the C++ `Fw::Buffer` layout (pointer,
+//! size, context, offset, capacity) with the escrow token in the pointer
+//! slot, so the message is 65 bytes as in C++.
 //!
 //! ## Spanning (`configure(true)`)
 //!
@@ -52,6 +47,11 @@
 //!
 //! ## Deviations (documented)
 //!
+//! - The `fill` signal's buffer rides the queue in a [`BufferEscrow`]
+//!   (`dataIn` deposits it, the one action that takes it — `doHold`,
+//!   `doSplitHold` or `doFill`, every `fill` transition runs exactly one —
+//!   claims it), where C++ copies the `Fw::Buffer` descriptor and the
+//!   pointer.
 //! - The aggregation store is owned storage moved out on `dataOut` and back
 //!   on `dataReturnIn` (the C++ atomic `m_bufferState` + member array). C++
 //!   writes into the member array regardless of ownership; here a write
@@ -59,15 +59,16 @@
 //!   happen if a downstream component reports status before returning the
 //!   buffer, which the communication adapter protocol forbids).
 //! - The state the C++ touches only from the component thread lives behind
-//!   a `Mutex` that the dispatching thread holds for a whole transition
-//!   (including its port calls); it is never contended in a deployment.
+//!   a `Mutex` that each action and guard holds while it runs (including
+//!   its port calls); it is never contended in a deployment.
 
 use crate::ccsds::idle_packet;
 use crate::ccsds::types::{AGGREGATION_SIZE, SpacePacketHeader, tm_subfields};
+use fprime_comp::sm::{self, SmSender};
 use fprime_comp::{
     ActiveBase, ActiveComponent, BufferEscrow, ComDataWithContextPort, ComponentDispatch,
-    MsgDispatchStatus, OutputPort, PortRef, QueueFullPolicy, SchedPort, SuccessConditionPort,
-    input_port_adapter, msg,
+    EscrowedBuffer, MsgDispatchStatus, OutputPort, PortRef, QueueFullPolicy, SchedPort,
+    SuccessConditionPort, component_msg_types, component_sm_ids, input_port_adapter, msg,
 };
 use fprime_config::{
     FW_COM_BUFFER_MAX_SIZE, FW_FILE_BUFFER_MAX_SIZE, FwEnumStoreType, FwIndexType,
@@ -75,11 +76,11 @@ use fprime_config::{
 };
 use fprime_fw::buffer::BufferStorage;
 use fprime_fw::{
-    Buffer, Deserialize, Endianness, ExtBuf, FrameContext, LinearBuffer, SerBuf, SerBufAny,
-    Serialize, Success, fw_assert,
+    Buffer, Deserialize, Endianness, ExtBuf, FppSized, FrameContext, SerBufAny, Serialize,
+    SerializeStatus, Success, fw_assert,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Aggregation capacity without spanning
 /// (`ComAggregator::NON_SPANNING_CAPACITY`): room is left for the TM
@@ -98,49 +99,173 @@ const _: () = assert!(AGGREGATION_SIZE > idle_packet::MIN_SIZE);
 /// (`ComAggregator::FHP_UNSET`).
 const FHP_UNSET: u16 = 0xFFFF;
 
-/// The generated message type for state-machine signals (the only message
-/// type: every port is sync).
-pub const MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL: FwEnumStoreType = 1;
+// ---------------------------------------------------------------------------
+// Svc.ComDataContextPair as a signal value
+// ---------------------------------------------------------------------------
 
-/// `SmId::aggregationMachine` — the single state-machine instance.
-pub const SM_ID_AGGREGATION_MACHINE: FwEnumStoreType = 0;
-
-/// `Svc_AggregationMachine::Signal` values (the generated enum reserves 0
-/// for the initial transition; signals follow in declaration order).
-pub const SIGNAL_TIMEOUT: FwEnumStoreType = 1;
-/// `fill: Svc.ComDataContextPair`.
-pub const SIGNAL_FILL: FwEnumStoreType = 2;
-/// `status: Fw.Success`.
-pub const SIGNAL_STATUS: FwEnumStoreType = 3;
-
-/// Signal priority (an instance without a `priority` clause sends at 0).
-const SIGNAL_PRIORITY: FwQueuePriorityType = 0;
-
-/// Queue message size: envelope + smId + signal + the largest signal data
-/// (the `fill` pair: an 8-byte escrow token + a `FrameContext`).
-pub const MSG_SIZE: FwSizeType = (msg::ENVELOPE_HEADER_SIZE
-    + 2 * size_of::<FwEnumStoreType>()
-    + size_of::<u64>()
-    + FrameContext::SERIALIZED_SIZE) as FwSizeType;
-
-type MsgBuffer = LinearBuffer<{ MSG_SIZE as usize }>;
-
-/// States of `Svc.AggregationMachine` (choices are transient and never
-/// observable).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AggregationState {
-    /// Waiting for a com status from downstream (initial state).
-    WaitStatus,
-    /// Aggregation in progress.
-    Fill,
+/// `Svc.ComDataContextPair` (`Svc/Ports/CommsPorts/CommsPorts.fpp`): a
+/// buffer and its frame context, the value of the `fill` signal.
+///
+/// The `Fw.Buffer` member is an [`EscrowedBuffer`] (the buffer itself is
+/// in the component's [`BufferEscrow`] while the signal is queued), so the
+/// value serializes like the C++ struct: the 36-byte `Fw::Buffer` layout,
+/// then the 15-byte `ComCfg.FrameContext`. Not `Clone`: the buffer is
+/// claimed exactly once.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ComDataContextPair {
+    /// `data: Fw.Buffer`.
+    pub data: EscrowedBuffer,
+    /// `context: ComCfg.FrameContext`.
+    pub context: FrameContext,
 }
 
-/// A buffer with its frame context (`Svc.ComDataContextPair`).
+impl Serialize for ComDataContextPair {
+    fn serialize_to(&self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+        let status = self.data.serialize_to(buf, e);
+        if !status.is_ok() {
+            return status;
+        }
+        self.context.serialize_to(buf, e)
+    }
+
+    fn serialized_size(&self) -> usize {
+        <Self as FppSized>::SERIALIZED_SIZE
+    }
+}
+
+impl Deserialize for ComDataContextPair {
+    fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
+        let status = self.data.deserialize_from(buf, e);
+        if !status.is_ok() {
+            return status;
+        }
+        self.context.deserialize_from(buf, e)
+    }
+}
+
+impl FppSized for ComDataContextPair {
+    /// C++ `Svc::ComDataContextPair::SERIALIZED_SIZE`: 36 + 15 = 51.
+    const SERIALIZED_SIZE: usize =
+        <EscrowedBuffer as FppSized>::SERIALIZED_SIZE + <FrameContext as FppSized>::SERIALIZED_SIZE;
+}
+
+// ---------------------------------------------------------------------------
+// Svc.AggregationMachine
+// ---------------------------------------------------------------------------
+
+/// `Svc.AggregationMachine` (C++ `Svc::AggregationMachineStateMachineBase`
+/// and `Svc::AggregationMachine_State`), from `ComAggregator.fpp`:
+///
+/// ```text
+/// WAIT_STATUS: fill    -> doHold
+///              status  -> IS_GOOD_STATUS
+///              timeout -> (ignored)
+/// FILL:        fill    -> IS_FULL_THEN_SEND
+///              timeout -> if isNotEmpty { doSend } -> WAIT_STATUS
+///              status  -> assertNoStatus
+/// IS_FULL_THEN_SEND:   isFull   ? { doSplitHold, doSend } -> WAIT_STATUS : WILL_FILL_THEN_SEND
+/// WILL_FILL_THEN_SEND: willFill ? { doFill, doSend } -> WAIT_STATUS : { doFill } -> FILL
+/// IS_GOOD_STATUS:      isGood   ? { doClear } -> SPAN_CHECK : { doNoteFailure } -> WAIT_STATUS
+/// SPAN_CHECK:          isSpanFull ? { doSend } -> WAIT_STATUS : FILL
+/// ```
+#[allow(non_snake_case)]
+pub mod aggregation_machine {
+    use super::ComDataContextPair;
+    use fprime_fw::Success;
+
+    fprime_comp::fpp_state_machine! {
+        /// Aggregation state machine
+        state machine AggregationMachine: u8 {
+            actions {
+                /// Clear the buffer fill state, last status
+                doClear => action_doClear,
+                /// Fill the buffer with data
+                doFill => action_doFill (ref ComDataContextPair),
+                /// Send the buffer data
+                doSend => action_doSend,
+                /// Hold a buffer
+                doHold => action_doHold (ref ComDataContextPair),
+                /// Hold a buffer, first splitting its leading bytes into the
+                /// remaining frame space when spanning
+                doSplitHold => action_doSplitHold (ref ComDataContextPair),
+                /// Record that the last frame was not acknowledged
+                doNoteFailure => action_doNoteFailure,
+                /// Assert no status when in fill state
+                assertNoStatus => action_assertNoStatus,
+            }
+            guards {
+                /// Check if the aggregation buffer is full, i.e. cannot
+                /// accept the incoming buffer
+                isFull => guard_isFull (ref ComDataContextPair),
+                /// Check if the aggregation will fill, i.e. the incoming
+                /// buffer will exactly fit
+                willFill => guard_willFill (ref ComDataContextPair),
+                /// Check if not empty
+                isNotEmpty => guard_isNotEmpty,
+                /// Check if last status is good
+                isGood => guard_isGood (val Success),
+                /// Check if the aggregation buffer was completely filled
+                /// from held continuation data
+                isSpanFull => guard_isSpanFull,
+            }
+            signals {
+                /// Fill buffer signal
+                fill = 1 => send_signal_fill (ref ComDataContextPair) {
+                    WAIT_STATUS => do { doHold };
+                    FILL => enter IS_FULL_THEN_SEND;
+                }
+                /// Status return
+                status = 2 => send_signal_status (val Success) {
+                    WAIT_STATUS => enter IS_GOOD_STATUS;
+                    FILL => do { assertNoStatus };
+                }
+                /// Rate-group driven timeout signal
+                timeout = 3 => send_signal_timeout {
+                    FILL => if isNotEmpty do { doSend } enter WAIT_STATUS;
+                }
+            }
+            initial enter WAIT_STATUS;
+            states {
+                /// Buffer aggregation in-progress
+                state FILL = 1 {}
+                /// Wait for com status from downstream
+                state WAIT_STATUS = 2 {}
+            }
+            choices {
+                choice IS_FULL_THEN_SEND (ref ComDataContextPair) {
+                    if isFull do { doSplitHold, doSend } enter WAIT_STATUS
+                    else enter WILL_FILL_THEN_SEND
+                }
+                choice WILL_FILL_THEN_SEND (ref ComDataContextPair) {
+                    if willFill do { doFill, doSend } enter WAIT_STATUS
+                    else do { doFill } enter FILL
+                }
+                choice IS_GOOD_STATUS (val Success) {
+                    if isGood do { doClear } enter SPAN_CHECK
+                    else do { doNoteFailure } enter WAIT_STATUS
+                }
+                choice SPAN_CHECK (val Success) {
+                    if isSpanFull do { doSend } enter WAIT_STATUS else enter FILL
+                }
+            }
+        }
+    }
+}
+
+use aggregation_machine::{Signal as AggSignal, State as AggregationState};
+
+/// Queue message size: the largest `aggregationMachine` signal message (the
+/// `fill` signal: 6-byte envelope + smId + signal + a 51-byte
+/// [`ComDataContextPair`]), as the C++ `ComponentIpcSerializableBuffer`.
+pub const MSG_SIZE: FwSizeType = MSG_BYTES as FwSizeType;
+
+const MSG_BYTES: usize = aggregation_machine::StateMachine::SIGNAL_MSG_SIZE;
+
+/// A buffer with its frame context, claimed back from the escrow.
 type Pair = (Buffer, FrameContext);
 
 /// State touched only by the component thread (the C++ plain members).
 struct AggState {
-    sm_state: AggregationState,
     /// `m_frameSerializer.getSize()` — bytes aggregated so far.
     fill: usize,
     /// Context for the current aggregate.
@@ -175,6 +300,8 @@ pub struct ComAggregator {
     pub data_return_out: OutputPort<dyn ComDataWithContextPort>,
     /// `comStatusOut` — ready-for-more status upstream.
     pub com_status_out: OutputPort<dyn SuccessConditionPort>,
+    /// `state machine instance aggregationMachine: AggregationMachine`.
+    aggregation_machine: aggregation_machine::StateMachine,
     /// Escrow for buffers riding `fill` signals.
     escrow: BufferEscrow,
     /// The aggregation store: `Some` is the C++ `OWNED` state. Separate
@@ -190,21 +317,42 @@ pub struct ComAggregator {
     state: Mutex<AggState>,
 }
 
+component_msg_types! {
+    /// The generated queue message types (`INTERNAL_STATE_MACHINE_SIGNAL`
+    /// is the only one: every port is sync).
+    impl ComAggregator {
+        /// `INTERNAL_STATE_MACHINE_SIGNAL`.
+        MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL,
+    }
+}
+
+component_sm_ids! {
+    /// C++ `SmId`.
+    impl ComAggregator {
+        /// `SmId::aggregationMachine`.
+        SM_ID_AGGREGATION_MACHINE,
+    }
+}
+
 impl ComAggregator {
-    /// Construct the component (spanning disabled). Create its queue with
-    /// [`ComAggregator::create_queue`] before starting it.
+    /// `aggregationMachine` priority (the instance has no `priority`
+    /// clause).
+    const AGGREGATION_MACHINE_PRIORITY: FwQueuePriorityType = 0;
+
+    /// Construct the component (spanning disabled). Initialize it with
+    /// [`ComAggregator::create_queue`] before use.
     pub fn new(name: &str) -> Arc<Self> {
         Arc::new(Self {
             active: ActiveBase::new(name),
             data_out: OutputPort::new(),
             data_return_out: OutputPort::new(),
             com_status_out: OutputPort::new(),
+            aggregation_machine: aggregation_machine::StateMachine::new(),
             escrow: BufferEscrow::new(),
             store: Mutex::new(Some(vec![0u8; AGGREGATION_SIZE].into_boxed_slice())),
             allow_timeout: AtomicBool::new(false),
             spanning: AtomicBool::new(false),
             state: Mutex::new(AggState {
-                sm_state: AggregationState::WaitStatus,
                 fill: 0,
                 last_context: FrameContext::default(),
                 held: None,
@@ -220,8 +368,13 @@ impl ComAggregator {
         })
     }
 
-    /// Create the component queue with `depth` messages of [`MSG_SIZE`].
+    /// The generated `init(queueDepth, instance)`: initialize the
+    /// `aggregationMachine` instance (its initial transition enters
+    /// `WAIT_STATUS`), then create the component queue with `depth`
+    /// messages of [`MSG_SIZE`].
     pub fn create_queue(&self, depth: FwSizeType) {
+        self.aggregation_machine
+            .init(Self::SM_ID_AGGREGATION_MACHINE, self);
         self.active.queued.create_queue(depth, MSG_SIZE);
     }
 
@@ -230,7 +383,7 @@ impl ComAggregator {
     /// spanning, every header offset must be representable as an 11-bit
     /// First Header Pointer distinct from the reserved values.
     pub fn configure(&self, spanning_enabled: bool) {
-        let mut st = self.state.lock().unwrap();
+        let mut st = self.lock_state();
         fw_assert!(st.fill == 0, st.fill as i32);
         if spanning_enabled {
             fw_assert!(
@@ -248,25 +401,32 @@ impl ComAggregator {
     }
 
     /// The current state-machine state (the generated
-    /// `aggregationMachine_getState`).
+    /// `aggregationMachine_getState`; `__FPRIME_UNINITIALIZED` before
+    /// [`ComAggregator::create_queue`]).
     pub fn aggregation_state(&self) -> AggregationState {
-        self.state.lock().unwrap().sm_state
+        self.aggregation_machine.get_state()
     }
 
     /// Bytes aggregated so far (`m_frameSerializer.getSize()`).
     pub fn aggregate_size(&self) -> usize {
-        self.state.lock().unwrap().fill
+        self.lock_state().fill
     }
 
     /// The context of the current aggregate (`m_lastContext`).
     pub fn last_context(&self) -> FrameContext {
-        self.state.lock().unwrap().last_context
+        self.lock_state().last_context
     }
 
     /// True while the aggregation store is held by this component (C++
     /// `m_bufferState == OWNED`).
     pub fn owns_aggregate(&self) -> bool {
         self.store.lock().unwrap().is_some()
+    }
+
+    /// Number of `fill` buffers in flight on the queue (deposited by
+    /// `dataIn`, not yet taken by the state machine).
+    pub fn escrowed_buffers(&self) -> usize {
+        self.escrow.len()
     }
 
     /// Bytes of the current aggregate (introspection; the store must be
@@ -278,6 +438,22 @@ impl ComAggregator {
             .as_ref()
             .map(|s| s[..fill].to_vec())
             .unwrap_or_default()
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, AggState> {
+        self.state.lock().unwrap()
+    }
+
+    /// The generated `aggregationMachine_sendSignal_*` functions: priority
+    /// 0, non-blocking, assert on a full queue.
+    fn aggregation_machine_signals(&self) -> aggregation_machine::Sender<'_, MSG_BYTES> {
+        aggregation_machine::Sender(SmSender::new(
+            &self.active.queued,
+            Self::MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL,
+            Self::SM_ID_AGGREGATION_MACHINE,
+            Self::AGGREGATION_MACHINE_PRIORITY,
+            QueueFullPolicy::Assert,
+        ))
     }
 
     // -- Input ports ----------------------------------------------------------
@@ -302,13 +478,11 @@ impl ComAggregator {
             spanning || data.size() <= NON_SPANNING_CAPACITY,
             data.size() as i32
         );
-        let token = self.escrow.deposit(data);
-        let mut buf = Self::signal_start(SIGNAL_FILL);
-        let status = buf.serialize_u64_be(token);
-        fw_assert!(status.is_ok(), status as i32);
-        let status = context.serialize_to(&mut buf, Endianness::Big);
-        fw_assert!(status.is_ok(), status as i32);
-        self.signal_finish(&buf);
+        let pair = ComDataContextPair {
+            data: EscrowedBuffer::deposit(&self.escrow, data),
+            context: *context,
+        };
+        self.aggregation_machine_signals().send_signal_fill(&pair);
     }
 
     fn data_return_in_handler(
@@ -325,10 +499,8 @@ impl ComAggregator {
     }
 
     fn com_status_in_handler(&self, _port_num: FwIndexType, condition: Success) {
-        let mut buf = Self::signal_start(SIGNAL_STATUS);
-        let status = condition.serialize_to(&mut buf, Endianness::Big);
-        fw_assert!(status.is_ok(), status as i32);
-        self.signal_finish(&buf);
+        self.aggregation_machine_signals()
+            .send_signal_status(condition);
     }
 
     fn timeout_handler(&self, _port_num: FwIndexType, _context: u32) {
@@ -336,89 +508,11 @@ impl ComAggregator {
         // processed (FILL); in WAIT_STATUS they would be discarded anyway
         // and could overflow a finite queue behind a slow downstream.
         if self.allow_timeout.load(Ordering::SeqCst) {
-            let buf = Self::signal_start(SIGNAL_TIMEOUT);
-            self.signal_finish(&buf);
+            self.aggregation_machine_signals().send_signal_timeout();
         }
     }
 
-    /// Generated `sendSignalStart`: the envelope, the SM id and the signal.
-    fn signal_start(signal: FwEnumStoreType) -> MsgBuffer {
-        let mut buf = MsgBuffer::new();
-        let status =
-            msg::write_envelope_header(&mut buf, MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL, 0);
-        fw_assert!(status.is_ok(), status as i32);
-        let status = buf.serialize_i32_be(SM_ID_AGGREGATION_MACHINE);
-        fw_assert!(status.is_ok(), status as i32);
-        let status = buf.serialize_i32_be(signal);
-        fw_assert!(status.is_ok(), status as i32);
-        buf
-    }
-
-    /// Generated `aggregationMachine_sendSignalFinish`: priority 0,
-    /// non-blocking, assert on overflow.
-    fn signal_finish(&self, buf: &MsgBuffer) {
-        let _ = self
-            .active
-            .queued
-            .send_message(buf, SIGNAL_PRIORITY, QueueFullPolicy::Assert);
-    }
-
-    // -- State machine --------------------------------------------------------
-
-    /// Run one signal through the state machine (component thread).
-    fn dispatch_signal(&self, signal: Signal) {
-        let mut st = self.state.lock().unwrap();
-        match (st.sm_state, signal) {
-            (AggregationState::WaitStatus, Signal::Fill(pair)) => self.do_hold(&mut st, pair),
-            (AggregationState::WaitStatus, Signal::Status(status)) => {
-                // IS_GOOD_STATUS
-                if status == Success::Success {
-                    self.do_clear(&mut st);
-                    // SPAN_CHECK
-                    if st.spanning && st.fill == st.capacity {
-                        self.do_send(&mut st);
-                        st.sm_state = AggregationState::WaitStatus;
-                    } else {
-                        st.sm_state = AggregationState::Fill;
-                    }
-                } else {
-                    st.last_frame_lost = true; // doNoteFailure
-                    st.sm_state = AggregationState::WaitStatus;
-                }
-            }
-            (AggregationState::WaitStatus, Signal::Timeout) => {}
-            (AggregationState::Fill, Signal::Fill(pair)) => {
-                let size = pair.0.size();
-                let remaining = Self::remaining_capacity(&st);
-                if remaining < size {
-                    // IS_FULL_THEN_SEND: isFull
-                    self.do_split_hold(&mut st, pair);
-                    self.do_send(&mut st);
-                    st.sm_state = AggregationState::WaitStatus;
-                } else if remaining == size {
-                    // WILL_FILL_THEN_SEND: willFill
-                    self.do_fill(&mut st, pair);
-                    self.do_send(&mut st);
-                    st.sm_state = AggregationState::WaitStatus;
-                } else {
-                    self.do_fill(&mut st, pair);
-                    st.sm_state = AggregationState::Fill;
-                }
-            }
-            (AggregationState::Fill, Signal::Timeout) => {
-                // Carried-over idle bytes are not payload: an aggregate
-                // holding only those is empty for timeout purposes.
-                if st.fill > st.leading_idle_count {
-                    self.do_send(&mut st);
-                    st.sm_state = AggregationState::WaitStatus;
-                }
-            }
-            (AggregationState::Fill, Signal::Status(_)) => {
-                // assertNoStatus: status is not possible while filling.
-                fw_assert!(false);
-            }
-        }
-    }
+    // -- Action and guard bodies ----------------------------------------------
 
     /// `doClear`: clear the fill state, carry spanned idle bytes and refill
     /// from the held buffer.
@@ -496,6 +590,14 @@ impl ComAggregator {
             }
         }
     }
+
+    /// Take a `fill` value's buffer out of the escrow (exactly once per
+    /// `fill` signal: by `doHold`, `doSplitHold` or `doFill`).
+    fn claim(&self, value: &ComDataContextPair) -> Pair {
+        (value.data.claim(&self.escrow), value.context)
+    }
+
+    // -- Helpers --------------------------------------------------------------
 
     fn remaining_capacity(st: &AggState) -> usize {
         fw_assert!(st.fill <= st.capacity, st.fill as i32);
@@ -620,11 +722,95 @@ impl ComAggregator {
     }
 }
 
-/// A decoded state-machine signal.
-enum Signal {
-    Timeout,
-    Fill(Pair),
-    Status(Success),
+/// The C++ `Svc_AggregationMachine_action_*` / `_guard_*` overrides. Each
+/// runs on the component thread and locks the component-thread state for
+/// its own duration.
+impl aggregation_machine::Handlers for ComAggregator {
+    fn action_doClear(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) {
+        let mut st = self.lock_state();
+        self.do_clear(&mut st);
+    }
+
+    fn action_doFill(
+        &self,
+        _sm_id: FwEnumStoreType,
+        _signal: AggSignal,
+        value: &ComDataContextPair,
+    ) {
+        let pair = self.claim(value);
+        let mut st = self.lock_state();
+        self.do_fill(&mut st, pair);
+    }
+
+    fn action_doSend(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) {
+        let mut st = self.lock_state();
+        self.do_send(&mut st);
+    }
+
+    fn action_doHold(
+        &self,
+        _sm_id: FwEnumStoreType,
+        _signal: AggSignal,
+        value: &ComDataContextPair,
+    ) {
+        let pair = self.claim(value);
+        let mut st = self.lock_state();
+        self.do_hold(&mut st, pair);
+    }
+
+    fn action_doSplitHold(
+        &self,
+        _sm_id: FwEnumStoreType,
+        _signal: AggSignal,
+        value: &ComDataContextPair,
+    ) {
+        let pair = self.claim(value);
+        let mut st = self.lock_state();
+        self.do_split_hold(&mut st, pair);
+    }
+
+    fn action_doNoteFailure(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) {
+        self.lock_state().last_frame_lost = true;
+    }
+
+    fn action_assertNoStatus(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) {
+        // Status is not possible in this state, confirm by assertion.
+        fw_assert!(false);
+    }
+
+    fn guard_isFull(
+        &self,
+        _sm_id: FwEnumStoreType,
+        _signal: AggSignal,
+        value: &ComDataContextPair,
+    ) -> bool {
+        Self::remaining_capacity(&self.lock_state()) < value.data.size()
+    }
+
+    fn guard_willFill(
+        &self,
+        _sm_id: FwEnumStoreType,
+        _signal: AggSignal,
+        value: &ComDataContextPair,
+    ) -> bool {
+        Self::remaining_capacity(&self.lock_state()) == value.data.size()
+    }
+
+    fn guard_isNotEmpty(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) -> bool {
+        // Carried-over idle bytes are not payload: an aggregate holding
+        // only those is empty for timeout purposes.
+        let st = self.lock_state();
+        st.fill > st.leading_idle_count
+    }
+
+    fn guard_isGood(&self, _sm_id: FwEnumStoreType, _signal: AggSignal, value: Success) -> bool {
+        value == Success::Success
+    }
+
+    fn guard_isSpanFull(&self, _sm_id: FwEnumStoreType, _signal: AggSignal) -> bool {
+        let st = self.lock_state();
+        st.spanning && st.fill == st.capacity
+    }
 }
 
 impl SuccessConditionPort for ComAggregator {
@@ -669,44 +855,20 @@ impl ComponentDispatch for ComAggregator {
         if !msg::read_port_num(buf, &mut port_num).is_ok() {
             return MsgDispatchStatus::Error;
         }
-        if msg_type != MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL {
-            return MsgDispatchStatus::Error;
-        }
-        let mut sm_id: FwEnumStoreType = 0;
-        let mut signal: FwEnumStoreType = 0;
-        if !buf.deserialize_i32_be(&mut sm_id).is_ok()
-            || !buf.deserialize_i32_be(&mut signal).is_ok()
-        {
-            return MsgDispatchStatus::Error;
-        }
-        // C++ parity: the generated dispatch asserts a known SM id.
-        fw_assert!(sm_id == SM_ID_AGGREGATION_MACHINE, sm_id);
-        let signal = match signal {
-            SIGNAL_TIMEOUT => Signal::Timeout,
-            SIGNAL_FILL => {
-                let mut token = 0u64;
-                let mut context = FrameContext::default();
-                if !buf.deserialize_u64_be(&mut token).is_ok()
-                    || !context.deserialize_from(buf, Endianness::Big).is_ok()
-                {
-                    return MsgDispatchStatus::Error;
+        match msg_type {
+            Self::MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL => {
+                let (sm_id, signal) = sm::read_signal_header(buf);
+                match sm_id {
+                    Self::SM_ID_AGGREGATION_MACHINE => {
+                        self.aggregation_machine.dispatch_signal(self, signal, buf)
+                    }
+                    // C++ parity: the generated dispatch asserts a known SM id.
+                    _ => fw_assert!(false, sm_id),
                 }
-                Signal::Fill((self.escrow.claim(token), context))
+                MsgDispatchStatus::Ok
             }
-            SIGNAL_STATUS => {
-                let mut condition = Success::Failure;
-                if !condition.deserialize_from(buf, Endianness::Big).is_ok() {
-                    return MsgDispatchStatus::Error;
-                }
-                Signal::Status(condition)
-            }
-            other => {
-                fw_assert!(false, other);
-                return MsgDispatchStatus::Error;
-            }
-        };
-        self.dispatch_signal(signal);
-        MsgDispatchStatus::Ok
+            _ => MsgDispatchStatus::Error,
+        }
     }
 
     /// C++ `preamble()`: announce readiness upstream.
@@ -1273,7 +1435,7 @@ mod tests {
     fn nominal_initial() {
         let mut t = Tester::new(1);
         t.test_initial();
-        assert_eq!(t.comp.aggregation_state(), AggregationState::Fill);
+        assert_eq!(t.comp.aggregation_state(), AggregationState::FILL);
     }
 
     #[test]
@@ -1642,19 +1804,138 @@ mod tests {
         let _ = t.dispatch_one();
     }
 
-    /// Constants match upstream.
+    /// Constants match upstream (the message size is the C++
+    /// `ComponentIpcSerializableBuffer::SERIALIZATION_SIZE`: 6 + 2 * 4 +
+    /// `ComDataContextPair::SERIALIZED_SIZE`).
     #[test]
     fn capacities_match_cpp() {
         assert_eq!(AGGREGATION_SIZE, 1016);
         assert_eq!(NON_SPANNING_CAPACITY, 1009);
-        assert_eq!(MSG_SIZE, 37);
+        assert_eq!(<ComDataContextPair as FppSized>::SERIALIZED_SIZE, 36 + 15);
+        assert_eq!(MSG_SIZE, 65);
     }
 
-    /// The signal message envelope, byte for byte.
+    /// Receive the next raw queue message: (bytes, priority).
+    fn take_raw(comp: &ComAggregator) -> (Vec<u8>, FwQueuePriorityType) {
+        let mut bytes = vec![0u8; MSG_BYTES];
+        let mut actual: FwSizeType = 0;
+        let mut priority: FwQueuePriorityType = 0;
+        let status = comp.active.queued.queue().receive(
+            &mut bytes,
+            BlockingType::NonBlocking,
+            &mut actual,
+            &mut priority,
+        );
+        assert_eq!(status, fprime_os::queue::Status::OpOk);
+        bytes.truncate(actual as usize);
+        (bytes, priority)
+    }
+
+    /// Put a raw message back on the queue (priority 0).
+    fn put_raw(comp: &ComAggregator, bytes: &[u8]) {
+        let mut buf = fprime_fw::LinearBuffer::<MSG_BYTES>::new();
+        assert!(
+            fprime_fw::SerBuf::serialize_bytes(
+                &mut buf,
+                bytes,
+                fprime_fw::LengthMode::OmitLength,
+                Endianness::Big
+            )
+            .is_ok()
+        );
+        let status = comp
+            .active
+            .queued
+            .send_message(&buf, 0, QueueFullPolicy::Assert);
+        assert_eq!(status, fprime_os::queue::Status::OpOk);
+    }
+
+    /// The signal messages are the generated C++ ones byte for byte:
+    /// `[INTERNAL_STATE_MACHINE_SIGNAL 1][port 0][smId 0][signal][value]`,
+    /// signals numbered in name order (`fill` 1, `status` 2, `timeout` 3),
+    /// priority 0; the `fill` value is the `Fw::Buffer` layout with the
+    /// escrow token in the pointer slot, then the frame context.
     #[test]
-    fn signal_envelope_bytes() {
-        let buf = ComAggregator::signal_start(SIGNAL_STATUS);
-        assert_eq!(buf.as_slice(), &[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    fn signal_messages_match_cpp() {
+        const HEADER: [u8; 10] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        let comp = ComAggregator::new("agg");
+        comp.create_queue(4);
+        let h = Arc::new(Harness::default());
+        comp.data_out.connect(h.clone(), 0);
+        comp.data_return_out.connect(h.clone(), 1);
+        comp.com_status_out.connect(h.clone(), 0);
+        assert_eq!(comp.aggregation_state(), AggregationState::WAIT_STATUS);
+
+        let p = comp.com_status_in(0);
+        p.target.invoke(p.port_num, &mut Success::Success);
+        let (bytes, priority) = take_raw(&comp);
+        assert_eq!(priority, 0);
+        assert_eq!(bytes, [&HEADER[..], &[0, 0, 0, 2, 1]].concat());
+        put_raw(&comp, &bytes);
+        let dispatch = |comp: &ComAggregator| {
+            comp.active
+                .queued
+                .do_dispatch(comp, BlockingType::NonBlocking)
+        };
+        assert_eq!(dispatch(&comp), MsgDispatchStatus::Ok);
+        assert_eq!(comp.aggregation_state(), AggregationState::FILL);
+
+        let mut data = Buffer::allocate(5);
+        data.data_mut().copy_from_slice(&[1, 2, 3, 4, 5]);
+        data.set_context(0x0102_0304);
+        let context = FrameContext {
+            apid: fprime_fw::Apid::FwPacketTelem,
+            sequence_count: 0x1234,
+            ..FrameContext::default()
+        };
+        let p = comp.data_in(0);
+        p.target.invoke(p.port_num, data, &context);
+        assert_eq!(comp.escrowed_buffers(), 1);
+        let (bytes, priority) = take_raw(&comp);
+        assert_eq!(priority, 0);
+        assert_eq!(bytes.len(), MSG_BYTES);
+        let mut context_bytes = fprime_fw::LinearBuffer::<32>::new();
+        assert!(
+            context
+                .serialize_to(&mut context_bytes, Endianness::Big)
+                .is_ok()
+        );
+        let token = u64::from_be_bytes(bytes[14..22].try_into().unwrap());
+        let mut expected = HEADER.to_vec();
+        expected.extend_from_slice(&[0, 0, 0, 1]); // fill
+        expected.extend_from_slice(&token.to_be_bytes()); // pointer slot
+        expected.extend_from_slice(&5u64.to_be_bytes()); // size
+        expected.extend_from_slice(&0x0102_0304u32.to_be_bytes()); // context
+        expected.extend_from_slice(&0u64.to_be_bytes()); // offset
+        expected.extend_from_slice(&5u64.to_be_bytes()); // capacity
+        expected.extend_from_slice(fprime_fw::SerBuf::as_slice(&context_bytes));
+        assert_eq!(bytes, expected);
+        put_raw(&comp, &bytes);
+        assert_eq!(dispatch(&comp), MsgDispatchStatus::Ok);
+        assert_eq!(comp.escrowed_buffers(), 0);
+        assert_eq!(comp.aggregate_bytes(), [1, 2, 3, 4, 5]);
+        assert_eq!(comp.last_context(), context);
+        assert_eq!(h.data_return.lock().unwrap()[0].2, 0x0102_0304);
+
+        let p = comp.timeout(0);
+        p.target.invoke(p.port_num, 0);
+        let (bytes, priority) = take_raw(&comp);
+        assert_eq!(priority, 0);
+        assert_eq!(bytes, [&HEADER[..], &[0, 0, 0, 3]].concat());
+    }
+
+    /// Every `fill` signal takes its buffer out of the escrow exactly once,
+    /// on every path through the machine.
+    #[test]
+    fn fill_buffers_leave_the_escrow() {
+        let mut t = Tester::new(18);
+        t.test_initial();
+        for _ in 0..20 {
+            let _ = t.test_fill(false);
+            assert_eq!(t.comp.escrowed_buffers(), 0);
+        }
+        t.test_full();
+        assert_eq!(t.comp.escrowed_buffers(), 0);
     }
 
     /// The active task runs the preamble and dispatches signals.

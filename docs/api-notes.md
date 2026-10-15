@@ -2372,18 +2372,33 @@ as every comms port) and `SdlsKeyPort`. `fprime_config::sdls` holds `SdlsCfg`
 `SA_ROUTER_MAX_OUTSTANDING_BUFFERS`, the `SaRouterPorts` values and `SA_MAP` as
 `(sa, port)` pairs).
 
-**`com_aggregator::ComAggregator`** (active). `new`, `create_queue(depth)`,
-`configure(spanning)`, ports `data_in`/`data_return_in`/`com_status_in`/`timeout`,
-outputs `data_out`/`data_return_out`/`com_status_out`; `preamble` emits SUCCESS.
-Introspection: `aggregation_state`, `aggregate_size`, `last_context`,
-`owns_aggregate`, `aggregate_bytes`. `NON_SPANNING_CAPACITY` 1009, `MSG_SIZE` 37.
-Deviations: the FPP `AggregationMachine` is hand-written (FPP state-machine
-autocoding is item 11) with the FPP transition table; its signals use the
-generated envelope `[1 i32][0 i16][smId 0 i32][signal i32][data]` at priority 0
-with the assert policy, `fill` carrying a `BufferEscrow` token + `FrameContext`.
-The aggregate store is owned storage moved out on `dataOut`; writing to it while
-it is downstream asserts (C++ would write into the in-flight buffer). Component-
-thread state sits behind a mutex held for a whole transition.
+**`com_aggregator::ComAggregator`** (active). `new`, `create_queue(depth)` (the
+generated `init`: initializes the state machine instance, then creates the
+queue), `configure(spanning)`, ports `data_in`/`data_return_in`/`com_status_in`/
+`timeout`, outputs `data_out`/`data_return_out`/`com_status_out`; `preamble` emits
+SUCCESS. Introspection: `aggregation_state() -> aggregation_machine::State`,
+`aggregate_size`, `last_context`, `owns_aggregate`, `aggregate_bytes`,
+`escrowed_buffers`. `NON_SPANNING_CAPACITY` 1009, `MSG_SIZE` 65,
+`ComAggregator::MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL` 1 and
+`SM_ID_AGGREGATION_MACHINE` 0. `com_aggregator::aggregation_machine` is
+`Svc.AggregationMachine` as an `fpp_state_machine!` (the definition
+`fprime-comp/tests/sm_traces.rs` checks against `fpp-to-cpp`; `State`
+`FILL = 1`, `WAIT_STATUS = 2`; `Signal` `fill = 1`, `status = 2`, `timeout =
+3`); the component implements its `Handlers` and holds the
+`aggregationMachine` instance (priority 0, `assert`), wired as the generator
+contract in "fprime-comp: state machines" describes. `ComDataContextPair`
+(`data: EscrowedBuffer`, `context: FrameContext`) is the `fill` value; the
+queue message is the C++ one, 65 bytes, with the escrow token where C++ has
+the buffer pointer. (The hand-written machine this replaces numbered the
+signals in declaration order — `timeout` 1, `fill` 2, `status` 3 — which
+was not the generated C++ wire format; its `fill` value also carried only
+the token and the context, 37-byte messages.)
+Deviations: the `fill` buffer is escrowed (deposited by `dataIn`, claimed by
+whichever of `doHold`/`doSplitHold`/`doFill` the transition runs — every
+`fill` transition runs exactly one). The aggregate store is owned storage
+moved out on `dataOut`; writing to it while it is downstream asserts (C++
+would write into the in-flight buffer). Component-thread state sits behind a
+mutex each action and guard holds while it runs.
 
 **`ccsds::aos_framer::AosFramer`** (passive). `new` (configured at
 `AOS_MAX_FRAME_FIXED_SIZE`, FECF on, VCID 1, SPP idle), `configure(size, fecf,
@@ -2484,6 +2499,9 @@ fprime_comp::sm
   trait ExternalSmOverflowHook { external_sm_overflow_hook(&self, sm_id, signal, &SmSignalBuffer) }
   read_external_signal(msg, &mut SmSignalBuffer) -> (sm_id, signal)
 fprime_fw::SmSignalBuffer = LinearBuffer<FW_SM_SIGNAL_BUFFER_MAX_SIZE = 128>; FwString::CAPACITY
+fprime_comp::EscrowedBuffer   an Fw.Buffer inside a signal value (see Deviations): deposit(&BufferEscrow, Buffer),
+                              claim(&self, &BufferEscrow) -> Buffer, token/size/context/offset/capacity;
+                              Serialize/Deserialize/FppSized (36 bytes, the Fw::Buffer layout)
 ```
 
 **Wire format** (byte-exact with the generated C++): an internal signal is
@@ -2597,10 +2615,29 @@ in exactly that shape and serve as the reference output.
   parameter of `init`/`update`, so a component owns its machines without a
   reference cycle; an external signal value that is not one of the
   machine's signals is a dispatch error (C++ `static_cast`s it).
-- Signal values must be serializable into the queue message, so a signal
-  carrying an `Fw.Buffer` (C++ serializes the buffer's pointer and size —
-  `Svc.ComAggregator`'s `fill`) needs a value type holding a
-  `BufferEscrow` token instead, as async buffer ports do.
+- Signal values must be serializable into the queue message, and an
+  owned `Buffer` is not. C++ serializes an `Fw.Buffer` member of a signal
+  value as `Fw::Buffer::serializeTo` does — pointer, size (`FwSizeType`),
+  context (`U32`), offset, capacity: 36 bytes on a 64-bit host — and the
+  receiving side aliases the same memory. In Rust the `Fw.Buffer` member
+  of such a value is a `fprime_comp::EscrowedBuffer`: the sender moves the
+  buffer into the component's `BufferEscrow` with
+  `EscrowedBuffer::deposit(&escrow, buffer)`, and the value serializes the
+  same five fields with the escrow token in the pointer slot (so the
+  message is the C++ one byte for byte, except for the opaque pointer
+  value; a default value serializes as a default C++ buffer, all zeros).
+  On the component thread, exactly one action claims the buffer back with
+  `value.claim(&escrow)`; guards read the descriptor (`size()`,
+  `context()`, ...) without claiming. `EscrowedBuffer` is not `Clone`, a
+  second claim of the token asserts, and the claimed buffer is checked
+  against the descriptor. A signal sent with the `drop` policy that is
+  dropped, or a transition that claims nothing, leaves the buffer in the
+  escrow (the C++ buffer leaks the same way), so a machine taking buffers
+  should claim on every transition of the signal and use `assert` or
+  `hook`. `Svc.ComAggregator`'s `fill` (`Svc.ComDataContextPair`) is the
+  worked example (`fprime_svc::com_aggregator`); a generator should map
+  an `Fw.Buffer` member of a struct used as a signal type to
+  `EscrowedBuffer`.
 - `macro_rules!` cannot build identifiers, so the input names the
   `action_*` / `guard_*` / `send_signal_*` methods and the flattened state
   and choice names, and all discriminants are explicit; the leaf/composite

@@ -19,7 +19,9 @@
 //! - [`glue`]: command / event / telemetry / parameter / time helper blocks
 //!   equivalent to the autocoded base-class glue.
 //! - [`escrow`]: [`BufferEscrow`] — safe replacement for the C++ practice of
-//!   serializing raw `Fw::Buffer` pointers into async queue messages.
+//!   serializing raw `Fw::Buffer` pointers into async queue messages, and
+//!   [`EscrowedBuffer`] for an `Fw.Buffer` inside a serialized value (a
+//!   state machine signal value).
 //! - [`serial_port`]: serialize ports (`Fw::InputSerializePort` /
 //!   `Fw::OutputSerializePort` and the `FW_PORT_SERIALIZATION` half of the
 //!   generated typed ports) — any serializable typed call can be carried as
@@ -59,7 +61,7 @@ pub use fprime_fw as fw;
 pub use fprime_os as os;
 
 pub use active::{ActiveBase, ActiveComponent, Lifecycle};
-pub use escrow::BufferEscrow;
+pub use escrow::{BufferEscrow, EscrowedBuffer};
 pub use glue::{CmdGlue, EventGlue, EventThrottle, PrmGlue, TlmGlue, time_get};
 pub use msg::QueueFullPolicy;
 pub use obj::PassiveBase;

@@ -162,8 +162,10 @@ subsystems, then the strategic changes.
   Pointer from the context and sending a full data field without idle
   fill, `TcDeframer` carrying the VCID in the context, and
   `Utils::IdlePacket`. On top: `Svc::ComAggregator` (the FPP
-  `AggregationMachine` hand-written until item 11 lands, signals on the
-  queue in the generated envelope, optional TM packet spanning), now
+  `AggregationMachine` declared with item 11's `fpp_state_machine!`, its
+  instance's signals on the queue as the generated C++ messages, the
+  `fill` buffer escrowed in an `EscrowedBuffer`; optional TM packet
+  spanning), now
   between `spacePacketFramer` and `tmFramer` in `fprime-ref --framing
   ccsds` with the timeout on rate group 1; `AosFramer` / `AosDeframer`
   (M_PDU packing and striping, SPP/EPP extraction, VC frame-count gaps,
