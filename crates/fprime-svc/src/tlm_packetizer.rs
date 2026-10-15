@@ -47,7 +47,7 @@
 //!
 //! ## Locking
 //!
-//! `m_lock` (the C++ `Os::Mutex` guarding the fill buffers) is [`Self::lock`]
+//! `m_lock` (the C++ `Os::Mutex` guarding the fill buffers) is the private `lock` field
 //! here and is taken exactly where C++ takes it: once per matching packet in
 //! `TlmRecv`/`TlmGet`, and twice per packet in `Run`. `hasValue` lives inside
 //! that mutex (it is written under the lock in C++, after the copy). The

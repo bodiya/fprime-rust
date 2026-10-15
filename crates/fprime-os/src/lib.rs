@@ -13,7 +13,7 @@
 //! - [`task`] — `Os::Task` state machine over `std::thread`.
 //! - [`mutex`] / [`condition`] — `Os::Mutex` (+ `ScopeLock`) and
 //!   `Os::ConditionVariable` wrappers.
-//! - [`file`] — `Os::File` with open-mode gating and the historical
+//! - [`file`](mod@file) — `Os::File` with open-mode gating and the historical
 //!   un-complemented file CRC.
 //! - [`filesystem`] / [`directory`] — `Os::FileSystem` composites and
 //!   `Os::Directory`.

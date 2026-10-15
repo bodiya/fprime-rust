@@ -76,6 +76,7 @@ on each crate's public API).
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # Run the reference deployment standalone (1 Hz rate loop; type "quit" to stop)
 cargo run -p fprime-ref
