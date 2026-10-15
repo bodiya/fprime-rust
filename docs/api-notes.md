@@ -2974,8 +2974,9 @@ Deviations and behavior notes:
   spawning (no observable difference).
 - `no_std` locks are spin locks: they busy-wait and never poison. Taking
   one from an interrupt that preempted a holder of the same lock on the
-  same core deadlocks — do not send to an `Os::Queue` from such an ISR
-  (upstream's ISR-safe `LocklessPriorityQueue` is not ported).
+  same core deadlocks — do not send to an `Os::Queue` on the default
+  delegate from such an ISR (select the ISR-safe `LocklessPriorityQueue`
+  with `lockless-queue`; see the section below).
 - `no_std` blocking queue: no condition variable; a blocked send/receive
   releases the lock, calls `Platform::queue_wait` (or `spin_loop` with no
   platform) and re-checks — upstream's `LocklessPriorityQueue` backs off
@@ -3066,3 +3067,119 @@ byte-stream traits, so it wires to `TcpClient`, `TcpServer` and `PosixUartDriver
 with no shims (upstream's `GenericHub` documents this pair as its sample transport).
 Same port-number deviation as the async sibling (the input port number is not reused
 as the output index; all ports are single). The Ref does not instantiate it.
+
+### fprime-os: `Os::Generic::LocklessPriorityQueue`, `Os::Mutex` / `Os::ConditionVariable` in no_std (strategic items)
+
+Upstream: `Os/Generic/LocklessPriorityQueue.{hpp,cpp}`,
+`Os/Generic/DefaultLocklessPriorityQueue.cpp`,
+`default/config/LocklessQueueCfg.hpp`, `Os/Generic/docs/sdd-lockless-queue.md`,
+tests `Os/Generic/test/ut/LocklessPriorityQueue{,Tsan}Tests.cpp`;
+`Os/Condition.cpp`, `Os/Stub/{Mutex,ConditionVariable}.cpp`.
+
+Surface:
+
+- `fprime_config::lockless_queue` (`LocklessQueueCfg.hpp`):
+  `LocklessStateTagType` (`u64`, or `u32` on targets without 64-bit
+  atomics), `LOCKLESS_QUEUE_BLOCKING_BACKOFF_US = 100`,
+  `LOCKLESS_QUEUE_SLOT_ALIGNMENT = 64`, `LOCKLESS_QUEUE_MAX_RETRY_PASSES = 4`.
+- `fprime_os::queue::QueueInterface` (port of `Os::QueueInterface`):
+  `create(depth: usize, message_size: usize) -> Result<Self, Status>`,
+  `send`, `receive`, `get_messages_available`,
+  `get_message_high_water_mark`. `queue::DefaultQueue` is the delegate
+  `Queue` uses: `generic::PriorityQueue` (moved out of `queue.rs`,
+  unchanged behavior), or `generic::LocklessPriorityQueue` with the new
+  `lockless-queue` feature of `fprime-os` (forwarded as `lockless-queue`
+  by `fprime-comp`). `Queue::new` is now `const`.
+- `fprime_os::generic::LocklessPriorityQueue`: `QueueInterface` plus
+  `MAX_RETRY_PASSES`, `is_candidate_preferred(candidate_priority,
+  candidate_sequence, best_priority, best_sequence)` (C++
+  `isCandidatePreferred`), `depth()`, `message_size()`; module items
+  `LocklessSlotState { Free = 0, Writing = 1, Ready = 2, Reading = 3 }`,
+  `STATE_BITS`, `TAG_BITS`.
+- `fprime_os::mutex` / `fprime_os::condition` (`OsMutex`, `ScopeLock`,
+  `ConditionVariable`, their `Status` enums) now also build in `no_std`,
+  with the std API. `Platform::sync_wait` (new, default
+  `self.queue_wait()`) is the backoff of a contended `OsMutex::lock` and a
+  pending `ConditionVariable::pend`.
+
+Deviations and behavior notes:
+
+- Queue selection: upstream picks the delegate by linking one
+  `Default*Queue.cpp`; here a cargo feature picks the `DefaultQueue` type
+  alias (also process-wide, by feature unification). Both delegates are
+  always compiled and usable directly. Recommended: `lockless-queue` for
+  no_std deployments whose interrupt handlers send to component queues
+  (non-blocking queue-full policies only); the default otherwise, since
+  lockless blocking calls poll every `LOCKLESS_QUEUE_BLOCKING_BACKOFF_US`.
+- Facade: `Queue` keeps its created configuration and delegate in a
+  `fprime_fw::sync::OnceLock` (a lock-free read), so `send`/`receive` take
+  no facade lock. A delegate `create` failure (the lockless delegate's
+  `AllocationFailed`) leaves the queue uncreated, as in C++.
+- Lockless payload storage: C++ `memcpy`s into a plain `U8` region owned
+  through the slot state; that needs `unsafe` in Rust, so each slot's
+  payload is `ceil(message_size / size_of::<usize>())` relaxed
+  `AtomicUsize` words. Same release/acquire edges on the state-tag word;
+  still a bounded, lock-free, ISR-safe copy. The stored size is a relaxed
+  `AtomicUsize` (C++ plain `FwSizeType`).
+- Lockless atomics: Rust defines an atomic type only where the target
+  has it natively, so the C++ `is_lock_free()` runtime asserts and
+  `ATOMIC_*_LOCK_FREE` static asserts become compile-time facts
+  (configuring an unsupported width does not compile). The state-tag
+  default narrows to `u32` (30 tag bits) where 64-bit atomics are
+  missing, instead of leaving that to the project.
+- Lockless slot alignment: `LOCKLESS_QUEUE_SLOT_ALIGNMENT` drives the slot
+  type's alignment through aligned marker types (powers of two 1..=4096);
+  the allocator honors it, so the C++ manual over-allocation and pointer
+  rounding are gone. Memory comes from the global allocator (no
+  `Fw::MemAllocator` registry in this port), reserved fallibly so
+  allocation failure still returns `AllocationFailed`.
+- Lockless lifecycle: `create` constructs the delegate (no
+  use-before-create assert path); `teardown()` is `Drop`, so upstream's
+  `TeardownIsIdempotent`/`DestructWithoutCreate` hazards cannot arise
+  (ported as drop tests). The C++ `id`/`name` `create` arguments are not
+  taken by either delegate.
+- Lockless blocking backoff is `Os::Task::delay` as upstream; in a
+  `no_std` build that is `Platform::delay`, and with no platform registered
+  it returns `NotSupported` at once (ignored, as upstream ignores the
+  status) — a busy re-scan.
+- `PriorityQueue` delegate used directly also rejects oversized sends with
+  `SizeMismatch` (the facade always did; C++ relies on the facade).
+- no_std `OsMutex`: spin mutex; `lock()` polls `try_lock` with
+  `Platform::sync_wait` between attempts; `try_lock()` is upstream's
+  `Os::Stub::Mutex::take` (busy → `ErrorBusy`). Upstream's stub would fail
+  a contended `lock()` (assert); this one waits.
+- no_std `ConditionVariable`: a notification epoch read under the mutex,
+  then polled with the mutex released (`Platform::sync_wait` between
+  polls), then the mutex re-taken — no lost wakeups for notifies issued
+  after the predicate change under the mutex. `notify` wakes every waiter
+  (allowed: callers loop on their predicate). Sticky first-mutex binding,
+  `ErrorDifferentMutex`, and the `wait` assert are the std version's.
+  Upstream's stub CV returns `ERROR_NOT_IMPLEMENTED` from every pend; this
+  one works on any platform.
+- The Linux cpu/memory backends stay `std`-only: they read procfs/sysfs
+  through `Os::File`, which only a hosted Linux target (with `std`) has;
+  no_std builds use the upstream stubs.
+- ISR caveat: on targets without 64-bit atomics, `QueuedBase`'s
+  dropped-message counter (`drop` policy) is the spin-locked
+  `fprime_fw::sync::AtomicU64` fallback (ROADMAP follow-up).
+
+Tests: lockless unit tests (slot alignment/layout, state-tag packing and
+tag wrap, per-transition tag bumps, `SequenceWrapComparison`, FIFO across
+a sequence wrap, `OversizedSendRejectedAtDelegate`, `ZeroSizeMessage`,
+`MessagesAvailableTracksReceivableCount`, payloads across word
+boundaries, the create asserts and `AllocationFailed`);
+`crates/fprime-os/tests/lockless_priority_queue.rs` ports
+`LocklessConcurrent.*`, `LocklessLifetime.*` and every `TsanStress.*` /
+`Adversarial.*` case at upstream's thread, message and iteration counts,
+and runs the same multi-producer/multi-consumer harness (non-blocking,
+pre-filled high-water mark, depth 1, blocking path) through the `Queue`
+facade and the lock-based delegate. The facade suite in `queue.rs` runs
+against whichever delegate is selected; `tools/check-no-std.sh` runs the
+fprime-os/fprime-comp suites with `lockless-queue` in `std` and `no_std`,
+and builds it for thumbv7em (where the tag word is `u32`). The whole
+workspace suite also passes with `--features fprime-os/lockless-queue`.
+Mutex/condition: a contended-lock exclusion test (both builds), the
+existing condvar tests now also run in `no_std`, and
+`tests/no_std_platform.rs` checks that a pend and a contended lock poll
+through `Platform::sync_wait` and that the lockless blocking receive
+backs off through `Platform::delay`.

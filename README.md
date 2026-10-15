@@ -112,6 +112,8 @@ cargo test  -p fprime-fw -p fprime-os -p fprime-comp --no-default-features --fea
 rustup target add thumbv7em-none-eabihf
 cargo build --target thumbv7em-none-eabihf -p fprime-fw -p fprime-os -p fprime-comp \
     --no-default-features --features spin
+# ... with the ISR-safe lockless queue delegate (Os::Generic::LocklessPriorityQueue)
+cargo test -p fprime-os -p fprime-comp --no-default-features --features spin,lockless-queue
 # All of the above plus clippy, MSRV 1.85 and the dependency-tree checks
 tools/check-no-std.sh
 
@@ -149,8 +151,8 @@ adds `spin` (lock types only).
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary, generated from the pinned upstream commit and checked against the Rust ids by `cargo test`; `tools/gds-crosscheck.py` runs the stock `fprime-gds` tools against the Rust Ref binary: commands, events, telemetry, parameter save/reload and parameter files, file uplink/downlink, data-product downlink and decoding, `fprime-seqgen` sequences, under both F Prime and CCSDS framing (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
-| OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
-| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp` and the `fprime-os` queue/task/raw-time/interval-timer/stub-cpu-memory subset build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; tasks, the clock and blocking-queue backoff come from a deployment-supplied `fprime_os::platform::Platform` (`tools/check-no-std.sh`) |
+| OSAL | Priority queue (stable max-heap, blocking semantics; or the ISR-safe `LocklessPriorityQueue` delegate with the `lockless-queue` feature), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
+| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp` and the `fprime-os` queue/task/mutex/condition-variable/raw-time/interval-timer/stub-cpu-memory subset build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; tasks, the clock and blocking-queue/mutex/condvar backoff come from a deployment-supplied `fprime_os::platform::Platform`; `lockless-queue` makes component queues ISR-safe (`tools/check-no-std.sh`) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
@@ -197,9 +199,11 @@ instantiate it. `FpySequencer` is ported, but neither upstream's Ref nor
 the Rust Ref instantiates it, and the Fpy compiler (`fprime-fpyc`) is not
 part of fprime-gds 4.3.1, so its tests build sequences byte by byte.
 `no_std`: `fprime-config`, `fprime-fw`, `fprime-comp` and a subset of
-`fprime-os` (queue, task, raw time, interval timer, stub cpu/memory) build
-as `no_std` + `alloc`; a deployment supplies tasks, the clock and the
-blocking-queue backoff through `fprime_os::platform::Platform`. The
+`fprime-os` (queue, task, mutex, condition variable, raw time, interval
+timer, stub cpu/memory) build as `no_std` + `alloc`; a deployment supplies
+tasks, the clock and the blocking-wait backoff through
+`fprime_os::platform::Platform`, and enables `lockless-queue` if
+interrupts send to component queues. The
 services, drivers, utilities and the file/console half of `fprime-os` are
 still `std`-only (see ARCHITECTURE.md "no_std").
 The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).

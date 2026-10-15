@@ -66,7 +66,7 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 crates/
   fprime-config   # type aliases + constants from default/config (no deps)
   fprime-fw       # Fw: serialization, types, strings, time, buffers, packets, assert, logger
-  fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime, cpu, memory; no_std platform seam
+  fprime-os       # Os: task, mutex, queue (priority; lock-based or lockless delegate), file, filesystem, directory, console, rawtime, cpu, memory; no_std platform seam
   fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...
@@ -101,7 +101,7 @@ Configurations:
 | --- | --- | --- |
 | `fprime-config` | always `#![no_std]` (no `alloc` either; no features) | same |
 | `fprime-fw` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | no `std`; locks from `spin` |
-| `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue`, `task`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
+| `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue` (both delegates), `task`, `mutex`, `condition`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
 | `fprime-comp` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | everything (passive/queued/active bases, ports, envelopes, escrow, serialize ports, glue, state machines, macros) |
 
 `spin` is a separate, explicit feature because cargo cannot enable a
@@ -121,11 +121,17 @@ The pieces:
   did, and spin locks never poison.
 - **`fprime_os::platform::Platform`** (no_std only) — what a deployment
   implements and registers once with `fprime_os::register_platform`:
-  `start_task` (+ a `TaskHandle::join`), `delay`, `raw_time_now`, and
-  `queue_wait`, the backoff a blocking `Os::Queue` send/receive takes each
-  time it finds the queue full/empty (it polls, with the lock released, the
-  shape of upstream's `Os::Generic::LocklessPriorityQueue`; the default is
-  `core::hint::spin_loop`). The `Os::Task` state machine, the queue's
+  `start_task` (+ a `TaskHandle::join`), `delay`, `raw_time_now`,
+  `queue_wait`, the backoff a blocking send/receive on the lock-based
+  `Os::Queue` delegate takes each time it finds the queue full/empty (it
+  polls, with the lock released, the shape of upstream's
+  `Os::Generic::LocklessPriorityQueue`; the default is
+  `core::hint::spin_loop`), and `sync_wait`, the backoff of a contended
+  `Os::Mutex` lock and of a pending `Os::ConditionVariable` (default:
+  `queue_wait`). `OsMutex` is the `fprime_fw::sync` spin mutex there and
+  `ConditionVariable` a polled notification epoch (every notify wakes
+  every waiter, which the predicate-loop contract allows); both keep the
+  std versions' API and statuses. The `Os::Task` state machine, the queue's
   status flow and FIFO-within-priority order, and `RawTime`'s arithmetic
   and wire format are shared with the std backend. Without a registered
   platform, `Task::start`/`delay` and `RawTime::now` return
@@ -137,22 +143,40 @@ The pieces:
   queues or `RawTime`, and an `FwLogger` if it wants diagnostic text (the
   default assert print goes to the logger instead of stderr). The target
   needs pointer-width atomic compare-and-swap (`Arc`, `spin`).
+- **Queue delegate: interrupts.** `Os::Queue` forwards to one delegate
+  chosen at build time, as upstream links one `Default*Queue.cpp`: the
+  lock-based `Os::Generic::PriorityQueue` by default, or, with the
+  `lockless-queue` feature (`fprime-os`, forwarded by `fprime-comp`), the
+  ISR-safe `Os::Generic::LocklessPriorityQueue`. The default delegate's
+  state is behind a spin lock in no_std, so an interrupt that preempts a
+  holder of it on the same core would spin forever: **no_std deployments
+  that send to component queues from interrupt handlers should enable
+  `lockless-queue`**, and invoke from the ISR only async ports with a
+  non-blocking queue-full policy (`assert`, `drop`, `hook`) — the
+  lockless send path then takes no lock (one exception: the `drop`
+  policy's counter on targets without 64-bit atomics). Its blocking
+  calls poll with `Os::Task::delay` (`Platform::delay`) between scans, so
+  blocked receivers wake periodically; without interrupt senders the
+  default delegate is the better choice.
 - **std-only**: in `fprime-fw`, the stderr default of the assert print; in
   `fprime-os`, `File`, `FileSystem`, `Directory`, `FilePathUtils`,
-  `SandboxedFile`, `Console`, `OsMutex`/`ScopeLock`,
-  `ConditionVariable`, the Linux cpu/memory backends and the console part
-  of `os::init()`; `fprime-utils`, `fprime-svc`, `fprime-drv`,
-  `fprime-ref`, `fprime-fpp` and `fprime-fpp-demo` entirely.
+  `SandboxedFile`, `Console`, the Linux cpu/memory backends (they read
+  procfs/sysfs through `Os::File`; a target that has procfs is a hosted
+  Linux target, which has `std`) and the console part of `os::init()`;
+  `fprime-utils`, `fprime-svc`, `fprime-drv`, `fprime-ref`, `fprime-fpp`
+  and `fprime-fpp-demo` entirely.
 - **Proof**: `crates/fprime-comp/examples/no_std_component.rs` is a
   `#![no_std]` library crate that expands every exported framework macro
   without the std prelude (built by every `--all-targets` build), and
   `tools/check-no-std.sh` builds and tests the no_std configuration on the
   host, builds it for `thumbv7em-none-eabihf`, checks it at MSRV 1.85, and
-  checks the dependency trees. The no_std unit tests run the task and
+  checks the dependency trees, each build and test with both queue
+  delegates. The no_std unit tests run the task and
   active-component tests through a `std::thread` test `Platform`
   (`crates/fprime-comp/tests/no_std_platform/`), and
   `crates/fprime-os/tests/no_std_platform.rs` checks the seam itself
-  (NotSupported before registration, routing after).
+  (NotSupported before registration, routing after, including the mutex
+  and condition-variable waits).
 
 ## fprime-config
 
@@ -387,6 +411,13 @@ status enums from `docs/cpp-analysis/os.md`. Highlights:
   SizeMismatch=4, SendError=5, ReceiveError=6, InvalidPriority=7, Full=8,
   NotSupported=9, AllocationFailed=10, UnknownError=11 }`,
   `BlockingType { Blocking, NonBlocking }`.
+  The facade (`Queue`) forwards to a `QueueInterface` delegate selected at
+  build time (`queue::DefaultQueue`): that lock-based
+  `generic::PriorityQueue`, or `generic::LocklessPriorityQueue` (port of
+  `Os::Generic::LocklessPriorityQueue`: atomic per-slot state machine,
+  ISR-safe non-blocking calls, polling blocking calls) with the
+  `lockless-queue` feature — upstream's `DefaultPriorityQueue.cpp` /
+  `DefaultLocklessPriorityQueue.cpp` link-time choice.
 - **`Task`** — wraps `std::thread` with the C++ state machine
   (`NotStarted/Starting/Running/Exited/...`), `start(Arguments)` /
   `join()` status flow. Priority/affinity/stack are accepted and recorded but
@@ -409,9 +440,10 @@ status enums from `docs/cpp-analysis/os.md`. Highlights:
   `OpOverflow` (~71 min).
 - **`IntervalTimer`**, `Os::init()` equivalent (`os::init()` registers the
   console logger).
-- **no_std** — without the `std` feature only the queue, task, raw time,
-  interval timer and stub cpu/memory remain, over `fprime_fw::sync` spin
-  locks and the `platform::Platform` seam (see "no_std" above).
+- **no_std** — without the `std` feature only the queue (either
+  delegate), task, mutex, condition variable, raw time, interval timer and
+  stub cpu/memory remain, over `fprime_fw::sync` spin locks and the
+  `platform::Platform` seam (see "no_std" above).
 
 ## fprime-comp: object / port / component model
 

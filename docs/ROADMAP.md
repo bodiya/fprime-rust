@@ -269,6 +269,32 @@ subsystems, then the strategic changes.
   `TcpServer` and the UART driver with no shims (`GenericHub`'s sample
   transport); the four upstream unit tests are ported. The Ref does not
   instantiate it.
+- **ISR-safe queue: `Os::Generic::LocklessPriorityQueue`.** Ported to
+  `fprime_os::generic` in safe Rust: the per-slot state-tag, sequence and
+  priority words are `core` atomics; the payload region, a plain `memcpy`
+  target under slot ownership in C++, is a run of relaxed `AtomicUsize`
+  words (no `unsafe`, same release/acquire edges, still a bounded
+  lock-free copy). `config/LocklessQueueCfg.hpp` is
+  `fprime_config::lockless_queue`; its state-tag word narrows to `u32`
+  automatically on targets without 64-bit atomics (thumbv7em). `Os::Queue`
+  is now a facade over a `QueueInterface` delegate chosen at build time,
+  as upstream links one `Default*Queue.cpp`: the lock-based
+  `PriorityQueue` by default, the lockless one with the `lockless-queue`
+  feature (on `fprime-os`, forwarded by `fprime-comp`) — the recommended
+  no_std configuration when interrupts send to component queues. Upstream's
+  unit and TSan stress/adversarial tests are ported at upstream's thread
+  and message counts, with the same harness also run through the facade
+  and the lock-based delegate; the whole workspace test suite passes on
+  either delegate.
+- **`Os::Mutex` / `Os::ConditionVariable` in no_std.** `OsMutex` is the
+  `fprime_fw::sync` spin mutex there, a contended `lock()` polling through
+  a new `Platform::sync_wait` backoff (default: `queue_wait`);
+  `ConditionVariable` is a polled notification epoch with the std
+  version's sticky same-mutex binding and statuses (every notify wakes
+  every waiter, which the predicate-loop contract allows). The std
+  versions are unchanged. The Linux cpu/memory backends stay `std`-only by
+  design: they read procfs/sysfs through `Os::File`, which only a hosted
+  Linux target (which has `std`) provides; no_std builds get the stubs.
 
 ## Strategic
 
@@ -279,14 +305,6 @@ No numbered items remain. Directions the `no_std` seam (item 13) opens:
   `EventManager`, `TlmChan`, `Health`, the comms framing) are still
   `std`-only; each needs its `std::sync` uses moved onto
   `fprime_fw::sync` and its file/console uses gated.
-- **An ISR-safe queue.** The no_std `Os::Queue` is the lock-based
-  `PriorityQueue` over a spin lock, so it must not be sent to from an
-  interrupt that can preempt a holder. Upstream's
-  `Os::Generic::LocklessPriorityQueue` is the ISR-safe option; a safe-Rust
-  port would replace the slot `std::atomic` words with `core` atomics.
-- **`Os::Mutex` / `Os::ConditionVariable` in no_std.** Only the
-  `fprime_fw::sync` locks exist there today; the `Os` wrappers (and the
-  Linux cpu/memory backends) stay `std`-only.
 
 ## Syncing with upstream
 
