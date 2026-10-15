@@ -792,3 +792,14 @@ fn fmod_python_adjustment() {
     assert_eq!(binary::<f64, f64>(&t, FpyState::op_fmod, 7.0, -3.0), -2.0);
     assert_eq!(binary::<f64, f64>(&t, FpyState::op_fmod, -7.0, 3.0), 2.0);
 }
+
+#[test]
+#[should_panic(expected = "Assert")]
+fn widening_op_on_a_full_stack_asserts_like_cpp() {
+    // C++ parity: the widening ops (FPEXT, SIEXT/ZIEXT) check only for
+    // underflow; pushing the wider result onto a full stack trips the
+    // stack's FW_ASSERT.
+    let t = Tester::new();
+    t.set_stack_size(fprime_config::fpy_sequencer::MAX_STACK_SIZE as StackSizeType);
+    let _ = op(&t, FpyState::op_fpext);
+}

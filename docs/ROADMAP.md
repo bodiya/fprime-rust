@@ -216,6 +216,29 @@ subsystems, then the strategic changes.
   hand-written `TlmPacketizer`, configured by a `configComponents` init
   specifier from the generated packet table. The Ref still wires by hand,
   so its dictionary and wire behavior are unchanged.
+- **`Svc::FpySequencer`** (item 10). The Fpy bytecode sequencer, whole:
+  the sequence file (header, argument specs, statements, CRC-32 footer)
+  read stage by stage into the allocated buffer and validated with every
+  upstream event; the `SequencerStateMachine` on `fpp_state_machine!` (the
+  definition the component uses is now the one `tools/sm-traces.py`'s
+  golden traces check, from `fprime-svc`); the stack machine with all 81
+  directives — every stack op, the frame-relative and absolute loads
+  and stores, `CALL`/`RETURN`, `GET_FIELD`/`PEEK`, waits, telemetry and
+  parameter reads, `POP_EVENT`, `POP_SERIALIZABLE` on the `serialOut`
+  serial ports, and `SET_SEED`/`PUSH_RAND` on a port of `std::mt19937`
+  and `std::seed_seq` that reproduces libstdc++'s numbers; `CONST_CMD`/
+  `STACK_CMD` dispatch with command-UID response matching; statement
+  timeouts; breakpoints, `BREAK`/`CONTINUE`/`STEP` and
+  `DUMP_STACK_TO_FILE`; both parameters (synchronous `PRM_SET`/`PRM_SAVE`,
+  echoed on telemetry); every queue priority of the FPP model. Commands,
+  events, channels and parameters carry the upstream ids (checked against
+  `fpp-to-rust --dict` on the upstream model). The upstream unit tests are
+  ported (about 270 Rust tests), plus a sequence run on the component's
+  own thread. Upstream's Ref does not instantiate it, so neither does the
+  Rust Ref, and fprime-gds 4.3.1 has no Fpy compiler: sequences are built
+  byte by byte, as upstream's tests do. Porting it showed that
+  `SequenceArgumentsMaxSize` is 12 at the pin, not 255; `Svc.SeqArgs` was
+  corrected for `CmdSequencer` too.
 
 ## Next: small follow-ups
 
@@ -227,13 +250,6 @@ the Ref deployment.
   `CRCCheckerTester` GoldenValue case) have no Rust equivalent yet.
 - **`Drv::ByteStreamBufferAdapter`.** The synchronous sibling of the ported
   `AsyncByteStreamBufferAdapter`.
-
-## Then: larger subsystems
-
-10. **`Svc::FpySequencer`.** Larger than `CmdSequencer`; needs the Fpy
-    bytecode dispatcher. Its state machine is already expressed with
-    `fpp_state_machine!` in `crates/fprime-comp/tests/sm_traces.rs`, and
-    `fpp-to-rust` generates it from the upstream FPP (`fprime-fpp-demo`).
 
 ## Strategic
 

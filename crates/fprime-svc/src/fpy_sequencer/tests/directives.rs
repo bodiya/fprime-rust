@@ -1699,3 +1699,19 @@ fn handle_directive_error_code_records_where_it_failed() {
     assert_eq!(st.tlm.directive_error_index, 7);
     assert_eq!(st.tlm.directive_error_id, DirectiveId::Sdiv);
 }
+
+#[test]
+#[should_panic(expected = "Assert")]
+fn wait_abs_with_a_second_of_microseconds_asserts_like_cpp() {
+    // C++ parity: `Fw::Time(base, ctx, s, us)` asserts us < 1,000,000
+    let t = Tester::new();
+    t.push(2u16);
+    t.push(0u8);
+    t.push(1u32);
+    t.push(1_000_000u32);
+    call(
+        &t,
+        FpySequencer::wait_abs_directive_handler,
+        &WaitAbsDirective::default(),
+    );
+}

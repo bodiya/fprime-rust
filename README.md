@@ -137,7 +137,7 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust) and the optional
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
-| Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats |
+| Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
 | File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
@@ -170,14 +170,17 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-`FpySequencer` and `CfdpManager`. The SDLS security
+`Svc::Ccsds::CfdpManager` (CFDP) is not ported. The SDLS security
 layer is ported, but `AesGcmEncryptor`/`AesGcmDecryptor` are only compiled
 with `fprime-svc`'s `aes-gcm` feature, and the Rust Ref, like upstream's
 (which uses `ComCcsds`, not `ComCcsdsSdls`), does not instantiate SDLS or
 AOS. Data-product compression is ported, but `DpZLibCompressor` is only
 compiled with `fprime-svc`'s `zlib` feature, and the Rust Ref, like
 upstream's (where `DpCompression.Subtopology` is commented out), does not
-instantiate it. `no_std`
+instantiate it. `FpySequencer` is ported, but neither upstream's Ref nor
+the Rust Ref instantiates it, and the Fpy compiler (`fprime-fpyc`) is not
+part of fprime-gds 4.3.1, so its tests build sequences byte by byte.
+`no_std`
 targets remain a design goal of the OSAL seam rather than a current feature.
 The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

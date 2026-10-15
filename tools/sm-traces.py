@@ -15,8 +15,10 @@ state after the step (`-`: unchanged). It follows the `enter_*` functions
 and both branches of every `if (this->guard_*(..))`; the generated code is
 regular enough that nothing else is needed. Standard library only.
 
-`crates/fprime-comp/tests/sm_traces.rs` replays these files against the
-`fpp_state_machine!` versions of the same machines. To regenerate one
+`crates/fprime-comp/tests/sm_traces.rs` (and, for `FpySequencer.txt`,
+`crates/fprime-svc/tests/fpy_sequencer_sm_traces.rs`) replays these files
+against the `fpp_state_machine!` versions of the same machines. To
+regenerate one
 (fpp-to-cpp from the `fprime-fpp` version upstream pins, 3.3.0 at
 4dee010):
 

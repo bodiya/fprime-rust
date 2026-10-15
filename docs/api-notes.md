@@ -2594,7 +2594,8 @@ in exactly that shape and serve as the reference output.
   it; the walks are allocation-free and bounded by the nesting depth, and
   `tests/sm_traces.rs` checks the resulting call order against the
   reference compiler's C++ for every leaf state, signal and guard path of
-  20 machines (golden traces from `tools/sm-traces.py`).
+  20 machines (golden traces from `tools/sm-traces.py`; the
+  `Svc.FpySequencer` one runs in `fprime-svc`, on the component's machine).
 - `Handlers` methods take `&self` (components keep state behind their own
   locks; a standalone test harness uses interior mutability) and receive
   the state machine id as `FwEnumStoreType` rather than the component's
@@ -2795,3 +2796,126 @@ watchdog stopping the lifecycle, the drop and hook policies, the
 packetizer emitting the controller's packet byte for byte after the
 `configComponents` specifier configured it — and once with
 `setup()`/`teardown()` on real threads.
+
+### fprime-svc: `Svc::FpySequencer` (ROADMAP item 10)
+
+Port of `Svc/FpySequencer` at the pinned commit (schema version 7):
+`FpySequencer.{fpp,hpp,cpp}`, the `*.fppi` interface files,
+`FpySequencerTypes.fpp`, `FpySequencerStateMachine.{fppi,cpp}`,
+`FpySequencerValidationState.cpp`, `FpySequencerRunState.cpp`,
+`FpySequencerDirectives.cpp`, `FpySequencerStack.cpp`,
+`Fw/Fpy/StatementArgBuffer` and `default/config/FpySequencerCfg.fpp`.
+
+```text
+fprime_svc::fpy_sequencer
+  FpySequencer::new(name) -> Arc; init(queue_depth); allocate_buffer(id, bytes)
+      (asserts bytes >= 11); deallocate_buffer(); reg_commands(); load_parameters()
+  ports: cmd/evt/tlm/prm glue, cmd_out (Fw.Com), seq_start_out (Svc.CmdSeqIn),
+      seq_done_out (Fw.CmdResponse), ping_out, get_tlm_chan (TlmGetPort),
+      get_param (PrmGetPort), serial_out[MAX_SERIAL_PORTS] (SerializePort)
+  inputs: cmd_in (CmdPort; the parameter commands run synchronously),
+      cmd_response_in (5), ping_in (10, drop), check_timers (4),
+      tlm_write_in (1), seq_run_in (7), seq_cancel_in (8)
+  sequencer_get_state() -> State; is_running_state(State)
+  param_get_statement_timeout_secs() -> (f32, ParamValid);
+  param_get_seq_base_dir() -> (ParamString, ParamValid)
+  OPCODE_* (0..=15), EVENTID_* (0..=44), CHANID_* (0..=21), PARAMID_* (0, 1)
+  SequencerStateMachine: State, Signal, Handlers, StateMachine, Sender
+      (fpp_state_machine!, the fpp-to-cpp discriminants)
+  types: DirectiveId, DirectiveErrorCode (= DirectiveError), GoalState,
+      FileReadStage, SerialPortIndex, Header, Footer, ArgSpec, Statement,
+      Sequence, SequenceExecutionArgs, BreakpointArgs, the 31 *Directive
+      structs, DirectiveUnion, StackSizeType, SignedStackSizeType,
+      StatementArgBuffer, SCHEMA_VERSION, MAX_ARG_SPEC_NAME_LEN
+  Stack (push/pop<T: StackValue>, push_bytes/pop_bytes, push_zeroes, copy,
+      r#move), Mt19937 (std::mt19937 with seed and seed_seq)
+fprime_config::fpy_sequencer: MAX_SEQUENCE_ARG_COUNT 16,
+  MAX_SEQUENCE_STATEMENT_COUNT 2048, MAX_STACK_SIZE 65535,
+  MAX_DIRECTIVE_SIZE 2048, DEFAULT_SEQ_BASE_DIR "", MAX_SERIAL_PORTS 5
+fprime_config::{FW_STATEMENT_ARG_BUFFER_MAX_SIZE (506), SEQUENCE_ARGUMENTS_MAX_SIZE (12)}
+```
+
+**File format** (FPP serialization, big-endian): header `[major U8][minor
+U8][patch U8][schemaVersion U8][argumentCount U8][statementCount
+U16][bodySize U32]`; body: `argumentCount` × `ArgSpec` (`[u16 len][name]
+[u16 len][type][argSize U32]`) then `statementCount` × `Statement`
+(`[opcode U8][u16 len][argument bytes]`), possibly followed by bytes the
+sequencer ignores; footer: the CRC-32 (`Utils::Hash`) of header and body.
+Each stage is read into the start of the buffer passed to
+`allocate_buffer`, so it must hold the largest body. A directive's
+arguments are its FPP struct, except that the "empty" directives take no
+bytes and `CONST_CMD` (`[opcode U32][args...]`) and `PUSH_VAL` take every
+remaining byte. Commands go out as `[FW_PACKET_COMMAND U16][opcode
+U32][args]` with the command UID `(sequencesStarted & 0xFFFF) << 16 |
+(statementsDispatched & 0xFFFF)` as context.
+
+**Threading and state.** All C++ `m_*` members live in one `Mutex`,
+touched only on the component thread; the state machine's actions and
+guards lock it for their own duration, and directive handlers hold it
+while they call output ports (C++ is single-threaded here; the callees —
+command dispatcher, `TlmChan`, `PrmDb`, the serial targets — must not call
+synchronously back into a handler, and the standard ones only enqueue).
+The parameters have their own lock, as the generated `m_paramLock`. The
+sequence storage (about 1 MiB with the default configuration) and the
+64 KiB stack are allocated at construction; `resetRuntime` resets them in
+place instead of reconstructing.
+
+**Deviations from C++**:
+
+- Async commands share one message type (`MSG_TYPE_CMD_IN`) but keep
+  their FPP priorities (`CANCEL` 8, the rest 7); C++ has one message type
+  per command. Message type numbers are internal; the priorities and the
+  state machine signal bytes are the C++ ones.
+- `WAIT_ABS` keeps the four popped time fields raw (`WakeupTime`): the C++
+  `Fw::Time` stores whatever time base a sequence pushed, which the Rust
+  `TimeBase` enum cannot hold. An undeclared base then fails the
+  comparison with `MismatchedTimeBase`, as in C++.
+- Kept as in C++ (fail-stop on malformed sequence data): a `WAIT_REL`
+  microsecond sum of 1,999,999 or more and a `WAIT_ABS` microsecond field
+  of 1,000,000 or more assert (C++ `Fw::Time::add` / `set`); the widening
+  stack ops (`FPEXT`, `SIEXT_*`, `ZIEXT_*`) check only for underflow, so
+  one on a nearly full stack trips the stack's assertion. Second overflow
+  in `WAIT_REL` wraps, as the C++ `U32` sum does.
+- A `NaN` `STATEMENT_TIMEOUT_SECS` passes the range check in both
+  languages; C++ then converts NaN to `U64` (undefined) and Rust gets 0,
+  an immediate timeout.
+- File paths are byte strings, but `Os::File::open` takes `&str`: a path
+  that is not UTF-8 is opened with replacement characters (and fails).
+- Event text (the `logTextOut` line) prints enum arguments with their Rust
+  names; the binary event arguments are exact. Unsized FPP `string` event
+  arguments are truncated to `FW_LOG_STRING_MAX_SIZE`, the string channels
+  (`SeqPath`, `PRM_SEQ_BASE_DIR`) to their declared 240.
+- Kept as in C++: `SEQ_BASE_DIR` is held in an `Fw::ParamString`
+  (`FW_PARAM_STRING_MAX_SIZE`, 40), so a longer `PRM_SET` value is a
+  `FORMAT_ERROR` although the dictionary type is `string size 240`;
+  command file names are `CmdStringArg`s (40). `SequencesFailed` and
+  `StatementsFailed` are never incremented, and `CommandFailed` and
+  `MismatchedTimeContext` are never emitted, as upstream.
+- The state machine's golden-trace test moved from
+  `fprime-comp/tests/sm_traces.rs` to
+  `fprime-svc/tests/fpy_sequencer_sm_traces.rs`, so it checks the
+  definition the component uses; the checker it shares with
+  `sm_traces.rs` is `fprime-comp/tests/sm_trace_check/mod.rs`.
+- `Svc.SeqArgs`' buffer is `SequenceArgumentsMaxSize` = 12 bytes at the
+  pin (upstream shrank it from 255 with the WasmSequencer change); the
+  constant moved to `fprime_config::SEQUENCE_ARGUMENTS_MAX_SIZE` and
+  `CmdSequencer`'s `seqRunIn` payload shrinks with it.
+
+Tests: the upstream suite (`FpySequencerTestMain.cpp`,
+`FpySequencerTestSequences.cpp`) is ported in
+`fpy_sequencer/tests/` — every directive handler and stack op with its
+bounds and error codes, the stack, statement decoding, the file stages and
+validation, every command and port through the queue, the
+`SEQ_BASE_DIR` resolution, timeouts and wakeups, breakpoints and stepping,
+whole sequences — with sequences laid out byte by byte as upstream's
+`writeToFile` does (fprime-gds 4.3.1 has no Fpy compiler). Added: the
+`std::mt19937`/`std::seed_seq` outputs checked against libstdc++, the
+queue priorities and signal bytes, the parameter commands, the decode
+failures upstream could not reach (an undeclared opcode, an oversized
+argument buffer, a bad CRC), `RETURN` with an argument and a value, and a
+sequence run on the component's own thread with commands looped back.
+Upstream's death tests are `#[should_panic]` tests. Not ported: the
+relative-directory variant of `seqBaseDir_resolvesPath` (the tests run in
+parallel in per-test directories, so the base directory is absolute).
+Upstream's Ref does not instantiate the sequencer, so the Rust Ref and its
+dictionary are unchanged.

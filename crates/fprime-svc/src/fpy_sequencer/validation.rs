@@ -45,7 +45,9 @@ impl FpySequencer {
         // the CRC must start from its initial value
         st.computed_crc.init();
 
-        let path = String::from_utf8_lossy(st.sequence_file_path.as_bytes()).into_owned();
+        // a stack copy of the path: no allocation, and `st` stays free
+        let path_copy = st.sequence_file_path.clone();
+        let path = String::from_utf8_lossy(path_copy.as_bytes());
         let mut file = File::new();
         let open_status = file.open(&path, FileMode::OpenRead);
         if open_status != FileStatus::OpOk {
