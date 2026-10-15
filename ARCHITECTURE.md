@@ -41,12 +41,12 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   express faithfully stays hand-written — the macros never half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
-  FpySequencer, GenericHub, state-machine autocoding (`Fw/Sm`),
-  ActiveTextLogger file logging, the SDLS/AOS CCSDS siblings and zlib
-  data-product compression. Everything listed as a phase-1 gap in earlier
-  revisions of this document (CmdSequencer, file services, data products,
-  TlmPacketizer, the CCSDS stack, ComLogger, the Linux drivers) has since
-  been ported.
+  FpySequencer, GenericHub, state-machine autocoding (`Fw/Sm`), the
+  SDLS/AOS CCSDS siblings and zlib data-product compression. Everything
+  listed as a phase-1 gap in earlier revisions of this document
+  (CmdSequencer, file services, data products, TlmPacketizer, the CCSDS
+  stack, ComLogger, the Linux drivers, ActiveTextLogger) has since been
+  ported.
 
 ## Workspace layout
 

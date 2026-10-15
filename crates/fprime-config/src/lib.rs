@@ -119,6 +119,9 @@ pub const FW_SERIALIZE_TRUE_VALUE: u8 = 0xFF;
 pub const FW_SERIALIZE_FALSE_VALUE: u8 = 0x00;
 /// Maximum length of a formatted assert message.
 pub const FW_ASSERT_TEXT_SIZE: usize = 256;
+/// Maximum size of an internal-interface string argument
+/// (`FW_INTERNAL_INTERFACE_STRING_MAX_SIZE` in FpConstants.fpp).
+pub const FW_INTERNAL_INTERFACE_STRING_MAX_SIZE: usize = 256;
 /// Maximum length of a file-name string (`FileNameStringSize` in AcConstants.fpp).
 pub const FILE_NAME_STRING_SIZE: usize = 240;
 /// Time-context "don't care" value used by sequences (`FW_CONTEXT_DONT_CARE`).
@@ -176,6 +179,25 @@ pub mod event_manager {
     pub const FILTER_DIAGNOSTIC_DEFAULT: bool = false;
     /// Size of the event ID filter table (`TELEM_ID_FILTER_SIZE`).
     pub const ID_FILTER_SIZE: usize = 25;
+}
+
+/// `Svc::ActiveTextLogger` configuration (`ActiveTextLoggerCfg.hpp`).
+pub mod active_text_logger {
+    /// Size of the configure-time event-ID filter
+    /// (`ACTIVE_TEXT_LOGGER_ID_FILTER_SIZE`).
+    pub const ID_FILTER_SIZE: usize = 25;
+    /// WARNING_HI events pass by default.
+    pub const FILTER_WARNING_HI_DEFAULT: bool = true;
+    /// WARNING_LO events pass by default.
+    pub const FILTER_WARNING_LO_DEFAULT: bool = true;
+    /// COMMAND events pass by default.
+    pub const FILTER_COMMAND_DEFAULT: bool = true;
+    /// ACTIVITY_HI events pass by default.
+    pub const FILTER_ACTIVITY_HI_DEFAULT: bool = true;
+    /// ACTIVITY_LO events pass by default.
+    pub const FILTER_ACTIVITY_LO_DEFAULT: bool = true;
+    /// DIAGNOSTIC events are filtered out by default.
+    pub const FILTER_DIAGNOSTIC_DEFAULT: bool = false;
 }
 
 /// `Svc::TlmChan` configuration (`TlmChanImplCfg.hpp`).

@@ -1932,3 +1932,53 @@ input port number is not forwarded as the output port number (C++
 port number. All ports are single, so upstream always passes 0 anyway. The Ref does
 not instantiate it (upstream has no async byte-stream driver to put behind it). The
 synchronous sibling `Drv::ByteStreamBufferAdapter` is still not ported.
+
+### fprime-svc: `ActiveTextLogger` file logging (ROADMAP item 8)
+
+The roadmap said only the console path existed; in fact `Svc::ActiveTextLogger`
+had not been ported at all, so the whole component landed with its `LogFile`.
+
+```text
+ActiveTextLogger (fprime_svc::active_text_logger, ACTIVE)
+  new(name) -> Arc<Self>; init(queue_depth)
+  configure(&[FwEventIdType])              // <= ID_FILTER_SIZE (25), fw_assert beyond
+  set_severity_filter(LogSeverity, bool)   // FATAL ignored
+  set_log_file(file_name: &str, max_size: u32, max_backups: u32) -> bool
+  DEFAULT_MAX_BACKUPS = 10                 // the C++ default argument
+  Inputs:  text_logger_in(0) (sync Fw.LogText)
+  Internal: TextQueue (drop policy), MSG_TYPE_TEXT_QUEUE = 1, QUEUE_MSG_SIZE = 264
+  No commands, events or telemetry.
+LogFile (re-exported from active_text_logger)
+  new(); set_log_file(&str, max_size: FwSizeType, max_backups: FwSizeType) -> bool
+  write_to_log(&[u8]) -> bool; is_open(); file_name(); current_file_size(); max_file_size()
+  DEFAULT_MAX_BACKUPS = 10
+Config: fprime_config::active_text_logger::{ID_FILTER_SIZE, FILTER_*_DEFAULT}
+        (re-exported from the component); fprime_config::FW_INTERNAL_INTERFACE_STRING_MAX_SIZE = 256
+        with fprime_fw::InternalInterfaceString.
+```
+
+Behaviour as upstream: filtering and formatting
+(`EVENT: (<id>) (<base>:<sec>,<usec>) <SEVERITY>: <text>\n`, truncated at 256
+bytes, newline included in the truncation) run on the caller's thread; the line is
+queued (`drop`: a full queue only bumps `msgs_dropped`) and the component thread
+prints it with `Fw::Logger`, then writes it to the file, ignoring the status.
+`set_log_file` closes any open file, then probes `name`, `name0` …
+`name<max_backups-1>` with `Os::FileSystem::getFileSize` (any non-`OP_OK` status
+means free); if all exist it truncates and reuses `name`. It returns `false`, with
+no file open, when a name would not fit `FileNameString` (including a suffixed
+name) or the `OPEN_CREATE`+`OVERWRITE` open fails. There is no rotation: a line
+that would exceed `max_size` (or overflow the size count) closes the file for good;
+a write error keeps it open and still counts the bytes written. Every write
+fsyncs (`WAIT`). The upstream Ref does not use the component, so the Rust Ref does
+not either.
+
+Deviations: `LogFile` fields are private with accessors (C++ public members);
+`set_log_file` and the writes share a mutex (C++ lets `set_log_file` race the
+component thread); `max_backups` is passed explicitly (no default arguments); a
+`LogFile::set_log_file` loop over `max_backups > u32::MAX` terminates (the C++
+`U32` counter would spin); the internal message carries a `port_num` of 0 (the
+`fprime-comp` envelope contract, as `EventManager`'s `loqQueue`); the console
+renders non-UTF-8 text lossily, while the file gets the raw bytes; the
+`SEVERITY ERROR` branch is unrepresentable. The tests use per-test directories and
+check the file, as upstream does; the console path is not captured because the
+global `Fw::Logger` is shared with other tests in the binary.

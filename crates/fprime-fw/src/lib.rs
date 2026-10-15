@@ -40,8 +40,8 @@ pub use serial::{
     ParamBuffer, SerBuf, SerBufAny, Serialize, SerializeStatus, TlmBuffer,
 };
 pub use string::{
-    CmdStringArg, FileNameString, FwDefaultString, FwString, LogStringArg, ObjectName, ParamString,
-    TextLogString, TlmString,
+    CmdStringArg, FileNameString, FwDefaultString, FwString, InternalInterfaceString, LogStringArg,
+    ObjectName, ParamString, TextLogString, TlmString,
 };
 pub use time::{Time, TimeBase, TimeComparison, TimeInterval};
 

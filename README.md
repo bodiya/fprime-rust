@@ -103,7 +103,7 @@ Requires stable Rust (edition 2024). No external crates.
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary; `tools/gds-crosscheck.py` runs the stock `fprime-gds` against the Rust Ref binary and checks that commands sent through the GDS execute and that the Ref's events and telemetry decode (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
-| C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `PosixTime`, `LinuxTimer`, `SystemResources` |
+| C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
@@ -139,8 +139,7 @@ can supply real hardware access without forking the component:
 
 State-machine autocoding in `fpp-to-rust` (the front end parses state
 machines; the back end does not generate them yet), `FpySequencer`,
-`GenericHub`, state-machine autocoding (`Fw/Sm`), `ActiveTextLogger`'s file
-logging, the SDLS security layer, and zlib data-product compression
+`GenericHub`, state-machine autocoding (`Fw/Sm`), the SDLS security layer, and zlib data-product compression
 (`DpZLibCompressor`/`DpCompressProc`, which would need a third-party
 dependency — `ProcType::ZlibDeflate` is kept for wire parity). `no_std`
 targets remain a design goal of the OSAL seam rather than a current feature.

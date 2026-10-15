@@ -20,8 +20,8 @@ use crate::serial::{
 };
 use fprime_config::{
     FILE_NAME_STRING_SIZE, FW_CMD_STRING_MAX_SIZE, FW_FIXED_LENGTH_STRING_SIZE,
-    FW_LOG_STRING_MAX_SIZE, FW_LOG_TEXT_BUFFER_SIZE, FW_OBJ_NAME_BUFFER_SIZE,
-    FW_PARAM_STRING_MAX_SIZE, FW_TLM_STRING_MAX_SIZE, FwSizeStoreType,
+    FW_INTERNAL_INTERFACE_STRING_MAX_SIZE, FW_LOG_STRING_MAX_SIZE, FW_LOG_TEXT_BUFFER_SIZE,
+    FW_OBJ_NAME_BUFFER_SIZE, FW_PARAM_STRING_MAX_SIZE, FW_TLM_STRING_MAX_SIZE, FwSizeStoreType,
 };
 use std::fmt;
 
@@ -253,6 +253,8 @@ pub type ParamString = FwString<FW_PARAM_STRING_MAX_SIZE>;
 pub type FileNameString = FwString<FILE_NAME_STRING_SIZE>;
 /// General-purpose string (`Fw::String`).
 pub type FwDefaultString = FwString<FW_FIXED_LENGTH_STRING_SIZE>;
+/// Internal-interface string argument (`Fw::InternalInterfaceString`).
+pub type InternalInterfaceString = FwString<FW_INTERNAL_INTERFACE_STRING_MAX_SIZE>;
 
 #[cfg(test)]
 mod tests {

@@ -64,6 +64,13 @@ subsystems, then the strategic changes.
 - **`Svc::BufferAccumulator`** (item 7), restored between `dpMgr` and
   `dpWriter` in the Ref as in upstream's DataProducts subtopology; the
   dictionary and the GDS cross-check include it.
+- **`Svc::ActiveTextLogger`** (item 8). The component itself was missing,
+  not just its file path, so it is ported whole: the caller-thread
+  filtering and formatting, the `drop`-policy internal queue, and
+  `LogFile` (`set_log_file`, the `name0`…`name9` suffix search with
+  fallback to truncating the original, and the size cap). Upstream does
+  not rotate: a line that would exceed the cap closes the file for good.
+  The upstream Ref does not instantiate it, so neither does the Rust Ref.
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
   and `PrmDb` all use the one implementation; `PrmDb`'s private `String`-based
@@ -90,8 +97,6 @@ Ref deployment.
 
 ## Then: larger subsystems
 
-8. **`Svc::ActiveTextLogger` file logging.** Only the console path exists.
-   Port `LogFile` (`set_log_file`, max-size rotation, the `%d` suffixing).
 9. **`Svc::GenericHub`.** The serialize-port and `ObjRegistry` machinery it
    needs was skipped in phase 1; the async envelope is already
    hub-compatible (see `docs/api-notes.md`, fprime-comp §4).
