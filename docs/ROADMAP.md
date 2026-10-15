@@ -255,17 +255,20 @@ subsystems, then the strategic changes.
   builds for `thumbv7em-none-eabihf` and at MSRV 1.85
   (`tools/check-no-std.sh`); the fw/os/comp tests pass in both
   configurations, the no_std ones over a `std::thread` test platform.
-
-## Next: small follow-ups
-
-These surfaced while porting the items above. None changes the wire format of
-the Ref deployment.
-
-- **`Utils::Hash` file-extension helpers.** `getFileExtensionString`,
-  `addFileExtension` and `getFileExtensionLength` (exercised by upstream's
-  `CRCCheckerTester` GoldenValue case) have no Rust equivalent yet.
-- **`Drv::ByteStreamBufferAdapter`.** The synchronous sibling of the ported
-  `AsyncByteStreamBufferAdapter`.
+- **`Utils::Hash` file-extension helpers.** `Hash::get_file_extension_string`,
+  `add_file_extension` and `get_file_extension_length` (`HashCommon.cpp`);
+  `add_file_extension` returns the `Fw::FormatStatus` shadow enum and, like
+  `vsnprintf`, leaves the name truncated on `OVERFLOWED`. The
+  `CRCCheckerTester` GoldenValue port now checks them, and `ComLogger`
+  builds its sidecar name through `get_file_extension_string` as upstream
+  does (`CRCChecker` keeps the `HASH_EXTENSION_STRING` it uses upstream).
+- **`Drv::ByteStreamBufferAdapter`.** The synchronous sibling of
+  `AsyncByteStreamBufferAdapter`, in `fprime-drv`: `bufferIn` is sent with
+  the driver's `Drv.ByteStreamSend` once it is ready and returned on
+  `bufferInReturn` at once whatever the status. It wires to `TcpClient`,
+  `TcpServer` and the UART driver with no shims (`GenericHub`'s sample
+  transport); the four upstream unit tests are ported. The Ref does not
+  instantiate it.
 
 ## Strategic
 

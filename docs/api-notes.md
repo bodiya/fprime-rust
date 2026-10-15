@@ -265,7 +265,7 @@ token_bucket:
 
 ### Implementation notes / deviations
 
-Deviations/gaps (all intentional): (1) The C++ Serializable/LinearBufferBase overloads of CircularBuffer::serialize/peek and Queue::enqueue/dequeue/popFront (staging-buffer object slots; default STAGING_BUFFER_SIZE=0 asserts on any wrapping slot) are not ported — the task scoped the byte-slice API, and phase-1 consumers (FrameAccumulator, ComQueue) use the byte-level paths; add later if a component needs them. (2) Types::SpscQueue not ported (no phase-1 consumer; listed as out of scope). (3a) The .CRC32 sidecar is BIG-endian since phase 2 (upstream nasa/fprime#5775), byte-identical to validate_file's. (3) CONFIG_CRC_FILE_READ_BLOCK is configured as fprime_config::crc_checker::FILE_READ_BLOCK and re-exported as crc_checker::CRC_FILE_READ_BLOCK (moved in phase 2). (4) crc_checker runs over fprime-os File/FileSystem, as upstream CRCChecker uses Os::File/Os::FileSystem; the sidecar is opened OpenWrite (no truncate) as upstream; the Utils::Hash file-extension helpers its upstream GoldenValue test also covers are not ported. (5) C++ overload pairs map to distinct names: RateLimiter::trigger() (arg-less) -> trigger_counter_only(); Hash::finalize(HashBuffer&) -> finalize_buffer(); TokenBucket 5-arg ctor -> with_state() (which, like C++, does NOT check MAX_TOKEN_BUCKET_TOKENS). (6) Queue::get_message_size() added (no C++ equivalent; trivial getter for downstream ComQueue). (7) Time-base semantics ported exactly: RateLimiter/TokenBucket build cycle/interval Times via Time::from_seconds_useconds (TbNone), so Time::add fw_asserts if a caller mixes bases and cross-base comparisons are false (Incomparable) — same crash/behavior as C++. Note for the orchestrator: mid-task `cargo build --workspace` failed transiently because a sibling agent was concurrently writing fprime-os; I waited until it stabilized and the final full-workspace build is green (fprime-utils itself never depended on it). Files: /home/user/fprime-rust/crates/fprime-utils/src/{lib.rs,hash.rs,crc_checker.rs,rate_limiter.rs,token_bucket.rs,types/mod.rs,types/circular_buffer.rs,types/queue.rs}.
+Deviations/gaps (all intentional): (1) The C++ Serializable/LinearBufferBase overloads of CircularBuffer::serialize/peek and Queue::enqueue/dequeue/popFront (staging-buffer object slots; default STAGING_BUFFER_SIZE=0 asserts on any wrapping slot) are not ported — the task scoped the byte-slice API, and phase-1 consumers (FrameAccumulator, ComQueue) use the byte-level paths; add later if a component needs them. (2) Types::SpscQueue not ported (no phase-1 consumer; listed as out of scope). (3a) The .CRC32 sidecar is BIG-endian since phase 2 (upstream nasa/fprime#5775), byte-identical to validate_file's. (3) CONFIG_CRC_FILE_READ_BLOCK is configured as fprime_config::crc_checker::FILE_READ_BLOCK and re-exported as crc_checker::CRC_FILE_READ_BLOCK (moved in phase 2). (4) crc_checker runs over fprime-os File/FileSystem, as upstream CRCChecker uses Os::File/Os::FileSystem; the sidecar is opened OpenWrite (no truncate) as upstream; the Utils::Hash file-extension helpers its upstream GoldenValue test also covers were ported later (see the section at the end of this file). (5) C++ overload pairs map to distinct names: RateLimiter::trigger() (arg-less) -> trigger_counter_only(); Hash::finalize(HashBuffer&) -> finalize_buffer(); TokenBucket 5-arg ctor -> with_state() (which, like C++, does NOT check MAX_TOKEN_BUCKET_TOKENS). (6) Queue::get_message_size() added (no C++ equivalent; trivial getter for downstream ComQueue). (7) Time-base semantics ported exactly: RateLimiter/TokenBucket build cycle/interval Times via Time::from_seconds_useconds (TbNone), so Time::add fw_asserts if a caller mixes bases and cross-base comparisons are false (Incomparable) — same crash/behavior as C++. Note for the orchestrator: mid-task `cargo build --workspace` failed transiently because a sibling agent was concurrently writing fprime-os; I waited until it stabilized and the final full-workspace build is green (fprime-utils itself never depended on it). Files: /home/user/fprime-rust/crates/fprime-utils/src/{lib.rs,hash.rs,crc_checker.rs,rate_limiter.rs,token_bucket.rs,types/mod.rs,types/circular_buffer.rs,types/queue.rs}.
 
 ## fprime-comp
 
@@ -1936,7 +1936,7 @@ input port number is not forwarded as the output port number (C++
 `toByteStreamDriver_out(portNum, ..)`); each `OutputPort` uses its connection's target
 port number. All ports are single, so upstream always passes 0 anyway. The Ref does
 not instantiate it (upstream has no async byte-stream driver to put behind it). The
-synchronous sibling `Drv::ByteStreamBufferAdapter` is still not ported.
+synchronous sibling `Drv::ByteStreamBufferAdapter` was ported later (see its section).
 
 ### fprime-svc: `ActiveTextLogger` file logging (ROADMAP item 8)
 
@@ -3009,3 +3009,60 @@ priority and stack pass-through, a blocking receive woken by the
 `queue_wait` backoff) and `fprime-comp/tests/no_std_example.rs` (runs the
 `#![no_std]` example's superloop). The `Fw::Logger` unit test ignores
 assert messages, which reach the logger in a `no_std` run.
+
+### fprime-utils: `Utils::Hash` file-extension helpers (small follow-up)
+
+```text
+Hash::get_file_extension_string() -> &'static str          // const fn; ".CRC32"
+Hash::add_file_extension<const N>(base_name: &[u8], extended_name: &mut FwString<N>)
+    -> StringFormatStatus
+Hash::get_file_extension_length() -> FwSizeType            // const fn; 6
+```
+
+Port of `Utils/Hash/HashCommon.cpp`. `add_file_extension` is
+`extendedName.format("%s%s", baseName.toChar(), HASH_EXTENSION_STRING)`: the base is
+read up to its first NUL (`%s`), the previous content is replaced, and the result is
+`Success` when `<base>.CRC32` fits in the `N` bytes, else `Overflowed` with the name
+TRUNCATED to `N` bytes (what `Fw::stringFormat` leaves behind `vsnprintf`; it is not
+emptied). The other `FormatStatus` values cannot occur. The C++ `const
+Fw::ConstStringBase&` becomes `&[u8]` (pass `s.as_bytes()` for an `FwString`). The
+`CRCCheckerTester` GoldenValue port now checks the three helpers and FileNameTooLong
+uses `get_file_extension_length`, as upstream does. Call sites follow upstream:
+`ComLogger` builds its sidecar name with `get_file_extension_string` (as
+`ComLogger.cpp` does); `CRCChecker` keeps `HASH_EXTENSION_STRING`, which upstream
+`CRCChecker.cpp` formats directly; `validate_file` takes the hash-file name from the
+caller, as `Os::ValidateFile` does. `Os::ValidatedFile` (the one upstream user of
+`addFileExtension`) and `Svc::FileWorker` are not ported. The AMPCS sequence format
+keeps its literal `".CRC32"` (upstream appends the literal there too).
+
+### fprime-drv: `Drv::ByteStreamBufferAdapter` (small follow-up)
+
+```text
+ByteStreamBufferAdapter (fprime_drv::byte_stream_buffer_adapter, PASSIVE; root re-export)
+  new(name) -> Arc<Self>; driver_is_ready() -> bool
+  pub base: PassiveBase, pub evt: EventGlue (Log/LogText/Time; no Tlm, no Cmd)
+  Outputs:
+    buffer_in_return_out, buffer_out, from_byte_stream_driver_return_out
+      : OutputPort<dyn BufferSendPort>   (bufferInReturn, bufferOut, -> driver.recvReturnIn)
+    to_byte_stream_driver_out: OutputPort<dyn ByteStreamSendPort>   (-> driver.$send)
+  Inputs (all sync, no component mutex):
+    buffer_in -> PortRef<dyn BufferSendPort>; buffer_out_return_in -> PortRef<dyn BufferSendPort>
+    byte_stream_driver_ready_in -> PortRef<dyn ByteStreamReadyPort>   (<- driver.ready)
+    from_byte_stream_driver_in -> PortRef<dyn ByteStreamDataPort>     (<- driver.$recv)
+  EVENTID_DRIVER_NOT_READY=0, EVENTID_DATA_SEND_ERROR=1 (stat: I32), EVENTID_DATA_RECEIVE_ERROR=2
+    (stat: I32) — all WARNING_LO, unthrottled; stat is the ByteStreamStatus value
+```
+
+Line-for-line port of upstream 4dee010 with its four unit tests (`Test_Stream_out`,
+`_in`, `_Return`, `Test_Driver_Ready_State`; fixed-seed fill as in the async sibling)
+plus literal-byte event, per-status, ready-latch, wiring and unconnected-port tests.
+Same structure, events and receive path as `AsyncByteStreamBufferAdapter`; the send
+path differs: once `ready` has been seen, `bufferIn` is lent to the driver by `&mut`
+(`Drv.ByteStreamSend` leaves ownership with the caller) and a non-`OP_OK` status
+(`SEND_RETRY` included; no retry) logs `DataSendError`; before that, `DriverNotReady`
+and no send. Either way the buffer goes back on `bufferInReturn` right away. Placement
+as for the async sibling: it uses only `Fw.BufferSend` and the canonical `Drv`
+byte-stream traits, so it wires to `TcpClient`, `TcpServer` and `PosixUartDriver`
+with no shims (upstream's `GenericHub` documents this pair as its sample transport).
+Same port-number deviation as the async sibling (the input port number is not reused
+as the output index; all ports are single). The Ref does not instantiate it.

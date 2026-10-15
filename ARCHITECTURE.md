@@ -694,7 +694,7 @@ config constants, and quirks listed there:
 - `fprime-drv`: `ByteStreamStatus { OpOk=0, SendRetry=1, RecvNoData=2,
   OtherError=3 }` + ports, `TcpClient`, `TcpServer` (std::net; read thread +
   reconnect thread; status mapping per the analysis); later additions:
-  `AsyncByteStreamBufferAdapter` and the hardware drivers (`LinuxGpioDriver`,
+  `ByteStreamBufferAdapter`, `AsyncByteStreamBufferAdapter` and the hardware drivers (`LinuxGpioDriver`,
   `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver`; see
   `docs/cpp-analysis/linux-drivers.md`)
 
