@@ -11,6 +11,8 @@
 //! (port the code, not the C++ file-header comment). Not thread safe
 //! (C++ parity); callers wrap in concurrency constructs.
 
+use alloc::boxed::Box;
+use alloc::vec;
 use fprime_fw::fw_assert;
 use fprime_fw::serial::SerializeStatus;
 

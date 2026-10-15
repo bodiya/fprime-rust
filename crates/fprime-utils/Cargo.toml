@@ -10,7 +10,18 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+# Hosted build: every module, including the file-based ones
+# (`crc_checker`, `validate_file`) over `Os::File` / `Os::FileSystem`.
+std = ["fprime-fw/std", "dep:fprime-os", "fprime-os/std"]
+# `no_std` + `alloc` build (ROADMAP "no_std beyond the core"): everything
+# but the file-based modules, over `spin` locks. Build with
+# `--no-default-features --features spin`.
+spin = ["fprime-fw/spin"]
+
 [dependencies]
 fprime-config.workspace = true
-fprime-fw.workspace = true
-fprime-os.workspace = true
+fprime-fw = { path = "../fprime-fw", default-features = false }
+# Only the file-based modules use the OSAL.
+fprime-os = { path = "../fprime-os", default-features = false, optional = true }
