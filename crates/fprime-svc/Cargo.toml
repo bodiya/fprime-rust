@@ -17,15 +17,25 @@ fprime-os.workspace = true
 fprime-utils.workspace = true
 fprime-comp.workspace = true
 
-# The ONLY third-party dependency in the workspace, behind an optional,
-# off-by-default feature (ROADMAP item 14): `zlib` compiles
-# `Svc::DpZLibCompressor` (`dp_zlib_compressor`) on the pure-Rust
-# `miniz_oxide` deflate, so no C toolchain or libz is needed. Without the
-# feature the component is not compiled at all — upstream's CMake likewise
-# skips `Svc_DpZLibCompressor` when libz is not found. `Svc::DpCompressProc`
-# has no compression code of its own and is always built.
+# Third-party dependencies exist only behind optional, off-by-default
+# features (user-approved; the default build is zero-dependency):
+#
+# - `zlib` (ROADMAP item 14) compiles `Svc::DpZLibCompressor`
+#   (`dp_zlib_compressor`) on the pure-Rust `miniz_oxide` deflate, so no C
+#   toolchain or libz is needed. Without the feature the component is not
+#   compiled at all — upstream's CMake likewise skips
+#   `Svc_DpZLibCompressor` when libz is not found. `Svc::DpCompressProc`
+#   has no compression code of its own and is always built.
+# - `aes-gcm` (ROADMAP item 12) compiles the SDLS AES-GCM components
+#   (`ccsds::aes_gcm_encryptor` / `ccsds::aes_gcm_decryptor`) on RustCrypto
+#   `aes-gcm`, with IVs from the OS CSPRNG via `getrandom` and key wiping
+#   via `zeroize`. Without the feature they are not compiled at all.
 miniz_oxide = { version = "0.9", optional = true, default-features = false, features = ["with-alloc"] }
+aes-gcm = { version = "0.10.3", optional = true, default-features = false, features = ["aes", "zeroize"] }
+getrandom = { version = "0.2.15", optional = true }
+zeroize = { version = "1.8", optional = true }
 
 [features]
 default = []
 zlib = ["dep:miniz_oxide"]
+aes-gcm = ["dep:aes-gcm", "dep:getrandom", "dep:zeroize"]

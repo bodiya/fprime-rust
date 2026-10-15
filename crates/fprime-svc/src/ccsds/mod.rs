@@ -5,6 +5,17 @@
 //! See `docs/cpp-analysis/ccsds.md` and, for AOS and SDLS, the module
 //! headers (ROADMAP item 12).
 
+// AES-256-GCM SDLS crypto: only with the off-by-default `aes-gcm` feature
+// (third-party RustCrypto crates). Without it these components are not
+// compiled at all — there is deliberately no stub that could be wired in
+// and silently provide no security; `ClearTextEncryptor`/`Decryptor` are
+// the explicit no-security choice.
+#[cfg(feature = "aes-gcm")]
+pub mod aes_gcm_cipher;
+#[cfg(feature = "aes-gcm")]
+pub mod aes_gcm_decryptor;
+#[cfg(feature = "aes-gcm")]
+pub mod aes_gcm_encryptor;
 pub mod aos_deframer;
 pub mod aos_framer;
 pub mod apid_manager;
