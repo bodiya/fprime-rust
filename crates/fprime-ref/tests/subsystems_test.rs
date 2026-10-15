@@ -97,6 +97,35 @@ fn file_manager_create_directory_end_to_end() {
     harness.topology.teardown();
 }
 
+/// The `fileManager` sandbox is fail-closed in the component, and the
+/// topology opens it to `/` exactly as upstream's `FileHandling`
+/// subtopology does (`FileHandlingConfig.Paths.sandboxDir`): a path OUTSIDE
+/// the deployment's data directory is still accepted end to end.
+#[test]
+fn file_manager_sandbox_is_open_like_the_file_handling_subtopology() {
+    let harness = Harness::up();
+    assert_eq!(
+        harness
+            .topology
+            .file_manager
+            .sandbox_directory()
+            .as_ref()
+            .and_then(|d| d.as_str()),
+        Some("/")
+    );
+    // A sibling of the data directory, so not inside it.
+    let outside = format!("{}_x", harness.data_dir());
+    assert!(!std::path::Path::new(&outside).exists());
+
+    let create = opcode(FILE_MANAGER_BASE_ID, FileManager::OPCODE_CREATE_DIRECTORY);
+    run_command(&harness, create, &cmd_string_arg(&outside));
+    assert!(std::path::Path::new(&outside).is_dir());
+    assert!(!harness.saw_event(FILE_MANAGER_BASE_ID + FileManager::EVENTID_PATH_OUTSIDE_SANDBOX));
+
+    std::fs::remove_dir(&outside).unwrap();
+    harness.topology.teardown();
+}
+
 /// A `RemoveDirectory` of a directory that is not there answers
 /// `OpCodeError`, not `OpCodeCompleted` — the failure path travels the same
 /// graph.

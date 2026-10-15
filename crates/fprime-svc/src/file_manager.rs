@@ -48,8 +48,30 @@
 //! the DP ports unconnected the command takes the C++ path verbatim:
 //! `GenerateDpBufferFailed` and `OK`.
 //!
-//! Not ported: the newer upstream `resolveInSandbox` step (this port's
-//! `FileManager` has no sandbox yet; see `docs/ROADMAP.md`).
+//! ## Path sandbox
+//!
+//! Every command path argument goes through `resolveInSandbox` before any
+//! filesystem call (upstream `fd1c5517f1`, "fail-closed sandbox
+//! confinement"): the path is resolved with
+//! [`fprime_os::file_path_utils::resolve_from_cwd`] (purely lexical — `.`,
+//! `..` and `//` collapsed, relative paths against the CWD, no symlink
+//! following) and checked with
+//! [`fprime_os::file_path_utils::check_containment`] against the directory
+//! set by [`FileManager::configure`]. The RESOLVED path is what reaches the
+//! OS call; events still echo the path as commanded (and the directory
+//! listing still builds entry paths from the commanded name). A rejected
+//! path emits `PathOutsideSandbox(path, sandboxDir)`, increments `Errors`
+//! and answers `VALIDATION_ERROR` with no filesystem effect — including for
+//! `CalculateCrc` and `GenerateDp`, which otherwise never touch the
+//! channels. `MoveFile`/`AppendFile` check source then destination and stop
+//! at the first rejection; `ListDirectory` and `GenerateDp` run their
+//! busy/port checks first.
+//!
+//! **Fail-CLOSED** (C++ parity — unlike `Os::SandboxedFile`, which is
+//! fail-open): until `configure` is called every command is rejected, with
+//! an empty `sandboxDir` in the event. Upstream's `FileHandling`
+//! subtopology configures `"/"` (unrestricted) in its `configComponents`
+//! phase, and the Rust `Ref` topology does the same.
 
 use fprime_comp::{
     ActiveBase, ActiveComponent, CmdGlue, CmdPort, ComponentDispatch, EventGlue, MsgDispatchStatus,
@@ -68,6 +90,9 @@ use fprime_fw::{
 };
 use fprime_os::directory::{OpenMode, Status as DirStatus};
 use fprime_os::file::{Mode as FileMode, SeekType, Status as FileStatus, WaitType};
+use fprime_os::file_path_utils::{
+    MAX_PATH_LENGTH, PathStatus, check_containment, resolve_from_cwd,
+};
 use fprime_os::{Directory, File, filesystem};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -205,6 +230,12 @@ enum GenerateDpState {
 struct ManagerState {
     command_count: u32,
     error_count: u32,
+    /// C++ `m_sandboxDir`: the canonical sandbox directory (absolute, ends
+    /// with `/`); empty until [`FileManager::configure`].
+    sandbox_dir: FileNameString,
+    /// C++ `m_sandboxConfigured`: `false` (fail-closed) until
+    /// [`FileManager::configure`].
+    sandbox_configured: bool,
     list_state: ListDirectoryState,
     current_dir: Directory,
     current_dir_name: CmdStringArg,
@@ -233,6 +264,8 @@ impl ManagerState {
         Self {
             command_count: 0,
             error_count: 0,
+            sandbox_dir: FileNameString::new(),
+            sandbox_configured: false,
             list_state: ListDirectoryState::Idle,
             current_dir: Directory::new(),
             current_dir_name: CmdStringArg::new(),
@@ -376,6 +409,8 @@ impl FileManager {
     /// `GenerateDpInvalidRange(fileName, beginOffset, endOffset, fileSize)`
     /// — WARNING_HI, id 0x22.
     pub const EVENTID_GENERATE_DP_INVALID_RANGE: FwEventIdType = 0x22;
+    /// `PathOutsideSandbox(path, sandboxDir)` — WARNING_HI, id 0x23.
+    pub const EVENTID_PATH_OUTSIDE_SANDBOX: FwEventIdType = 0x23;
 
     // -- Telemetry ---------------------------------------------------------
 
@@ -403,6 +438,51 @@ impl FileManager {
     /// Create the message queue.
     pub fn init(&self, queue_depth: FwSizeType) {
         self.active.queued.create_queue(queue_depth, QUEUE_MSG_SIZE);
+    }
+
+    /// C++ `configure(sandboxDir)`: set the directory that confines every
+    /// command path argument. MUST be called during topology setup, before
+    /// commanding — the component is fail-closed and rejects every command
+    /// until it is. `sandbox_dir` may be absolute or relative to the
+    /// process working directory; `"/"` permits any path (what upstream's
+    /// `FileHandling` subtopology configures by default). May be called
+    /// again to re-restrict.
+    pub fn configure(&self, sandbox_dir: &str) {
+        // C++ FW_ASSERT(resolveStatus == VALID): an unresolvable directory
+        // is a programmer error. Should an assert hook let execution
+        // continue, the sandbox is left unchanged rather than widened.
+        let mut resolved = FileNameString::new();
+        let status = resolve_from_cwd(sandbox_dir, &mut resolved);
+        if status != PathStatus::Valid {
+            fw_assert!(false, status as i32);
+            return;
+        }
+        let len = resolved.len();
+        // C++ FW_ASSERT(resolvedLen > 0) / (resolvedLen < MAX_PATH_LENGTH).
+        if len == 0 || len >= MAX_PATH_LENGTH {
+            fw_assert!(false, len as i32);
+            return;
+        }
+        if resolved.as_bytes()[len - 1] != b'/' {
+            // C++ FW_ASSERT(resolvedLen + 2 <= MAX_PATH_LENGTH): room for
+            // the '/' and the terminator.
+            if len + 2 > MAX_PATH_LENGTH {
+                fw_assert!(false, len as i32);
+                return;
+            }
+            resolved.append("/");
+        }
+        let mut state = self.state.lock().unwrap();
+        state.sandbox_dir = resolved;
+        state.sandbox_configured = true;
+    }
+
+    /// The configured sandbox directory (canonical, ends with `/`), or
+    /// `None` while unconfigured (fail-closed).
+    #[must_use]
+    pub fn sandbox_directory(&self) -> Option<FileNameString> {
+        let state = self.state.lock().unwrap();
+        state.sandbox_configured.then(|| state.sandbox_dir.clone())
     }
 
     /// C++ `regCommands()` — opcode 0x04 is a deliberate gap.
@@ -573,6 +653,9 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        let Some(resolved) = self.resolve_in_sandbox_locked(&dir_name, op_code, cmd_seq) else {
+            return;
+        };
         let log_name = to_log_string(&dir_name);
         self.log_one_name(
             Self::EVENTID_CREATE_DIRECTORY_STARTED,
@@ -580,7 +663,7 @@ impl FileManager {
             &log_name,
             "Creating directory",
         );
-        let status = filesystem::create_directory(dir_name.as_str().unwrap_or(""), true);
+        let status = filesystem::create_directory(resolved.as_str().unwrap_or(""), true);
         if status != filesystem::Status::OpOk {
             self.log_name_and_status(
                 Self::EVENTID_DIRECTORY_CREATE_ERROR,
@@ -617,6 +700,9 @@ impl FileManager {
                 .cmd_response(op_code, cmd_seq, CmdResponse::FormatError);
             return;
         }
+        let Some(resolved) = self.resolve_in_sandbox_locked(&file_name, op_code, cmd_seq) else {
+            return;
+        };
         let log_name = to_log_string(&file_name);
         self.log_one_name(
             Self::EVENTID_REMOVE_FILE_STARTED,
@@ -624,7 +710,7 @@ impl FileManager {
             &log_name,
             "Removing file",
         );
-        let status = filesystem::remove_file(file_name.as_str().unwrap_or(""));
+        let status = filesystem::remove_file(resolved.as_str().unwrap_or(""));
         if status != filesystem::Status::OpOk {
             self.log_name_and_status(
                 Self::EVENTID_FILE_REMOVE_ERROR,
@@ -661,6 +747,15 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        // Each argument is checked independently; the destination is not
+        // examined once the source is rejected (C++ `||` short-circuit).
+        let Some(resolved_source) = self.resolve_in_sandbox_locked(&source, op_code, cmd_seq)
+        else {
+            return;
+        };
+        let Some(resolved_dest) = self.resolve_in_sandbox_locked(&dest, op_code, cmd_seq) else {
+            return;
+        };
         let log_source = to_log_string(&source);
         let log_dest = to_log_string(&dest);
         self.log_two_names(
@@ -670,8 +765,10 @@ impl FileManager {
             &log_dest,
             "Moving file",
         );
-        let status =
-            filesystem::move_file(source.as_str().unwrap_or(""), dest.as_str().unwrap_or(""));
+        let status = filesystem::move_file(
+            resolved_source.as_str().unwrap_or(""),
+            resolved_dest.as_str().unwrap_or(""),
+        );
         if status != filesystem::Status::OpOk {
             self.log_two_names_and_status(
                 Self::EVENTID_FILE_MOVE_ERROR,
@@ -704,6 +801,9 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        let Some(resolved) = self.resolve_in_sandbox_locked(&dir_name, op_code, cmd_seq) else {
+            return;
+        };
         let log_name = to_log_string(&dir_name);
         self.log_one_name(
             Self::EVENTID_REMOVE_DIRECTORY_STARTED,
@@ -711,7 +811,7 @@ impl FileManager {
             &log_name,
             "Removing directory",
         );
-        let status = filesystem::remove_directory(dir_name.as_str().unwrap_or(""));
+        let status = filesystem::remove_directory(resolved.as_str().unwrap_or(""));
         if status != filesystem::Status::OpOk {
             self.log_name_and_status(
                 Self::EVENTID_DIRECTORY_REMOVE_ERROR,
@@ -742,6 +842,14 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        let Some(resolved_source) = self.resolve_in_sandbox_locked(&source, op_code, cmd_seq)
+        else {
+            return;
+        };
+        let Some(resolved_target) = self.resolve_in_sandbox_locked(&target, op_code, cmd_seq)
+        else {
+            return;
+        };
         let log_source = to_log_string(&source);
         let log_target = to_log_string(&target);
         self.log_two_names(
@@ -752,8 +860,8 @@ impl FileManager {
             "Appending file",
         );
         let status = filesystem::append_file(
-            source.as_str().unwrap_or(""),
-            target.as_str().unwrap_or(""),
+            resolved_source.as_str().unwrap_or(""),
+            resolved_target.as_str().unwrap_or(""),
             true,
         );
         if status != filesystem::Status::OpOk {
@@ -783,6 +891,9 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        let Some(resolved) = self.resolve_in_sandbox_locked(&file_name, op_code, cmd_seq) else {
+            return;
+        };
         let log_name = to_log_string(&file_name);
         self.log_one_name(
             Self::EVENTID_FILE_SIZE_STARTED,
@@ -791,7 +902,7 @@ impl FileManager {
             "Getting size of file",
         );
         let mut size: FwSizeType = 0;
-        let status = filesystem::get_file_size(file_name.as_str().unwrap_or(""), &mut size);
+        let status = filesystem::get_file_size(resolved.as_str().unwrap_or(""), &mut size);
         if status != filesystem::Status::OpOk {
             self.log_name_and_status(
                 Self::EVENTID_FILE_SIZE_ERROR,
@@ -841,10 +952,14 @@ impl FileManager {
             self.send_command_response(op_code, cmd_seq, filesystem::Status::OtherError);
             return;
         }
+        let Some(resolved) = self.resolve_in_sandbox(&mut state, &dir_name, op_code, cmd_seq)
+        else {
+            return;
+        };
         self.log_list_directory_started(&dir_name);
         let status = state
             .current_dir
-            .open(dir_name.as_str().unwrap_or(""), OpenMode::Read);
+            .open(resolved.as_str().unwrap_or(""), OpenMode::Read);
         if status != DirStatus::OpOk {
             self.log_list_directory_error(&dir_name, status as u32);
             self.emit_telemetry(&mut state, filesystem::Status::OtherError);
@@ -869,6 +984,9 @@ impl FileManager {
             Some(v) => v,
             None => return,
         };
+        let Some(resolved) = self.resolve_in_sandbox_locked(&file_name, op_code, cmd_seq) else {
+            return;
+        };
         let log_name = to_log_string(&file_name);
         self.log_one_name(
             Self::EVENTID_CALCULATE_CRC_STARTED,
@@ -878,7 +996,7 @@ impl FileManager {
         );
         let mut file = File::new();
         let mut crc_value: u32 = 0;
-        let mut status = file.open(file_name.as_str().unwrap_or(""), FileMode::OpenRead);
+        let mut status = file.open(resolved.as_str().unwrap_or(""), FileMode::OpenRead);
         if status == FileStatus::OpOk {
             status = file.calculate_crc(&mut crc_value);
         }
@@ -971,8 +1089,14 @@ impl FileManager {
             chunk_size
         };
 
-        let path = file_name.as_str().unwrap_or_default();
-        let status = state.dp_file.open(path, FileMode::OpenRead);
+        let Some(resolved) = self.resolve_in_sandbox(&mut state, &file_name, op_code, cmd_seq)
+        else {
+            return;
+        };
+
+        let status = state
+            .dp_file
+            .open(resolved.as_str().unwrap_or_default(), FileMode::OpenRead);
         if status != FileStatus::OpOk {
             self.log_generate_dp_failed(&log_name, GenerateDpStage::Open, status as u32);
             self.cmd.cmd_response(op_code, cmd_seq, CmdResponse::Ok);
@@ -1018,7 +1142,9 @@ impl FileManager {
             }
         }
 
-        state.dp_file_name.set(path);
+        // C++ `m_dpFileName = fileName`: the name as commanded, not the
+        // resolved path, goes into the events and the chunk headers.
+        state.dp_file_name.set_bytes(file_name.as_bytes());
         state.dp_file_size = file_size;
         state.dp_offset = begin_offset;
         state.dp_end_offset = effective_end;
@@ -1226,6 +1352,62 @@ impl FileManager {
             return None;
         }
         Some((first, second))
+    }
+
+    // -- Sandbox ------------------------------------------------------------
+
+    /// C++ `resolveInSandbox(path, resolved, opCode, cmdSeq)`: resolve a
+    /// command path argument from the CWD and check it against the
+    /// configured sandbox. Returns the canonical path on acceptance. On
+    /// rejection (unconfigured, unresolvable, or outside the sandbox) emits
+    /// `PathOutsideSandbox(path, sandboxDir)`, counts an error on the
+    /// `Errors` channel and answers `VALIDATION_ERROR`, returning `None`.
+    fn resolve_in_sandbox(
+        &self,
+        state: &mut ManagerState,
+        path: &CmdStringArg,
+        op_code: FwOpcodeType,
+        cmd_seq: u32,
+    ) -> Option<FileNameString> {
+        let mut accepted = None;
+        if state.sandbox_configured {
+            // Deviation: C++ resolves the raw `toChar()` bytes; the Rust
+            // path helpers (and every `fprime-os` file API) take `&str`, so
+            // a path that is not valid UTF-8 cannot be resolved and is
+            // rejected like any other unresolvable path.
+            if let Some(path_str) = path.as_str() {
+                let mut resolved = FileNameString::new();
+                let contained = resolve_from_cwd(path_str, &mut resolved) == PathStatus::Valid
+                    && resolved.as_str().is_some_and(|r| {
+                        check_containment(r, state.sandbox_dir.as_str().unwrap_or_default())
+                            == PathStatus::Valid
+                    });
+                if contained {
+                    accepted = Some(resolved);
+                }
+            }
+        }
+        if accepted.is_none() {
+            self.log_path_outside_sandbox(path, &state.sandbox_dir);
+            state.error_count += 1;
+            let count = state.error_count;
+            self.tlm_write(Self::CHANID_ERRORS, count);
+            self.cmd
+                .cmd_response(op_code, cmd_seq, CmdResponse::ValidationError);
+        }
+        accepted
+    }
+
+    /// [`Self::resolve_in_sandbox`] for the handlers that do not otherwise
+    /// hold the state lock.
+    fn resolve_in_sandbox_locked(
+        &self,
+        path: &CmdStringArg,
+        op_code: FwOpcodeType,
+        cmd_seq: u32,
+    ) -> Option<FileNameString> {
+        let mut state = self.state.lock().unwrap();
+        self.resolve_in_sandbox(&mut state, path, op_code, cmd_seq)
     }
 
     // -- Telemetry / response helpers --------------------------------------
@@ -1497,6 +1679,22 @@ impl FileManager {
             &dir,
             &sub,
             "Directory",
+        );
+    }
+
+    /// `PathOutsideSandbox(path, sandboxDir)` — WARNING_HI.
+    fn log_path_outside_sandbox(&self, path: &CmdStringArg, sandbox_dir: &FileNameString) {
+        let path = to_log_string(path);
+        let dir = log_string_of(sandbox_dir);
+        self.evt.log_event(
+            self.id_base(),
+            Self::EVENTID_PATH_OUTSIDE_SANDBOX,
+            LogSeverity::WarningHi,
+            &format!("Path {path} is outside the configured sandbox directory {dir}"),
+            |buf| {
+                fw_try!(path.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big));
+                dir.serialize_to_truncated(buf, EVENT_STRING_SIZE, Endianness::Big)
+            },
         );
     }
 
@@ -1865,6 +2063,11 @@ mod tests {
         comp.cmd.cmd_reg_out.connect(ground.clone(), 0);
         comp.ping_out.connect(ground.clone(), 0);
         comp.init(64);
+        // C++ tester parity: the sandbox is fail-closed until configured, so
+        // open it fully (as the subtopologies do by default) and let the
+        // nominal tests exercise unrestricted behavior. Sandbox tests use
+        // `setup_unconfigured` or re-configure.
+        comp.configure("/");
         (comp, ground)
     }
 
@@ -3009,5 +3212,571 @@ mod tests {
     #[test]
     fn queue_message_size_fits_a_full_command_argument_buffer() {
         assert_eq!(QUEUE_MSG_SIZE, 522);
+    }
+
+    // ---- Sandbox (FileManagerTester sandbox* tests) ------------------------
+
+    /// `setup()` without the `configure("/")` call: the fail-closed state.
+    fn setup_unconfigured() -> (Arc<FileManager>, Arc<Ground>) {
+        let comp = FileManager::new("fileManager");
+        let ground = Arc::new(Ground::default());
+        comp.active.queued.base.set_id_base(ID_BASE);
+        comp.evt.log_out.connect(ground.clone(), 0);
+        comp.tlm.tlm_out.connect(ground.clone(), 0);
+        comp.cmd.cmd_response_out.connect(ground.clone(), 0);
+        comp.init(64);
+        (comp, ground)
+    }
+
+    /// C++ `clearHistory()`.
+    fn clear_history(ground: &Ground) {
+        ground.events.lock().unwrap().clear();
+        ground.tlm.lock().unwrap().clear();
+        ground.responses.lock().unwrap().clear();
+        ground.dp_gets.lock().unwrap().clear();
+        ground.dp_sent.lock().unwrap().clear();
+    }
+
+    fn remove_file_args(path: &str, ignore_errors: bool) -> impl FnOnce(&mut CmdArgBuffer) + '_ {
+        move |args: &mut CmdArgBuffer| {
+            let s = CmdStringArg::from(path);
+            assert_eq!(s.serialize_to(args, Endianness::Big), SerializeStatus::Ok);
+            assert!(args.serialize_bool_be(ignore_errors).is_ok());
+        }
+    }
+
+    /// Split `[u16 len][bytes]` string arguments off the front of `args`.
+    fn split_string(args: &[u8]) -> (&[u8], &[u8]) {
+        let len = usize::from(u16::from_be_bytes([args[0], args[1]]));
+        (&args[2..2 + len], &args[2 + len..])
+    }
+
+    /// C++ `assertSandboxRejection(opcode, path)`: exactly one
+    /// `VALIDATION_ERROR` response, exactly one event (`PathOutsideSandbox`
+    /// naming the commanded path) and exactly one telemetry write
+    /// (`Errors`).
+    fn assert_sandbox_rejection(ground: &Ground, opcode: FwOpcodeType, cmd_seq: u32, path: &str) {
+        assert_eq!(
+            ground.responses(),
+            vec![(ID_BASE + opcode, cmd_seq, CmdResponse::ValidationError)]
+        );
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_PATH_OUTSIDE_SANDBOX]
+        );
+        let events = ground.events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX);
+        assert_eq!(events[0].0, LogSeverity::WarningHi);
+        assert_eq!(split_string(&events[0].1).0, path.as_bytes());
+        let tlm = ground.tlm.lock().unwrap();
+        assert_eq!(tlm.len(), 1);
+        assert_eq!(tlm[0].0, ID_BASE + FileManager::CHANID_ERRORS);
+    }
+
+    /// A private `<tmp>/fpm<pid>_<n>` directory holding a sandbox `s/`; the
+    /// rest of `base` is OUTSIDE the sandbox but still private to the test.
+    fn sandbox_dirs() -> (String, String) {
+        let base = temp_dir();
+        std::fs::create_dir(base.join("s")).unwrap();
+        (path_str(&base), path_str(&base.join("s")))
+    }
+
+    #[test]
+    fn sandbox_rejects_outside_paths() {
+        let (comp, ground) = setup_with_dp();
+        let (base, sb) = sandbox_dirs();
+        comp.configure(&sb);
+        let outside = format!("{base}/o.txt");
+        std::fs::write(&outside, b"outside").unwrap();
+        let contained = format!("{sb}/c.txt");
+        std::fs::write(&contained, b"data").unwrap();
+
+        // RemoveFile: absolute path outside the sandbox.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_REMOVE_FILE,
+            1,
+            remove_file_args(&outside, false),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_REMOVE_FILE, 1, &outside);
+        assert!(std::path::Path::new(&outside).exists());
+
+        // CreateDirectory: escape via '..'.
+        clear_history(&ground);
+        let escape = format!("{sb}/../e");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_CREATE_DIRECTORY,
+            2,
+            one_string(&escape),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_CREATE_DIRECTORY, 2, &escape);
+        assert!(!std::path::Path::new(&format!("{base}/e")).exists());
+
+        // MoveFile: contained source, escaping destination — nothing moves.
+        clear_history(&ground);
+        let moved_out = format!("{sb}/../m.txt");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_MOVE_FILE,
+            3,
+            two_strings(&contained, &moved_out),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_MOVE_FILE, 3, &moved_out);
+        assert!(std::path::Path::new(&contained).exists());
+        assert!(!std::path::Path::new(&format!("{base}/m.txt")).exists());
+
+        // MoveFile: escaping source — rejected once; the destination is
+        // never examined (C++ `||` short-circuit).
+        clear_history(&ground);
+        let also_outside = format!("{base}/n.txt");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_MOVE_FILE,
+            4,
+            two_strings(&outside, &also_outside),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_MOVE_FILE, 4, &outside);
+        assert!(std::path::Path::new(&outside).exists());
+
+        // AppendFile: escaping source, then escaping target.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_APPEND_FILE,
+            5,
+            two_strings(&outside, &contained),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_APPEND_FILE, 5, &outside);
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_APPEND_FILE,
+            6,
+            two_strings(&contained, &outside),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_APPEND_FILE, 6, &outside);
+        assert_eq!(std::fs::read(&contained).unwrap(), b"data");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside");
+
+        // FileSize outside.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            7,
+            one_string(&outside),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_FILE_SIZE, 7, &outside);
+
+        // ListDirectory outside — and no listing is left in progress.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_LIST_DIRECTORY,
+            8,
+            one_string(&base),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_LIST_DIRECTORY, 8, &base);
+        sched_tick(&comp);
+        assert_eq!(ground.event_ids().len(), 1);
+
+        // CalculateCrc outside: counts an error although CalculateCrc
+        // otherwise never touches the channels.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_CALCULATE_CRC,
+            9,
+            one_string(&outside),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_CALCULATE_CRC, 9, &outside);
+
+        // RemoveDirectory outside.
+        clear_history(&ground);
+        let victim = format!("{base}/r");
+        std::fs::create_dir(&victim).unwrap();
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_REMOVE_DIRECTORY,
+            10,
+            one_string(&victim),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_REMOVE_DIRECTORY, 10, &victim);
+        assert!(std::path::Path::new(&victim).is_dir());
+
+        // GenerateDp outside: no container is requested.
+        clear_history(&ground);
+        generate_dp(&comp, 11, &outside, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_GENERATE_DP, 11, &outside);
+        assert!(ground.dp_gets.lock().unwrap().is_empty());
+
+        // Every rejection counted one error.
+        assert_eq!(ground.last_tlm(FileManager::CHANID_ERRORS), Some(11));
+
+        // A contained command still works.
+        clear_history(&ground);
+        let new_dir = format!("{sb}/new");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_CREATE_DIRECTORY,
+            12,
+            one_string(&new_dir),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE, 12, CmdResponse::Ok)]);
+        assert!(std::path::Path::new(&new_dir).is_dir());
+    }
+
+    #[test]
+    fn sandbox_fail_closed() {
+        let (comp, ground) = setup_unconfigured();
+        assert!(comp.sandbox_directory().is_none());
+        let base = temp_dir();
+        let file = path_str(&base.join("any.txt"));
+        std::fs::write(&file, b"x").unwrap();
+
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_REMOVE_FILE,
+            1,
+            remove_file_args(&file, false),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_REMOVE_FILE, 1, &file);
+        assert!(std::path::Path::new(&file).exists());
+        // The unconfigured sandbox directory is reported as "".
+        let events = ground.events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX);
+        let (_, rest) = split_string(&events[0].1);
+        assert_eq!(rest, &[0u8, 0]);
+
+        // Even "/" is rejected until configured.
+        clear_history(&ground);
+        send_cmd(&comp, FileManager::OPCODE_FILE_SIZE, 2, one_string("/"));
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_FILE_SIZE, 2, "/");
+
+        comp.configure("/");
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_REMOVE_FILE,
+            3,
+            remove_file_args(&file, false),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 3, 3, CmdResponse::Ok)]);
+        assert!(!std::path::Path::new(&file).exists());
+    }
+
+    #[test]
+    fn sandbox_resolves_paths() {
+        let (comp, ground) = setup();
+        let (_base, sb) = sandbox_dirs();
+        std::fs::create_dir(format!("{sb}/a")).unwrap();
+        std::fs::write(format!("{sb}/in.txt"), b"hello\n").unwrap();
+        comp.configure(&sb);
+
+        // 'a/../in.txt' resolves to '<sandbox>/in.txt': contained, accepted.
+        let commanded = format!("{sb}/a/../in.txt");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            1,
+            one_string(&commanded),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 6, 1, CmdResponse::Ok)]);
+        assert!(
+            ground
+                .events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX)
+                .is_empty()
+        );
+        // The events echo the path AS COMMANDED, not the resolved one.
+        let ok = ground.events_of(FileManager::EVENTID_FILE_SIZE_SUCCEEDED);
+        assert_eq!(ok.len(), 1);
+        let (name, rest) = split_string(&ok[0].1);
+        assert_eq!(name, commanded.as_bytes());
+        assert_eq!(rest, &6u64.to_be_bytes());
+
+        // The sandbox directory itself (no trailing slash) is contained.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_LIST_DIRECTORY,
+            2,
+            one_string(&sb),
+        );
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_LIST_DIRECTORY_STARTED]
+        );
+    }
+
+    #[test]
+    fn sandbox_open_root_is_unrestricted() {
+        let (comp, ground) = setup();
+        comp.configure("/");
+        let base = path_str(&temp_dir());
+        let open_dir = format!("{base}/open");
+
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_CREATE_DIRECTORY,
+            1,
+            one_string(&open_dir),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE, 1, CmdResponse::Ok)]);
+        assert!(std::path::Path::new(&open_dir).is_dir());
+
+        let file = format!("{open_dir}/f.txt");
+        std::fs::write(&file, b"0123456789AB").unwrap();
+        clear_history(&ground);
+        send_cmd(&comp, FileManager::OPCODE_FILE_SIZE, 2, one_string(&file));
+        assert_eq!(ground.responses(), vec![(ID_BASE + 6, 2, CmdResponse::Ok)]);
+        let ok = ground.events_of(FileManager::EVENTID_FILE_SIZE_SUCCEEDED);
+        let (name, rest) = split_string(&ok[0].1);
+        assert_eq!(name, file.as_bytes());
+        assert_eq!(rest, &12u64.to_be_bytes());
+
+        let moved = format!("{open_dir}/m.txt");
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_MOVE_FILE,
+            3,
+            two_strings(&file, &moved),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 1, 3, CmdResponse::Ok)]);
+        assert!(std::path::Path::new(&moved).exists());
+
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_REMOVE_FILE,
+            4,
+            remove_file_args(&moved, false),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 3, 4, CmdResponse::Ok)]);
+        assert!(!std::path::Path::new(&moved).exists());
+        assert!(
+            ground
+                .events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn configure_canonicalizes_and_appends_a_trailing_slash() {
+        let (comp, _ground) = setup_unconfigured();
+        let dir = |comp: &FileManager| {
+            comp.sandbox_directory()
+                .and_then(|d| d.as_str().map(str::to_string))
+        };
+        comp.configure("/a/./b/../c");
+        assert_eq!(dir(&comp).as_deref(), Some("/a/c/"));
+        comp.configure("/x/");
+        assert_eq!(dir(&comp).as_deref(), Some("/x/"));
+        comp.configure("/");
+        assert_eq!(dir(&comp).as_deref(), Some("/"));
+        // A relative directory resolves against the working directory.
+        comp.configure("sub/../d");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(dir(&comp), Some(format!("{}/d/", cwd.to_str().unwrap())));
+    }
+
+    #[test]
+    fn relative_command_paths_resolve_against_the_working_directory() {
+        // The crate directory is the test CWD and holds `Cargo.toml`.
+        let (comp, ground) = setup();
+        comp.configure(".");
+        let size = std::fs::metadata("Cargo.toml").unwrap().len();
+
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            1,
+            one_string("Cargo.toml"),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 6, 1, CmdResponse::Ok)]);
+        let ok = ground.events_of(FileManager::EVENTID_FILE_SIZE_SUCCEEDED);
+        assert_eq!(split_string(&ok[0].1).1, &size.to_be_bytes());
+
+        // `..` that climbs back into the sandbox is fine ...
+        let crate_name = std::env::current_dir().unwrap();
+        let back_in = format!(
+            "../{}/Cargo.toml",
+            crate_name.file_name().unwrap().to_str().unwrap()
+        );
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            2,
+            one_string(&back_in),
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 6, 2, CmdResponse::Ok)]);
+
+        // ... one that leaves it is not.
+        clear_history(&ground);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            3,
+            one_string("../Cargo.toml"),
+        );
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_FILE_SIZE, 3, "../Cargo.toml");
+    }
+
+    #[test]
+    fn path_outside_sandbox_event_is_byte_exact() {
+        let (comp, ground) = setup();
+        comp.configure("/data");
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_FILE_SIZE,
+            1,
+            one_string("/etc/x"),
+        );
+        let events = ground.events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX);
+        assert_eq!(events.len(), 1);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&6u16.to_be_bytes());
+        expected.extend_from_slice(b"/etc/x");
+        expected.extend_from_slice(&6u16.to_be_bytes());
+        expected.extend_from_slice(b"/data/");
+        assert_eq!(events[0].1, expected);
+        assert_eq!(ground.last_tlm(FileManager::CHANID_ERRORS), Some(1));
+        assert_eq!(ground.last_tlm(FileManager::CHANID_COMMANDS_EXECUTED), None);
+    }
+
+    #[test]
+    fn an_empty_path_is_rejected_by_the_sandbox() {
+        // C++ `resolvePath("")` is INVALID_PATH, so even the open sandbox
+        // rejects it before any OS call.
+        let (comp, ground) = setup();
+        send_cmd(&comp, FileManager::OPCODE_FILE_SIZE, 1, one_string(""));
+        assert_sandbox_rejection(&ground, FileManager::OPCODE_FILE_SIZE, 1, "");
+    }
+
+    /// Deviation (documented in `resolve_in_sandbox`): a path that is not
+    /// UTF-8 cannot be resolved by the `&str` helpers and is rejected.
+    #[test]
+    fn a_non_utf8_path_is_rejected_by_the_sandbox() {
+        let (comp, ground) = setup();
+        send_cmd(&comp, FileManager::OPCODE_FILE_SIZE, 1, |args| {
+            let mut s = CmdStringArg::new();
+            s.set_bytes(b"/tmp/\xff");
+            assert_eq!(s.serialize_to(args, Endianness::Big), SerializeStatus::Ok);
+        });
+        assert_eq!(
+            ground.responses(),
+            vec![(ID_BASE + 6, 1, CmdResponse::ValidationError)]
+        );
+        let events = ground.events_of(FileManager::EVENTID_PATH_OUTSIDE_SANDBOX);
+        assert_eq!(split_string(&events[0].1).0, b"/tmp/\xff");
+    }
+
+    /// Resolution is lexical: a symlink inside the sandbox still escapes it
+    /// (C++ parity — `FilePathUtils` never follows links).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_inside_the_sandbox_is_not_followed() {
+        let (comp, ground) = setup();
+        let (base, sb) = sandbox_dirs();
+        let target = format!("{base}/t.txt");
+        std::fs::write(&target, b"abc").unwrap();
+        let link = format!("{sb}/l");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        comp.configure(&sb);
+        send_cmd(&comp, FileManager::OPCODE_FILE_SIZE, 1, one_string(&link));
+        assert_eq!(ground.responses(), vec![(ID_BASE + 6, 1, CmdResponse::Ok)]);
+        let ok = ground.events_of(FileManager::EVENTID_FILE_SIZE_SUCCEEDED);
+        assert_eq!(split_string(&ok[0].1).1, &3u64.to_be_bytes());
+    }
+
+    #[test]
+    fn list_directory_busy_check_precedes_the_sandbox() {
+        let (comp, ground) = setup();
+        let (base, sb) = sandbox_dirs();
+        std::fs::write(format!("{sb}/f"), b"1").unwrap();
+        comp.configure(&sb);
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_LIST_DIRECTORY,
+            1,
+            one_string(&sb),
+        );
+        clear_history(&ground);
+        // A second listing — of a path the sandbox would reject — hits the
+        // busy check first.
+        send_cmd(
+            &comp,
+            FileManager::OPCODE_LIST_DIRECTORY,
+            2,
+            one_string(&base),
+        );
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_LIST_DIRECTORY_ERROR]
+        );
+        assert_eq!(
+            ground.responses(),
+            vec![(ID_BASE + 7, 2, CmdResponse::ExecutionError)]
+        );
+    }
+
+    #[test]
+    fn generate_dp_busy_and_port_checks_precede_the_sandbox() {
+        // Unconnected DP ports: the buffer failure wins over the sandbox.
+        let (comp, ground) = setup();
+        let (base, sb) = sandbox_dirs();
+        comp.configure(&sb);
+        let outside = format!("{base}/o.bin");
+        generate_dp(&comp, 1, &outside, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_GENERATE_DP_BUFFER_FAILED]
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 1, CmdResponse::Ok)]);
+        assert_eq!(ground.last_tlm(FileManager::CHANID_ERRORS), None);
+
+        // A paced run in progress: BUSY wins over the sandbox.
+        let (comp, ground) = setup_with_dp();
+        comp.configure(&sb);
+        let inside = format!("{sb}/i.bin");
+        std::fs::write(&inside, vec![7u8; 100]).unwrap();
+        generate_dp(&comp, 1, &inside, 10, (0, 0), 0, GenerateDpMode::Paced);
+        clear_history(&ground);
+        generate_dp(&comp, 2, &outside, 0, (0, 0), 0, GenerateDpMode::Immediate);
+        assert_eq!(
+            ground.event_ids(),
+            vec![FileManager::EVENTID_GENERATE_DP_FAILED]
+        );
+        assert_eq!(ground.responses(), vec![(ID_BASE + 9, 2, CmdResponse::Ok)]);
+    }
+
+    #[test]
+    fn generate_dp_records_carry_the_commanded_name_not_the_resolved_path() {
+        let (comp, ground) = setup_with_dp();
+        let (_base, sb) = sandbox_dirs();
+        comp.configure(&sb);
+        std::fs::create_dir(format!("{sb}/a")).unwrap();
+        std::fs::write(format!("{sb}/d.bin"), b"xyz").unwrap();
+        let commanded = format!("{sb}/a/../d.bin");
+        generate_dp(
+            &comp,
+            1,
+            &commanded,
+            0,
+            (0, 0),
+            0,
+            GenerateDpMode::Immediate,
+        );
+        let sent = ground.dp_sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        let expected = expected_chunk_records(&commanded, 0, b"xyz");
+        assert!(
+            sent[0]
+                .1
+                .windows(expected.len())
+                .any(|w| w == expected.as_slice()),
+            "chunk records must name the commanded path"
+        );
     }
 }

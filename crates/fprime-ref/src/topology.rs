@@ -316,6 +316,13 @@ const FILE_DOWNLINK_COOLDOWN: u32 = 1000;
 const FILE_DOWNLINK_CYCLE_TIME: u32 = 1000;
 const FILE_DOWNLINK_QUEUE_DEPTH: usize = 10;
 
+/// `FileHandlingConfig.Paths.sandboxDir` as the `FileHandling` subtopology
+/// applies it to `fileManager` in its `configComponents` phase: `"/"`, i.e.
+/// unrestricted, for backwards compatibility. `Svc::FileManager` itself is
+/// fail-closed, so this call is what keeps its commands working; restrict
+/// it by configuring a narrower directory here.
+const FILE_MANAGER_SANDBOX_DIR: &str = "/";
+
 /// `RefTopology.cpp`: `cmdSeq.allocateBuffer(0, mallocator, 5 * 1024)`.
 const CMD_SEQ_ALLOCATOR_ID: fprime_config::FwEnumStoreType = 0;
 const CMD_SEQ_BUFFER_BYTES: usize = 5 * 1024;
@@ -1152,6 +1159,8 @@ impl RefTopology {
             FILE_DOWNLINK_QUEUE_DEPTH,
         );
         file_downlink.configure_sandbox(&paths.root);
+        // C++ `FileHandling::fileManager.configure(FileHandlingConfig::Paths::sandboxDir)`.
+        file_manager.configure(FILE_MANAGER_SANDBOX_DIR);
         dp_buffer_manager.setup(
             DP_BUFFER_MGR_ID,
             &[BufferBin {
