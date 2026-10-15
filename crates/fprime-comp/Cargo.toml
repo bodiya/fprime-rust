@@ -23,3 +23,9 @@ spin = ["fprime-fw/spin", "fprime-os/spin"]
 fprime-config.workspace = true
 fprime-fw = { path = "../fprime-fw", default-features = false }
 fprime-os = { path = "../fprime-os", default-features = false }
+
+# A `#![no_std]` component crate built as a library: proves the exported
+# macros expand without the std prelude (ROADMAP item 13).
+[[example]]
+name = "no_std_component"
+crate-type = ["lib"]

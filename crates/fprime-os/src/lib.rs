@@ -48,6 +48,9 @@
 // by the feature), most of this crate is std-only OS backend code, so the
 // std build keeps the std prelude and only the `no_std` build drops it.
 #![cfg_attr(not(feature = "std"), no_std)]
+// The crate docs link every facility; in the `no_std` build the std-only
+// modules are absent, so those links cannot resolve there.
+#![cfg_attr(not(feature = "std"), allow(rustdoc::broken_intra_doc_links))]
 
 extern crate alloc;
 // Unit tests always run on a hosted target, so they get `std` even in a
