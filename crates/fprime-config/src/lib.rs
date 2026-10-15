@@ -130,6 +130,14 @@ pub const FW_SM_SIGNAL_BUFFER_MAX_SIZE: usize = 128;
 pub const FILE_NAME_STRING_SIZE: usize = 240;
 /// Time-context "don't care" value used by sequences (`FW_CONTEXT_DONT_CARE`).
 pub const FW_CONTEXT_DONT_CARE: u8 = 0xFF;
+/// Capacity of `Fw::StatementArgBuffer`, the argument buffer of one Fpy
+/// sequence statement (`FW_STATEMENT_ARG_BUFFER_MAX_SIZE` in
+/// FpConstants.fpp, defined as [`FW_CMD_ARG_BUFFER_MAX_SIZE`]).
+pub const FW_STATEMENT_ARG_BUFFER_MAX_SIZE: usize = FW_CMD_ARG_BUFFER_MAX_SIZE;
+/// Size in bytes of the argument blob in a `Svc::SeqArgs`
+/// (`SequenceArgumentsMaxSize` in AcConstants.fpp). Upstream keeps it small
+/// on purpose, so a `SeqArgs` is easy to fill from fprime-gds.
+pub const SEQUENCE_ARGUMENTS_MAX_SIZE: usize = 12;
 
 // ---------------------------------------------------------------------------
 // Port-count constants (AcConstants.fpp defaults)
@@ -316,6 +324,32 @@ pub mod dp_compression {
     pub const ALLOC_BUFFER_STORE_COUNT: u16 = 2;
     /// `ZLibBuffMgr.dpZLibCompressorBufferManagerId`.
     pub const BUFFER_MANAGER_ID: u16 = 301;
+}
+
+/// `Svc::FpySequencer` configuration (`FpySequencerCfg.fpp`, FPP module
+/// `Svc.Fpy`).
+pub mod fpy_sequencer {
+    use super::FwIndexType;
+
+    /// The maximum number of arguments a sequence can have
+    /// (`Fpy.MAX_SEQUENCE_ARG_COUNT`; must fit a U8).
+    pub const MAX_SEQUENCE_ARG_COUNT: usize = 16;
+    /// The maximum number of statements a sequence can have
+    /// (`Fpy.MAX_SEQUENCE_STATEMENT_COUNT`; must fit a U16).
+    pub const MAX_SEQUENCE_STATEMENT_COUNT: usize = 2048;
+    /// The maximum number of bytes in the sequence stack
+    /// (`Fpy.MAX_STACK_SIZE`; must fit `Fpy.StackSizeType`, a U32).
+    pub const MAX_STACK_SIZE: usize = 65535;
+    /// The maximum number of bytes in a directive's constant byte array
+    /// (`Fpy.MAX_DIRECTIVE_SIZE`: `CONST_CMD` arguments, `PUSH_VAL`).
+    pub const MAX_DIRECTIVE_SIZE: usize = 2048;
+    /// The default value of the `SEQ_BASE_DIR` parameter
+    /// (`Fpy.DEFAULT_SEQ_BASE_DIR`).
+    pub const DEFAULT_SEQ_BASE_DIR: &str = "";
+    /// `Fpy.SerialPortIndex.MAX_SERIAL_PORTS`: the size of the
+    /// `serialOut` port array. Projects rename the `EXAMPLE_PORT_<n>`
+    /// members of `Fpy.SerialPortIndex`; this sentinel must keep its name.
+    pub const MAX_SERIAL_PORTS: FwIndexType = 5;
 }
 
 /// SDLS configuration: `Svc/Ccsds/Types/config/SdlsKeyConfig/SdlsKeyCfg.fpp`

@@ -88,10 +88,10 @@ use std::sync::{Arc, Mutex};
 // Svc/Seq types and ports (Svc/Seq/Seq.fpp).
 // ---------------------------------------------------------------------------
 
-/// `Svc.SequenceArgumentsMaxSize`:
-/// `FW_CMD_ARG_BUFFER_MAX_SIZE(506) - sizeof(FwSizeStoreType)(2)
-/// - FileNameStringSize(240) - sizeof(U8)(1) - sizeof(FwSizeType)(8)`.
-pub const SEQUENCE_ARGUMENTS_MAX_SIZE: usize = 255;
+/// `SequenceArgumentsMaxSize` (AcConstants.fpp): 12 at the pinned
+/// upstream commit (it was the 255 bytes left over in a command argument
+/// buffer before upstream's WasmSequencer change, nasa/fprime#5386).
+pub use fprime_config::SEQUENCE_ARGUMENTS_MAX_SIZE;
 
 fpp_array! {
     /// The raw argument bytes of [`SeqArgs`] (`[SequenceArgumentsMaxSize] U8`).
@@ -103,7 +103,7 @@ fpp_array! {
 
 fpp_struct! {
     /// `Svc.SeqArgs` — arguments handed to a sequence over `Svc.CmdSeqIn`.
-    /// Wire format: `[size u64 BE][255 raw bytes]` (263 bytes).
+    /// Wire format: `[size u64 BE][12 raw bytes]` (20 bytes).
     ///
     /// `CmdSequencer` ignores the arguments it receives and always emits an
     /// all-zero value on `seqStartOut` (C++ `(void)args;`).
@@ -1046,7 +1046,7 @@ component_msg_types! {
 ///
 /// The command envelope is the largest: 6 (msg type and port num), 4
 /// (opcode), 4 (cmdSeq), 2 + 506 (length-prefixed `CmdArgBuffer`) = 522.
-/// `seqRunIn` needs 6, 2 + 240 (file name), 8 + 255 (`SeqArgs`) = 511;
+/// `seqRunIn` needs 6, 2 + 240 (file name), 8 + 12 (`SeqArgs`) = 268;
 /// `seqDispatchIn` 248; `cmdResponseIn` 15; `schedIn` and `pingIn` 10;
 /// `seqCancelIn` 6.
 pub const QUEUE_MSG_SIZE: usize = 522;
@@ -4840,7 +4840,7 @@ mod tests {
     // -- Types on the wire -------------------------------------------------
 
     #[test]
-    fn seq_args_serializes_as_u64_size_then_255_raw_bytes() {
+    fn seq_args_serializes_as_u64_size_then_12_raw_bytes() {
         let mut args = SeqArgs {
             size: 2,
             ..Default::default()
