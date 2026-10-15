@@ -41,7 +41,8 @@
 //! | Name | caller passes `hash_file_name` explicitly (callers use `<file>` + [`HASH_EXTENSION_STRING`]) | always `<fname>.CRC32` |
 //! | Read chunk | [`VFILE_HASH_CHUNK_SIZE`] (256) bytes, `NO_WAIT` reads, bound from the size at open | `CRC_FILE_READ_BLOCK` (2048) bytes, exact-size reads |
 //! | Reading the sidecar | first 4 bytes, trailing bytes ignored; short => [`Status::ValidationFileBadSize`] | first 4 bytes, trailing bytes ignored; short => `FailedFileCrcRead` |
-//! | Writing the sidecar | `OPEN_WRITE` (create, **no truncate**) | `OPEN_WRITE` upstream; this port truncates (see `crc_checker`) |
+//! | Writing the sidecar | `OPEN_WRITE` (create, **no truncate**) | same |
+//! | Overlong name | not checked (the caller passes the name) | `<fname>.CRC32` longer than a `FileNameString` => `FailedFileNameTooLong` |
 //!
 //! History: `Utils::CRCChecker` used to `reinterpret_cast` the `U32`, so its
 //! sidecar was NATIVE-endian (little-endian on typical targets) while this

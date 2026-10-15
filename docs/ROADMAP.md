@@ -81,9 +81,6 @@ subsystems, then the strategic changes.
 These surfaced while porting items 2–7. None changes the wire format of the
 Ref deployment.
 
-- **`Utils::CRCChecker` catch-up.** Port `FAILED_FILE_NAME_TOO_LONG` and the
-  overlong-name check (nasa/fprime#5803), and open the sidecar without
-  truncating (`OPEN_WRITE`), as upstream does.
 - **`Drv::LinuxUartDriver` → `Drv::PosixUartDriver`.** Upstream renamed the
   UART driver; the Rust module header still uses the old name.
 - **`Drv::AsyncByteStreamBufferAdapter`.** The only upstream client of the
