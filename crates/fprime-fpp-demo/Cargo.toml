@@ -1,6 +1,6 @@
 [package]
 name = "fprime-fpp-demo"
-description = "F Prime Rust port: an FPP-modeled demo built by fpp-to-rust at build time (types, ports, components, topology, serial ports, telemetry packets)"
+description = "F Prime Rust port: an FPP-modeled demo built by fpp-to-rust at build time (types, ports, components, topologies, serial ports, telemetry packets, state machines, init specifiers)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
