@@ -1738,16 +1738,16 @@ fn format_full_path(
     dir_name: &CmdStringArg,
     file_name: &FileNameString,
 ) -> (FwDefaultString, StringFormatStatus) {
+    // On overflow the result is truncated to capacity, as `vsnprintf`
+    // leaves it.
     let needed = dir_name.len() + 1 + file_name.len();
     let mut out = FwDefaultString::new();
+    out.set_bytes(dir_name.as_bytes());
+    out.append("/");
+    out.append_bytes(file_name.as_bytes());
     if needed > FwDefaultString::max_length() {
         return (out, StringFormatStatus::Overflowed);
     }
-    let mut bytes = Vec::with_capacity(needed);
-    bytes.extend_from_slice(dir_name.as_bytes());
-    bytes.push(b'/');
-    bytes.extend_from_slice(file_name.as_bytes());
-    out.set_bytes(&bytes);
     (out, StringFormatStatus::Success)
 }
 
@@ -3198,7 +3198,9 @@ mod tests {
         let file = FileNameString::from("f".repeat(240).as_str());
         let (path, status) = format_full_path(&dir, &file);
         assert_eq!(status, StringFormatStatus::Overflowed);
-        assert!(path.is_empty());
+        // Truncated to capacity, as `vsnprintf` leaves it (not emptied).
+        let full = format!("{}/{}", "d".repeat(40), "f".repeat(240));
+        assert_eq!(path.as_str(), Some(&full[..FwDefaultString::max_length()]));
     }
 
     #[test]

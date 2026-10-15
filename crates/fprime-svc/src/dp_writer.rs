@@ -84,8 +84,9 @@ pub const DP_EXT: &str = ".fdp";
 /// field zero-padded to a MINIMUM of 8 digits (larger values print wider).
 ///
 /// The result is bounded by `FileNameString` (240): an overflow returns
-/// [`StringFormatStatus::Overflowed`] and an empty name, as the C++
-/// `Fw::StringBase::format` does. `Svc::DpCatalog` recomputes this name from
+/// [`StringFormatStatus::Overflowed`] with the name truncated to capacity,
+/// as the C++ `Fw::StringBase::format` (`vsnprintf`) leaves it — `DpCatalog`
+/// logs that truncated name in `FileNameFormatError`. `Svc::DpCatalog` recomputes this name from
 /// a file's own header and rejects the file unless the path matches
 /// byte for byte, so the two producers must stay identical.
 pub fn format_dp_file_name(
@@ -96,10 +97,10 @@ pub fn format_dp_file_name(
 ) -> (FileNameString, StringFormatStatus) {
     let formatted = format!("{base_dir}/Dp_{id:08}_{seconds:08}_{useconds:08}{DP_EXT}");
     let mut out = FileNameString::new();
+    out.set(&formatted);
     if formatted.len() > FILE_NAME_STRING_SIZE {
         return (out, StringFormatStatus::Overflowed);
     }
-    out.set(&formatted);
     (out, StringFormatStatus::Success)
 }
 
@@ -1129,7 +1130,9 @@ mod tests {
         let prefix = "x".repeat(220);
         let (name, status) = format_dp_file_name(&prefix, 1, 2, 3);
         assert_eq!(status, StringFormatStatus::Overflowed);
-        assert!(name.is_empty());
+        // Truncated to capacity, as `vsnprintf` leaves it (not emptied).
+        let full = format!("{prefix}/Dp_00000001_00000002_00000003.fdp");
+        assert_eq!(name.as_str(), Some(&full[..FILE_NAME_STRING_SIZE]));
     }
 
     #[test]

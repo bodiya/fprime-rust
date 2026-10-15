@@ -1268,14 +1268,15 @@ fn serialize_state_file_record(entry: &DpStateEntry) -> [u8; STATE_FILE_RECORD_S
 }
 
 /// C++ `fullFile.format("%s/%s", dirName, fileName)` into an `Fw::String`
-/// (capacity `FW_FIXED_LENGTH_STRING_SIZE` = 256).
+/// (capacity `FW_FIXED_LENGTH_STRING_SIZE` = 256). On overflow the result is
+/// truncated to capacity, as `vsnprintf` leaves it.
 fn format_full_path(dir_name: &str, file_name: &str) -> (FwDefaultString, StringFormatStatus) {
     let formatted = format!("{dir_name}/{file_name}");
     let mut out = FwDefaultString::new();
+    out.set(&formatted);
     if formatted.len() > FwDefaultString::max_length() {
         return (out, StringFormatStatus::Overflowed);
     }
-    out.set(&formatted);
     (out, StringFormatStatus::Success)
 }
 
