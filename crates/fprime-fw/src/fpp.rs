@@ -36,7 +36,7 @@
 //!   pair explicitly (`field: T { get_field, set_field }`) when the C++
 //!   `get_*`/`set_*` API is wanted; the fields themselves are always `pub`.
 
-use crate::serial::{Deserialize, Serialize};
+use crate::serial::{Deserialize, LinearBuffer, Serialize};
 use crate::string::FwString;
 use crate::time::{Time, TimeInterval};
 
@@ -81,6 +81,13 @@ impl<const N: usize> FppSized for FwString<N> {
     /// `u16` length prefix + the full capacity (C++
     /// `STATIC_SERIALIZED_SIZE`).
     const SERIALIZED_SIZE: usize = FwString::<N>::SERIALIZED_SIZE;
+}
+
+impl<const N: usize> FppSized for LinearBuffer<N> {
+    /// `u16` size prefix + the full capacity (C++ `LinearBufferTemplate::
+    /// SERIALIZED_SIZE`, e.g. `Fw::LogBuffer::SERIALIZED_SIZE`) — what the
+    /// generated port buffers (`<Port>PortBuffer::CAPACITY`) add up.
+    const SERIALIZED_SIZE: usize = LinearBuffer::<N>::SERIALIZED_SIZE;
 }
 
 // ---------------------------------------------------------------------------

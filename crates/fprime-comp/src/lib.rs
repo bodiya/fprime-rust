@@ -20,10 +20,15 @@
 //!   equivalent to the autocoded base-class glue.
 //! - [`escrow`]: [`BufferEscrow`] — safe replacement for the C++ practice of
 //!   serializing raw `Fw::Buffer` pointers into async queue messages.
+//! - [`serial_port`]: serialize ports (`Fw::InputSerializePort` /
+//!   `Fw::OutputSerializePort` and the `FW_PORT_SERIALIZATION` half of the
+//!   generated typed ports) — any serializable typed call can be carried as
+//!   bytes and replayed on a typed port elsewhere (`Svc::GenericHub`).
 //! - [`macros`]: the component-side codegen layer —
-//!   [`component_msg_types!`], [`input_port_adapter!`] and
-//!   [`async_input_port_adapter!`] generate the input-port thunks, envelope
-//!   codec and message-type discriminants that the C++ FPP autocoder emits.
+//!   [`component_msg_types!`], [`input_port_adapter!`],
+//!   [`async_input_port_adapter!`] and [`serializable_port!`] generate the
+//!   input-port thunks, envelope codec, message-type discriminants and port
+//!   serializers that the C++ FPP autocoder emits.
 //!
 //! The integration test `tests/example_component.rs` is the normative
 //! exemplar of how a component is assembled from these pieces.
@@ -36,6 +41,7 @@ pub mod msg;
 pub mod obj;
 pub mod port;
 pub mod queued;
+pub mod serial_port;
 
 /// The project configuration crate, re-exported so macro expansions and
 /// downstream code can reach the `Fw*` type aliases through this crate.
@@ -56,3 +62,4 @@ pub use port::{
     PrmGetPort, PrmSetPort, SchedPort, SuccessConditionPort, TimePort, TlmPort, WatchDogPort,
 };
 pub use queued::{ComponentDispatch, MsgDispatchStatus, QueuedBase};
+pub use serial_port::{SerialCallAdapter, SerializablePort, SerializePort, TypedCallAdapter};

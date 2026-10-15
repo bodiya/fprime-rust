@@ -164,6 +164,12 @@ impl Serialize for RawTime {
     }
 }
 
+impl fprime_fw::fpp::FppSized for RawTime {
+    /// `FW_RAW_TIME_SERIALIZATION_MAX_SIZE` — the C++
+    /// `Os::RawTime::SERIALIZED_SIZE` that sizes `Svc.Cycle` port buffers.
+    const SERIALIZED_SIZE: usize = RawTime::SERIALIZED_SIZE;
+}
+
 impl Deserialize for RawTime {
     fn deserialize_from(&mut self, buf: &mut dyn SerBufAny, e: Endianness) -> SerializeStatus {
         let mut seconds: u32 = 0;

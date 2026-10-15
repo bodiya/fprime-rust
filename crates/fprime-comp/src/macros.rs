@@ -1,5 +1,5 @@
 //! # Component codegen: `component_msg_types!`, `input_port_adapter!`,
-//! `async_input_port_adapter!`
+//! `async_input_port_adapter!`, `serializable_port!`
 //!
 //! Declarative (`macro_rules!`) replacements for the most repetitive parts of
 //! what the C++ FPP autocoder emits into `<Comp>ComponentBase` — the static
@@ -401,6 +401,131 @@ macro_rules! async_input_port_adapter {
                     }
                 )*
                 Some(($($arg,)*))
+            }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// serializable_port!
+// ---------------------------------------------------------------------------
+
+/// How a decoded port argument is handed to `invoke`; internal to
+/// [`serializable_port!`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __fpp_port_arg_pass {
+    (val $arg:ident) => {
+        $arg
+    };
+    (ref $arg:ident) => {
+        &$arg
+    };
+    (mut $arg:ident) => {
+        &mut $arg
+    };
+    (buf $arg:ident) => {
+        &mut $arg
+    };
+}
+
+/// Make a port trait *serializable*: the FPP autocoder's
+/// `<Port>PortSerializer` / `<Port>PortBuffer` plus the `FW_PORT_SERIALIZATION`
+/// halves of the generated `Input<Port>Port::invokeSerial` and
+/// `Output<Port>Port::invoke`.
+///
+/// Generates two things for the trait object `dyn $port`:
+///
+/// - `impl $port for SerialCallAdapter` — the typed → serial direction
+///   (C++ `Output<Port>Port::invoke` with only `m_serPort` set): the
+///   arguments are serialized in declaration order into a stack
+///   `LinearBuffer<CAPACITY>` and handed to the connected
+///   [`SerializePort`](crate::serial_port::SerializePort). Both statuses are
+///   `fw_assert!`ed, exactly as the generated code asserts them.
+/// - `impl SerializablePort for dyn $port` — the `CAPACITY` (the sum of the
+///   argument types' `FppSized::SERIALIZED_SIZE`, C++
+///   `<Port>PortBuffer::CAPACITY`) and the serial → typed direction (C++
+///   `Input<Port>Port::invokeSerial`): the arguments are deserialized in
+///   order and the port invoked; the first failing status is returned
+///   without invoking.
+///
+/// The argument list uses the same passing modes as the input-port adapter
+/// macros (`val` / `ref` / `mut` / `buf`); `ref`/`mut`/`buf` arguments are
+/// copy-in only across a serialized call — the callee's writes never reach
+/// the caller, as in C++. Every argument type must implement
+/// [`FppSized`](crate::fw::fpp::FppSized) and `Default`.
+///
+/// Not applicable (C++ parity, enforced at compile time here): ports with a
+/// return value (C++ `invokeSerial` is `FW_ASSERT(false)` for them) and ports
+/// carrying an `Fw::Buffer` (C++ would serialize the pointer).
+///
+/// ```ignore
+/// pub trait ValuePort: Send + Sync {
+///     fn invoke(&self, port_num: FwIndexType, value: u32, time: &mut Time);
+/// }
+/// serializable_port! {
+///     port: ValuePort;
+///     args { val value: u32, mut time: Time }
+/// }
+/// // Now: `value_out.connect_serial(hub.serial_in(0))` and
+/// // `hub.serial_out[0].connect_typed(consumer.value_in(0))`.
+/// ```
+#[macro_export]
+macro_rules! serializable_port {
+    (
+        port: $port:path;
+        args { $($kind:ident $arg:ident : $aty:ty),* $(,)? }
+    ) => {
+        impl $port for $crate::serial_port::SerialCallAdapter {
+            fn invoke(
+                &self,
+                port_num: $crate::config::FwIndexType,
+                $($arg: $crate::__fpp_port_arg_ty!($kind $aty)),*
+            ) {
+                #[allow(unused_imports)]
+                use $crate::fw::{SerBuf as _, Serialize as _};
+                let mut buffer = $crate::fw::LinearBuffer::<{
+                    <dyn $port as $crate::serial_port::SerializablePort>::CAPACITY
+                }>::new();
+                // C++ parity: the generated Output<Port>Port::invoke asserts
+                // both the argument serialization and the serial call.
+                $(
+                    let status = $crate::__fpp_port_arg_write!(buffer, $kind $arg);
+                    $crate::fw::fw_assert!(status.is_ok(), status as i32);
+                )*
+                let status = self.target().invoke_serial(port_num, &mut buffer);
+                $crate::fw::fw_assert!(status.is_ok(), status as i32);
+            }
+        }
+
+        impl $crate::serial_port::SerializablePort for dyn $port {
+            const CAPACITY: usize =
+                0 $(+ <$aty as $crate::fw::fpp::FppSized>::SERIALIZED_SIZE)*;
+
+            #[allow(unused_variables)]
+            fn invoke_serial_on(
+                target: &Self,
+                port_num: $crate::config::FwIndexType,
+                buffer: &mut dyn $crate::fw::SerBufAny,
+            ) -> $crate::fw::SerializeStatus {
+                #[allow(unused_imports)]
+                use $crate::fw::SerBuf as _;
+                $(
+                    #[allow(unused_mut)]
+                    let mut $arg = <$aty as Default>::default();
+                    let status = $crate::__fpp_port_arg_read!(buffer, $kind $arg);
+                    if !status.is_ok() {
+                        return status;
+                    }
+                )*
+                target.invoke(port_num, $($crate::__fpp_port_arg_pass!($kind $arg)),*);
+                $crate::fw::SerializeStatus::Ok
+            }
+
+            fn serial_call_adapter(
+                target: ::std::sync::Arc<dyn $crate::serial_port::SerializePort>,
+            ) -> ::std::sync::Arc<Self> {
+                ::std::sync::Arc::new($crate::serial_port::SerialCallAdapter::new(target))
             }
         }
     };
