@@ -44,6 +44,8 @@ module Ref {
   instance dpWriter: Svc.DpWriter base id 0x04002000 \
     queue size Default.QUEUE_SIZE stack size Default.STACK_SIZE priority 25
   instance dpBufferManager: Svc.BufferManager base id 0x04003000
+  instance dpBufferAccumulator: Svc.BufferAccumulator base id 0x04004000 \
+    queue size Default.QUEUE_SIZE stack size Default.STACK_SIZE priority 21
 
   # FileHandling
   instance fileUplink: Svc.FileUplink base id 0x05000000 \
@@ -96,6 +98,7 @@ module Ref {
     instance dpMgr
     instance dpWriter
     instance dpBufferManager
+    instance dpBufferAccumulator
     instance fileUplink
     instance fileDownlink
     instance fileManager

@@ -132,6 +132,12 @@ def main():
             ["Ref.signalGen.Skip"],
             ["Ref.fileManager.CreateDirectory", "--arguments", made],
             ["Ref.health.HLTH_ENABLE", "--arguments", "DISABLED"],
+            # Both BufferAccumulator enum arguments; the zero-count drain
+            # answers at once with BA_PartialDrainDone(0), and entering DRAIN
+            # writes BA_NumQueuedBuffers.
+            ["Ref.dpBufferAccumulator.BA_SetMode", "--arguments", "ACCUMULATE"],
+            ["Ref.dpBufferAccumulator.BA_DrainBuffers", "--arguments", "0", "NOBLOCK"],
+            ["Ref.dpBufferAccumulator.BA_SetMode", "--arguments", "DRAIN"],
         ]
         for c in commands:
             out, timed_out = run_cli(args.gds_bin, ["command-send"] + c, dictionary, logs, 30)
@@ -155,6 +161,7 @@ def main():
             "Ref.fileManager.CreateDirectoryStarted",
             "Ref.fileManager.CreateDirectorySucceeded",
             "Ref.health.HLTH_CHECK_ENABLE",
+            "Ref.dpBufferAccumulator.BA_PartialDrainDone",
         ]
         for name in expected_events:
             if name not in events_out:
@@ -168,6 +175,7 @@ def main():
             "Ref.signalGen.SignalValue",
             "Ref.signalGen.SignalType",
             "Ref.rateGroup1Comp.RgMaxTime",
+            "Ref.dpBufferAccumulator.BA_NumQueuedBuffers",
         ]
         for name in expected_channels:
             if name not in channels_out:

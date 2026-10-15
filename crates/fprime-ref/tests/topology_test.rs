@@ -16,10 +16,10 @@ use common::{DEADLINE, Harness, build_command_frame, deframe, wait_until};
 use fprime_ref::signal_gen;
 use fprime_ref::topology::{
     BUFFER_MANAGER_BASE_ID, CMD_DISPATCHER_BASE_ID, CMD_SEQUENCER_BASE_ID, COM_QUEUE_BASE_ID,
-    DP_BUFFER_MANAGER_BASE_ID, DP_CATALOG_BASE_ID, DP_MANAGER_BASE_ID, DP_WRITER_BASE_ID,
-    EVENT_MANAGER_BASE_ID, FILE_DOWNLINK_BASE_ID, FILE_MANAGER_BASE_ID, FILE_UPLINK_BASE_ID,
-    HEALTH_BASE_ID, RATE_GROUP_1_BASE_ID, RATE_GROUP_2_BASE_ID, RATE_GROUP_3_BASE_ID,
-    SIGNAL_GEN_BASE_ID, SYSTEM_RESOURCES_BASE_ID,
+    DP_BUFFER_ACCUMULATOR_BASE_ID, DP_BUFFER_MANAGER_BASE_ID, DP_CATALOG_BASE_ID,
+    DP_MANAGER_BASE_ID, DP_WRITER_BASE_ID, EVENT_MANAGER_BASE_ID, FILE_DOWNLINK_BASE_ID,
+    FILE_MANAGER_BASE_ID, FILE_UPLINK_BASE_ID, HEALTH_BASE_ID, RATE_GROUP_1_BASE_ID,
+    RATE_GROUP_2_BASE_ID, RATE_GROUP_3_BASE_ID, SIGNAL_GEN_BASE_ID, SYSTEM_RESOURCES_BASE_ID,
 };
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 
@@ -75,6 +75,8 @@ fn tlm_value_size(id: u32, value: &[u8]) -> usize {
         _ if (DP_WRITER_BASE_ID + 2..DP_WRITER_BASE_ID + 5).contains(&id) => U32,
         // dpCat CatalogDps/DpsSent (declared, never written)
         _ if (DP_CATALOG_BASE_ID..DP_CATALOG_BASE_ID + 2).contains(&id) => U32,
+        // dpBufferAccumulator BA_NumQueuedBuffers
+        _ if id == DP_BUFFER_ACCUMULATOR_BASE_ID => U32,
         // cmdSeq counters (U32) + CS_CurrentSequence (string size 240)
         _ if (CMD_SEQUENCER_BASE_ID..CMD_SEQUENCER_BASE_ID + 5).contains(&id) => U32,
         _ if id == CMD_SEQUENCER_BASE_ID + 5 => {

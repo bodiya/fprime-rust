@@ -862,6 +862,48 @@
     },
     {
       "kind": "enum",
+      "qualifiedName": "Svc.BufferAccumulator.BlockMode",
+      "representationType": {
+        "name": "U8",
+        "kind": "integer",
+        "size": 8,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "NOBLOCK",
+          "value": 0
+        },
+        {
+          "name": "BLOCK",
+          "value": 1
+        }
+      ],
+      "default": "Svc.BufferAccumulator.BlockMode.NOBLOCK"
+    },
+    {
+      "kind": "enum",
+      "qualifiedName": "Svc.BufferAccumulator.OpState",
+      "representationType": {
+        "name": "U8",
+        "kind": "integer",
+        "size": 8,
+        "signed": false
+      },
+      "enumeratedConstants": [
+        {
+          "name": "ACCUMULATE",
+          "value": 0
+        },
+        {
+          "name": "DRAIN",
+          "value": 1
+        }
+      ],
+      "default": "Svc.BufferAccumulator.OpState.ACCUMULATE"
+    },
+    {
+      "kind": "enum",
       "qualifiedName": "Svc.Ccsds.EppLengthOfLength",
       "representationType": {
         "name": "U8",
@@ -2371,6 +2413,50 @@
       "formalParams": [],
       "queueFullBehavior": "assert",
       "annotation": "Clear event throttling"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_SetMode",
+      "commandKind": "async",
+      "opcode": 67125248,
+      "formalParams": [
+        {
+          "name": "mode",
+          "type": {
+            "name": "Svc.BufferAccumulator.OpState",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false
+        }
+      ],
+      "queueFullBehavior": "assert",
+      "annotation": "Set the mode"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_DrainBuffers",
+      "commandKind": "async",
+      "opcode": 67125249,
+      "formalParams": [
+        {
+          "name": "numToDrain",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "blockMode",
+          "type": {
+            "name": "Svc.BufferAccumulator.BlockMode",
+            "kind": "qualifiedIdentifier"
+          },
+          "ref": false
+        }
+      ],
+      "queueFullBehavior": "assert",
+      "annotation": "Drain the commanded number of buffers"
     },
     {
       "name": "Ref.fileDownlink.SendFile",
@@ -5242,6 +5328,136 @@
         "count": 10,
         "every": null
       }
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_BufferAccepted",
+      "severity": "ACTIVITY_HI",
+      "formalParams": [],
+      "id": 67125248,
+      "format": "Buffer accepted",
+      "annotation": "The Buffer Accumulator instance accepted and enqueued a buffer. To avoid uncontrolled sending of events, this event occurs only when the previous buffer received caused a QueueFull error."
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_QueueFull",
+      "severity": "WARNING_HI",
+      "formalParams": [],
+      "id": 67125249,
+      "format": "Queue full",
+      "annotation": "The Buffer Accumulator instance received a buffer when its queue was full. To avoid uncontrolled sending of events, this event occurs only when the previous buffer received did not cause a QueueFull error."
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_StillDraining",
+      "severity": "WARNING_HI",
+      "formalParams": [
+        {
+          "name": "numDrained",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "numToDrain",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 67125250,
+      "format": "Still draining {} of {}",
+      "annotation": "Got DrainBuffers command while executing DrainBuffers command"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_AlreadyDraining",
+      "severity": "WARNING_HI",
+      "formalParams": [],
+      "id": 67125251,
+      "format": "Already in DRAIN mode",
+      "annotation": "Got DrainBuffers command while in DRAIN mode"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_DrainStalled",
+      "severity": "WARNING_HI",
+      "formalParams": [
+        {
+          "name": "numDrained",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "numToDrain",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 67125252,
+      "format": "Drain stalling - only drained {} of {}",
+      "annotation": "Ran out of buffers while executing DrainBuffers command"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_PartialDrainDone",
+      "severity": "ACTIVITY_HI",
+      "formalParams": [
+        {
+          "name": "numDrained",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 67125253,
+      "format": "Partial drain of {} finished",
+      "annotation": "Finished DrainBuffers command"
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_NonBlockDrain",
+      "severity": "WARNING_LO",
+      "formalParams": [
+        {
+          "name": "numWillDrain",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        },
+        {
+          "name": "numReqDrain",
+          "type": {
+            "name": "U32",
+            "kind": "integer",
+            "size": 32,
+            "signed": false
+          },
+          "ref": false
+        }
+      ],
+      "id": 67125254,
+      "format": "Only have {}; requested drain of {}",
+      "annotation": "Not enough buffers to complete requested drain, and NOBLOCK was set; will only drain what we have"
     },
     {
       "name": "Ref.fileUplink.BadChecksum",
@@ -8607,6 +8823,18 @@
           "red": 1
         }
       }
+    },
+    {
+      "name": "Ref.dpBufferAccumulator.BA_NumQueuedBuffers",
+      "type": {
+        "name": "U32",
+        "kind": "integer",
+        "size": 32,
+        "signed": false
+      },
+      "id": 67125248,
+      "telemetryUpdate": "always",
+      "annotation": "The number of buffers queued"
     },
     {
       "name": "Ref.fileUplink.FilesReceived",

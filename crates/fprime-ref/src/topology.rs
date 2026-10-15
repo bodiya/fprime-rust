@@ -29,6 +29,7 @@
 //! | `dpMgr`             | `Svc.DpManager`        | `0x0400_1000` | DataProducts  |
 //! | `dpWriter`          | `Svc.DpWriter`         | `0x0400_2000` | DataProducts  |
 //! | `dpBufferManager`   | `Svc.BufferManager`    | `0x0400_3000` | DataProducts  |
+//! | `dpBufferAccumulator`| `Svc.BufferAccumulator`| `0x0400_4000` | DataProducts |
 //! | `fileUplink`        | `Svc.FileUplink`       | `0x0500_0000` | FileHandling  |
 //! | `fileDownlink`      | `Svc.FileDownlink`     | `0x0500_1000` | FileHandling  |
 //! | `fileManager`       | `Svc.FileManager`      | `0x0500_2000` | FileHandling  |
@@ -55,7 +56,8 @@
 //!
 //! 0 `cmdDisp` (self), 1 `events`, 2 `health`, 3 `comQueue`, 4 `signalGen`,
 //! 5 `fileDownlink`, 6 `fileManager`, 7 `prmDb`, 8 `cmdSeq`, 9 `dpMgr`,
-//! 10 `dpWriter`, 11 `dpCat`, 12 `systemResources`, 13 `comLog`.
+//! 10 `dpWriter`, 11 `dpCat`, 12 `systemResources`, 13 `comLog`,
+//! 14 `dpBufferAccumulator`.
 //! (`fileUplink` declares no commands, as in C++.)
 //!
 //! ## Command-source index map (cmdDisp `seqCmdBuff`/`seqCmdStatus`, matched)
@@ -66,7 +68,8 @@
 //!
 //! 0 `rateGroup1Comp`, 1 `rateGroup2Comp`, 2 `rateGroup3Comp`,
 //! 3 `cmdDisp`, 4 `events`, 5 `tlmSend`, 6 `fileUplink`, 7 `fileDownlink`,
-//! 8 `fileManager`, 9 `prmDb`, 10 `cmdSeq`, 11 `dpCat`, 12 `comLog`.
+//! 8 `fileManager`, 9 `prmDb`, 10 `cmdSeq`, 11 `dpCat`, 12 `comLog`,
+//! 13 `dpBufferAccumulator`.
 //!
 //! ## Deviations from the C++ topology (each deliberate)
 //!
@@ -79,10 +82,14 @@
 //!   file-handling `BufferManager` instance would therefore have no
 //!   consumer, so none is created; the data-product chain does get its own
 //!   (`dpBufferManager`), because `dpMgr.bufferGetOut` really allocates.
-//! - **No `Svc::BufferAccumulator`** between `dpMgr` and `dpWriter` (not
-//!   ported): `dpMgr.productSendOut[0]` feeds `dpWriter.bufferSendIn`
-//!   directly and `dpWriter.deallocBufferSendOut` returns straight to
-//!   `dpBufferManager`. Same ownership cycle, one hop shorter.
+//! - **Both `dpMgr.productSendOut` indices feed `dpBufferAccumulator`.**
+//!   `DataProducts.fpp` wires only `dpMgr.productSendOut[0] ->
+//!   dpBufferAccumulator.bufferSendInFill`; this deployment has a second
+//!   producer on dpMgr index 1 (`fileManager` `GenerateDp`), and dpMgr
+//!   answers on the index it was called on, so index 1 is wired to the same
+//!   (single) fill port rather than left to assert unconnected. The rest of
+//!   the data-product chain is the upstream one: `dpBufferAccumulator ->
+//!   dpWriter -> dpBufferAccumulator.bufferSendInReturn -> dpBufferManager`.
 //! - **`ComSplitter` lives in this crate** ([`crate::com_splitter`]) since
 //!   `fprime-svc` is owned by another wave; it is a faithful port of
 //!   `Svc/ComSplitter`.
@@ -119,6 +126,7 @@ use fprime_drv::socket_helper::SocketIpStatus;
 use fprime_drv::tcp_client::TcpClient;
 use fprime_fw::FileNameString;
 use fprime_svc::active_rate_group::ActiveRateGroup;
+use fprime_svc::buffer_accumulator::{BufferAccumulator, OpState};
 use fprime_svc::buffer_manager::{BufferBin, BufferManager};
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_svc::cmd_sequencer::CmdSequencer;
@@ -188,6 +196,8 @@ pub const DP_MANAGER_BASE_ID: FwIdType = 0x0400_1000;
 pub const DP_WRITER_BASE_ID: FwIdType = 0x0400_2000;
 /// `dpBufferManager` base ID.
 pub const DP_BUFFER_MANAGER_BASE_ID: FwIdType = 0x0400_3000;
+/// `dpBufferAccumulator` base ID (`DataProductsConfig.BASE_ID + 0x04000`).
+pub const DP_BUFFER_ACCUMULATOR_BASE_ID: FwIdType = 0x0400_4000;
 /// `fileUplink` base ID (FileHandling window).
 pub const FILE_UPLINK_BASE_ID: FwIdType = 0x0500_0000;
 /// `fileDownlink` base ID.
@@ -230,7 +240,7 @@ const QUEUE_DEPTH: FwSizeType = 10;
 /// EventManager queue depth (bursty producers).
 const EVENTS_QUEUE_DEPTH: FwSizeType = 25;
 /// Health queue depth. CdhCore declares `$health queue size 25`; this
-/// deployment pings 13 instances per `Run`, and every reply lands in this
+/// deployment pings 14 instances per `Run`, and every reply lands in this
 /// queue through an ASSERT-on-full async port (C++ parity), so the queue
 /// is sized to hold several cycles' worth of replies rather than two.
 const HEALTH_QUEUE_DEPTH: FwSizeType = 100;
@@ -265,6 +275,8 @@ const FILE_MANAGER_PRIORITY: FwTaskPriorityType = 22;
 const DP_WRITER_PRIORITY: FwTaskPriorityType = 22;
 /// `FileHandlingConfig.Priorities.prmDb`.
 const PRM_DB_PRIORITY: FwTaskPriorityType = 21;
+/// `DataProductsConfig.Priorities.dpBufferAccumulator`.
+const DP_BUFFER_ACCUMULATOR_PRIORITY: FwTaskPriorityType = 21;
 /// `Ref/Top/instances.fpp`: `cmdSeq ... priority 20`.
 const CMD_SEQ_PRIORITY: FwTaskPriorityType = 20;
 /// `ComLoggerTeeConfig.Priorities.comLog`.
@@ -309,6 +321,12 @@ const HEALTH_WATCHDOG_CODE: u32 = 0x123;
 const DP_BUFFER_SIZE: FwSizeType = 10_000;
 const DP_BUFFER_COUNT: u16 = 10;
 const DP_BUFFER_MGR_ID: u16 = 300;
+
+/// `DataProductsConfig.BufferAccumulator`: `allocatorId`, `maxNumBuffers`
+/// (the accumulator's FIFO capacity), and `QueueSizes.dpBufferAccumulator`.
+const DP_BUFFER_ACCUMULATOR_ALLOCATOR_ID: fprime_config::FwEnumStoreType = 301;
+const DP_BUFFER_ACCUMULATOR_MAX_NUM_BUFFERS: FwSizeType = 10;
+const DP_BUFFER_ACCUMULATOR_QUEUE_DEPTH: FwSizeType = 10;
 
 /// `FileHandlingConfig.DownlinkConfig` (cooldown/cycleTime in ms,
 /// fileQueueDepth in entries).
@@ -532,6 +550,9 @@ pub struct RefTopology {
     pub dp_writer: Arc<DpWriter>,
     /// `dpCat` — data-product catalog / downlink scheduler.
     pub dp_catalog: Arc<DpCatalog>,
+    /// `dpBufferAccumulator` — fill/drain FIFO between `dpMgr` and
+    /// `dpWriter`.
+    pub dp_buffer_accumulator: Arc<BufferAccumulator>,
     /// `comSplitter` — event-stream tee (`ComLoggerTee`).
     pub com_splitter: Arc<ComSplitter>,
     /// `comLog` — `.com` file logger on the teed event stream.
@@ -580,6 +601,7 @@ impl RefTopology {
         let dp_manager = DpManager::new("dpMgr");
         let dp_writer = DpWriter::new("dpWriter");
         let dp_catalog = DpCatalog::new("dpCat");
+        let dp_buffer_accumulator = BufferAccumulator::new("dpBufferAccumulator");
         let com_splitter = ComSplitter::new("comSplitter");
         let com_logger = ComLogger::new("comLog");
         let tcp_client = config.comms_enabled().map(|_| TcpClient::new("comDriver"));
@@ -668,6 +690,11 @@ impl RefTopology {
             .queued
             .base
             .set_id_base(DP_CATALOG_BASE_ID);
+        dp_buffer_accumulator
+            .active
+            .queued
+            .base
+            .set_id_base(DP_BUFFER_ACCUMULATOR_BASE_ID);
         com_splitter.base.set_id_base(COM_SPLITTER_BASE_ID);
         com_logger
             .active
@@ -685,7 +712,8 @@ impl RefTopology {
         // -- Command pattern (matched compCmdReg/compCmdSend indices) -------
         // 0: cmdDisp (self), 1: events, 2: health, 3: comQueue, 4: signalGen,
         // 5: fileDownlink, 6: fileManager, 7: prmDb, 8: cmdSeq, 9: dpMgr,
-        // 10: dpWriter, 11: dpCat, 12: systemResources, 13: comLog.
+        // 10: dpWriter, 11: dpCat, 12: systemResources, 13: comLog,
+        // 14: dpBufferAccumulator.
         cmd_dispatcher
             .cmd
             .cmd_reg_out
@@ -826,6 +854,16 @@ impl RefTopology {
             .cmd_response_out
             .connect_to(cmd_dispatcher.comp_cmd_stat_in(13));
 
+        dp_buffer_accumulator
+            .cmd
+            .cmd_reg_out
+            .connect_to(cmd_dispatcher.comp_cmd_reg_in(14));
+        cmd_dispatcher.comp_cmd_send[14].connect_to(dp_buffer_accumulator.cmd_in(0));
+        dp_buffer_accumulator
+            .cmd
+            .cmd_response_out
+            .connect_to(cmd_dispatcher.comp_cmd_stat_in(14));
+
         // -- Event pattern: logOut -> events.LogRecv, textLogOut ->
         //    textLogger, timeGetOut -> posixTime (every EventGlue holder,
         //    including events' own logOut — C++ pattern-wires the self-loop).
@@ -854,6 +892,7 @@ impl RefTopology {
             &dp_manager.evt,
             &dp_writer.evt,
             &dp_catalog.evt,
+            &dp_buffer_accumulator.evt,
             &com_logger.evt,
         ];
         for evt in event_glues {
@@ -882,6 +921,7 @@ impl RefTopology {
             &dp_manager.tlm,
             &dp_writer.tlm,
             &dp_catalog.tlm,
+            &dp_buffer_accumulator.tlm,
         ];
         for tlm in tlm_glues {
             tlm.tlm_out.connect_to(tlm_chan.tlm_recv_in(0));
@@ -914,6 +954,10 @@ impl RefTopology {
         dp_catalog.ping_out.connect_to(health.ping_return_in(11));
         health.ping_send[12].connect_to(com_logger.ping_in(0));
         com_logger.ping_out.connect_to(health.ping_return_in(12));
+        health.ping_send[13].connect_to(dp_buffer_accumulator.ping_in(0));
+        dp_buffer_accumulator
+            .ping_out
+            .connect_to(health.ping_return_in(13));
 
         // -- Rate groups. ---------------------------------------------------
         linux_timer
@@ -1043,15 +1087,22 @@ impl RefTopology {
             .product_send_out
             .connect_to(dp_manager.product_send_in(1));
         // dpMgr answers on the same index it was asked on, so every producer
-        // index needs its own allocator/writer connection.
+        // index needs its own allocator/accumulator connection (upstream
+        // wires only index 0; see the deviation list in the module header).
         for i in 0..2 {
             dp_manager.buffer_get_out[i].connect_to(dp_buffer_manager.buffer_get_callee_in(0));
-            // C++ routes this through Svc.BufferAccumulator (not ported);
-            // the ownership cycle is otherwise identical.
-            dp_manager.product_send_out[i].connect_to(dp_writer.buffer_send_in(0));
+            dp_manager.product_send_out[i].connect_to(dp_buffer_accumulator.buffer_send_in_fill(0));
         }
+        // dpBufferAccumulator -> dpWriter, and the ownership return path
+        // dpWriter -> dpBufferAccumulator -> dpBufferManager.
+        dp_buffer_accumulator
+            .buffer_send_out_drain
+            .connect_to(dp_writer.buffer_send_in(0));
         dp_writer
             .dealloc_buffer_send_out
+            .connect_to(dp_buffer_accumulator.buffer_send_in_return(0));
+        dp_buffer_accumulator
+            .buffer_send_out_return
             .connect_to(dp_buffer_manager.buffer_send_in(0));
         dp_writer
             .dp_written_out
@@ -1142,6 +1193,11 @@ impl RefTopology {
                 PingEntry::new(HEALTH_WARN_CYCLES, HEALTH_FATAL_CYCLES, "cmdSeq"),
                 PingEntry::new(HEALTH_WARN_CYCLES, HEALTH_FATAL_CYCLES, "dpCat"),
                 PingEntry::new(HEALTH_WARN_CYCLES, HEALTH_FATAL_CYCLES, "comLog"),
+                PingEntry::new(
+                    HEALTH_WARN_CYCLES,
+                    HEALTH_FATAL_CYCLES,
+                    "dpBufferAccumulator",
+                ),
             ],
             HEALTH_WATCHDOG_CODE,
         );
@@ -1169,6 +1225,13 @@ impl RefTopology {
             }],
         );
         dp_writer.configure(&paths.dp_dir);
+        // DataProducts `phase configComponents`: allocateQueue(allocatorId,
+        // memAllocator, maxNumBuffers, DRAIN).
+        dp_buffer_accumulator.allocate_queue(
+            DP_BUFFER_ACCUMULATOR_ALLOCATOR_ID,
+            DP_BUFFER_ACCUMULATOR_MAX_NUM_BUFFERS,
+            OpState::Drain,
+        );
         dp_catalog.configure(
             &[FileNameString::from(paths.dp_dir.as_str())],
             &FileNameString::from(paths.dp_state_file.as_str()),
@@ -1213,6 +1276,7 @@ impl RefTopology {
         dp_manager.init(QUEUE_DEPTH);
         dp_writer.init(QUEUE_DEPTH);
         dp_catalog.init(QUEUE_DEPTH);
+        dp_buffer_accumulator.init(DP_BUFFER_ACCUMULATOR_QUEUE_DEPTH);
         com_logger.init(COM_LOGGER_QUEUE_DEPTH);
 
         // ------------------------------------------------------------------
@@ -1231,6 +1295,7 @@ impl RefTopology {
         dp_manager.reg_commands();
         dp_writer.reg_commands();
         dp_catalog.reg_commands();
+        dp_buffer_accumulator.reg_commands();
         system_resources.reg_commands();
         com_logger.reg_commands();
 
@@ -1307,6 +1372,12 @@ impl RefTopology {
         dp_catalog
             .active
             .start(&dp_catalog, DP_CATALOG_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
+        dp_buffer_accumulator.active.start(
+            &dp_buffer_accumulator,
+            DP_BUFFER_ACCUMULATOR_PRIORITY,
+            TASK_DEFAULT,
+            TASK_DEFAULT,
+        );
         com_logger
             .active
             .start(&com_logger, COM_LOGGER_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
@@ -1345,6 +1416,7 @@ impl RefTopology {
             dp_manager,
             dp_writer,
             dp_catalog,
+            dp_buffer_accumulator,
             com_splitter,
             com_logger,
             tcp_client,
@@ -1385,6 +1457,7 @@ impl RefTopology {
         self.dp_manager.active.exit();
         self.dp_writer.active.exit();
         self.dp_catalog.active.exit();
+        self.dp_buffer_accumulator.active.exit();
         self.com_logger.active.exit();
         // ...freeThreads: then join them all, same order.
         let _ = self.rate_group_1.active.join();
@@ -1402,6 +1475,7 @@ impl RefTopology {
         let _ = self.dp_manager.active.join();
         let _ = self.dp_writer.active.join();
         let _ = self.dp_catalog.active.join();
+        let _ = self.dp_buffer_accumulator.active.join();
         let _ = self.com_logger.active.join();
         // Driver-owned threads are stopped/joined by hand AFTER the
         // framework tasks (C++ parity).
@@ -1412,10 +1486,12 @@ impl RefTopology {
         // Resource deallocation (C++ `cmdSeq.deallocateBuffer(mallocator)`)
         // — strictly after every task has been joined.
         self.cmd_sequencer.deallocate_buffer();
-        // tearDownComponents phase (C++ DataProducts: dpCat.shutdown() then
-        // dpBufferManager.cleanup()).
+        // tearDownComponents phase (C++ DataProducts, instances in base-id
+        // order: dpCat.shutdown() + dpBufferManager.cleanup() in the
+        // dpBufferManager phase, then dpBufferAccumulator.deallocateQueue()).
         self.dp_catalog.shutdown();
         self.dp_buffer_manager.cleanup();
+        self.dp_buffer_accumulator.deallocate_queue();
         self.buffer_manager.cleanup();
         fw_log!("Ref topology torn down\n");
     }

@@ -21,9 +21,11 @@ use fprime_fw::file_packet::{DataPacket, EndPacket, FilePacket, StartPacket};
 use fprime_fw::{ComBuffer, SerBuf, TimeBase};
 use fprime_ref::signal_gen;
 use fprime_ref::topology::{
-    CMD_DISPATCHER_BASE_ID, CMD_SEQUENCER_BASE_ID, DP_CATALOG_BASE_ID, DP_WRITER_BASE_ID,
-    FILE_MANAGER_BASE_ID, FILE_UPLINK_BASE_ID, PRM_DB_BASE_ID, SIGNAL_GEN_BASE_ID,
+    CMD_DISPATCHER_BASE_ID, CMD_SEQUENCER_BASE_ID, DP_BUFFER_ACCUMULATOR_BASE_ID,
+    DP_CATALOG_BASE_ID, DP_WRITER_BASE_ID, FILE_MANAGER_BASE_ID, FILE_UPLINK_BASE_ID,
+    PRM_DB_BASE_ID, SIGNAL_GEN_BASE_ID,
 };
+use fprime_svc::buffer_accumulator::{BlockMode, BufferAccumulator, OpState};
 use fprime_svc::cmd_dispatcher::CmdDispatcher;
 use fprime_svc::cmd_sequencer::CmdSequencer;
 use fprime_svc::dp_catalog::DpCatalog;
@@ -574,6 +576,91 @@ fn data_product_is_written_and_cataloged() {
         harness.log_events()
     );
     assert_eq!(harness.topology.dp_catalog.catalog_size(), 1);
+
+    harness.topology.teardown();
+}
+
+/// The DataProducts `dpBufferAccumulator` sits between `dpMgr` and
+/// `dpWriter` exactly as upstream: in ACCUMULATE mode products pile up in
+/// its FIFO instead of being written, `BA_DrainBuffers 1 BLOCK` releases
+/// exactly one (answering once it is sent, with `BA_PartialDrainDone(1)`),
+/// and back in DRAIN mode every queued product — and every new one — is
+/// written. Draining past the first buffer only happens if `dpWriter`
+/// really hands each buffer back through `bufferSendInReturn`, so this also
+/// exercises the ownership return path to `dpBufferManager`.
+#[test]
+fn buffer_accumulator_holds_and_drains_data_products() {
+    let harness = Harness::up();
+    let accumulator = &harness.topology.dp_buffer_accumulator;
+    assert_eq!(accumulator.mode(), OpState::Drain);
+
+    let set_mode = opcode(
+        DP_BUFFER_ACCUMULATOR_BASE_ID,
+        BufferAccumulator::OPCODE_BA_SETMODE,
+    );
+    let drain = opcode(
+        DP_BUFFER_ACCUMULATOR_BASE_ID,
+        BufferAccumulator::OPCODE_BA_DRAINBUFFERS,
+    );
+    let dp = opcode(SIGNAL_GEN_BASE_ID, signal_gen::OPCODE_DP);
+    let written = DP_WRITER_BASE_ID + DpWriter::EVENTID_FILE_WRITTEN;
+    let records: u32 = 2;
+
+    run_command(&harness, set_mode, &[OpState::Accumulate.as_repr()]);
+    assert_eq!(accumulator.mode(), OpState::Accumulate);
+
+    // Two products are produced but held by the accumulator.
+    run_command(&harness, dp, &records.to_be_bytes());
+    assert!(
+        harness.tick_until(|| accumulator.num_queued_buffers() == 1),
+        "first product never reached the accumulator; events {:?}",
+        harness.log_events()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    run_command(&harness, dp, &records.to_be_bytes());
+    assert!(
+        harness.tick_until(|| accumulator.num_queued_buffers() == 2),
+        "second product never reached the accumulator; events {:?}",
+        harness.log_events()
+    );
+    assert!(dp_files(&harness).is_empty());
+    assert!(!harness.saw_event(written));
+
+    // A partial drain of one releases exactly one product.
+    let mut args = 1u32.to_be_bytes().to_vec();
+    args.push(BlockMode::Block.as_repr());
+    run_command(&harness, drain, &args);
+    assert_eq!(
+        harness.event_args(
+            DP_BUFFER_ACCUMULATOR_BASE_ID + BufferAccumulator::EVENTID_BA_PARTIALDRAINDONE
+        ),
+        Some(1u32.to_be_bytes().to_vec())
+    );
+    assert!(
+        harness.tick_until(|| dp_files(&harness).len() == 1),
+        "expected one .fdp file; events {:?}",
+        harness.log_events()
+    );
+    assert_eq!(accumulator.num_queued_buffers(), 1);
+
+    // DRAIN mode releases the rest, and new products flow straight through.
+    run_command(&harness, set_mode, &[OpState::Drain.as_repr()]);
+    assert!(
+        harness.tick_until(|| dp_files(&harness).len() == 2),
+        "expected the second .fdp file; events {:?}",
+        harness.log_events()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    run_command(&harness, dp, &records.to_be_bytes());
+    assert!(
+        harness.tick_until(|| dp_files(&harness).len() == 3),
+        "expected the third .fdp file; events {:?}",
+        harness.log_events()
+    );
+    assert_eq!(accumulator.num_queued_buffers(), 0);
+    assert!(
+        !harness.saw_event(DP_BUFFER_ACCUMULATOR_BASE_ID + BufferAccumulator::EVENTID_BA_QUEUEFULL)
+    );
 
     harness.topology.teardown();
 }
