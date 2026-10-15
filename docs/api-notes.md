@@ -2352,3 +2352,96 @@ channels, parameters, records and containers in the dictionary; `CPU_01..15` are
 `CHANID_CPU_00 + n`, as the component computes them, so the old note that
 `systemResources` declares fewer CPU channels no longer applies). A new instance with
 dictionary entries fails it until it gets a row.
+
+### fprime-svc: CCSDS AOS, `ComAggregator` and SDLS (ROADMAP item 12)
+
+**4dee010 catch-up of the CCSDS base.** `fprime_fw::FrameContext` gained
+`first_header_pointer: u16` (default 0; 15 bytes serialized).
+`ccsds::types::AGGREGATION_SIZE` is now the full TM data field (1016, was 1009).
+`TmFramer` ORs the context's First Header Pointer into the data field status
+(asserting it fits 11 bits), accepts a payload that fills the data field exactly
+(no idle fill) and asserts a residual of 1..6 bytes; `TcDeframer` forwards a
+context copy carrying the frame's VCID. New `ccsds::idle_packet` (`DATA_PATTERN`,
+`MIN_SIZE`, `serialize`). `types` adds `SdlsStatus::MacVerificationFailure`,
+`tm_subfields::{FHP_MASK, FHP_NO_PACKET_START, FHP_IDLE_DATA_ONLY}`,
+`aos_header_subfields`, `epp_subfields`, `EppProtocolId`, `EppLengthOfLength`,
+`pvn_bitfield`, `SdlsKeyBuffer` (`LinearBuffer<MAX_SDLS_KEY_SIZE>`) and the port
+traits `CcsdsSdlsEncryptionPort`, `CcsdsSdlsDataPort` (owned `Buffer` moved in,
+as every comms port) and `SdlsKeyPort`. `fprime_config::sdls` holds `SdlsCfg`
+(`MAX_SDLS_KEY_SIZE`, `SA_ROUTER_PORT_COUNT`, `SA_ROUTER_MAP_ENTRY_COUNT`,
+`SA_ROUTER_MAX_OUTSTANDING_BUFFERS`, the `SaRouterPorts` values and `SA_MAP` as
+`(sa, port)` pairs).
+
+**`com_aggregator::ComAggregator`** (active). `new`, `create_queue(depth)`,
+`configure(spanning)`, ports `data_in`/`data_return_in`/`com_status_in`/`timeout`,
+outputs `data_out`/`data_return_out`/`com_status_out`; `preamble` emits SUCCESS.
+Introspection: `aggregation_state`, `aggregate_size`, `last_context`,
+`owns_aggregate`, `aggregate_bytes`. `NON_SPANNING_CAPACITY` 1009, `MSG_SIZE` 37.
+Deviations: the FPP `AggregationMachine` is hand-written (FPP state-machine
+autocoding is item 11) with the FPP transition table; its signals use the
+generated envelope `[1 i32][0 i16][smId 0 i32][signal i32][data]` at priority 0
+with the assert policy, `fill` carrying a `BufferEscrow` token + `FrameContext`.
+The aggregate store is owned storage moved out on `dataOut`; writing to it while
+it is downstream asserts (C++ would write into the in-flight buffer). Component-
+thread state sits behind a mutex held for a whole transition.
+
+**`ccsds::aos_framer::AosFramer`** (passive). `new` (configured at
+`AOS_MAX_FRAME_FIXED_SIZE`, FECF on, VCID 1, SPP idle), `configure(size, fecf,
+scid, vcid, idle_pvns)`, `owns_frame_buffer`, `virtual_frame_count`,
+`set_virtual_frame_count` (test hook). Deviations: the per-VC state is behind a
+mutex, so the output ports run after it is released, in the C++ order — the C++
+recursion through a synchronous `dataReturnIn` still happens, just unlocked; the
+striped packet is a `PacketSource` (`User(Buffer)` or the staged `SppIdle`); the
+unused standard event/telemetry/parameter ports are not ported. Reproduced
+gotcha: with EPP in the idle-PVN mask, `sendNow` pads nothing (upstream TODO).
+
+**`ccsds::aos_deframer::AosDeframer`** (passive, guarded `dataIn`). `configure(size,
+fecf, scid, vcid, pvn_mask)` (asserts the allocator ports are connected); ports
+`data_in`/`data_return_in`; outputs `data_out`, `data_return_out`, `error_notify`,
+`allocate`, `deallocate`, `evt`, `tlm`. Event ids 0..10 and channel ids 0..3 in
+`.fppi` order (`EVENTID_*`, `CHANID_*`). Every packet is copied into an allocated
+buffer, as upstream. Deviations: the state mutex is the guard (held across the
+port calls); with a 64-bit `FwSizeType` the EPP length-overflow guard is dead and
+a ~4 GB length is refused by the allocator, as on upstream's 64-bit hosts.
+
+**SDLS.** `ccsds::ccsds_sdls_framer::CcsdsSdlsFramer` (`cmd`/`evt`/`prm` glue,
+`reg_commands`, `load_parameters`, `param_get_sa_index`, `OPCODE_SA_INDEX_PRM_SET`
+0 / `_SAVE` 1, `PARAMID_SA_INDEX` 0 default 1, `EVENTID_ENCRYPTION_FAILED` 0,
+`EVENTID_BUFFER_ALLOCATION_FAILED` 1; the parameter code follows `fpp-to-rust`'s
+generated pattern, and an unloaded parameter asserts as `FW_PARAM_OK` does);
+`ccsds_sdls_deframer::CcsdsSdlsDeframer` (`EVENTID_INSUFFICIENT_LENGTH` 0,
+`EVENTID_DECRYPTION_FAILED` 1); `sdls_sa_router::SdlsSaRouter` (`configure(&SaMap)`,
+`default_sa_map`, `outstanding_count`, `ROUTER_ERROR_PORT` -1, port arrays
+`sa_data_out`/`sa_data_return_out` and factories `sa_data_in(n)`/
+`sa_buffer_return_in(n)`; the `Fw::ArrayMap`s are fixed arrays with the same
+overwrite/full semantics); `sdls_file_key_manager::SdlsFileKeyManager`
+(`configure(path, key_size)`, guarded `key_get`; reads with `Os::File`, closes
+after each read); `clear_text_encryptor`/`clear_text_decryptor` (throttled
+`NullCipherInUse`, `null_cipher_throttle`); `sdls_auth_mask::{SdlsTcAuthMask,
+SdlsTmAuthMask}`.
+
+**AES-GCM (feature `aes-gcm`, off by default).** `ccsds::aes_gcm_encryptor::
+AesGcmEncryptor` (`MAX_OUTPUT_SIZE` 1014, `EVENTID_OUTPUT_BUFFER_BUSY` 0,
+`owns_output_buffer`) and `ccsds::aes_gcm_decryptor::AesGcmDecryptor`, on
+`ccsds::aes_gcm_cipher::{seal, open}` (RustCrypto `aes-gcm` 0.10, AES-256, 12-byte
+IV, 16-byte tag). Without the feature the three modules are not compiled at all —
+a stub would be a wireable component that silently provides no security, which
+the clear-text pair already covers explicitly. Deviations: RustCrypto for OpenSSL
+EVP (the cipher is keyed per frame on the stack: no per-frame allocation), the IV
+from `getrandom` for `RAND_bytes`, `zeroize` for `OPENSSL_cleanse` (also applied on
+the key-error paths); RustCrypto verifies the tag before decrypting, so a frame
+failing its MAC is passed on with its ciphertext intact instead of OpenSSL's
+unauthenticated plaintext (same status, and the client drops it). The output
+store is owned storage moved out and back. MSRV 1.85 holds with the feature
+(`zeroize` 1.9 is the tightest dependency at exactly 1.85).
+
+**Chains.** `fprime-ref --framing ccsds` now runs `spacePacketFramer ->
+aggregator -> tmFramer` (`RefTopology::aggregator`, `AGGREGATOR_BASE_ID`
+0x0200D000 — upstream's 0x6000 offset is `comStub` here; task only under
+`--framing ccsds`; timeout on rate group 1 member 6; spanning off as upstream).
+`crates/fprime-svc/tests/ccsds_sdls_chain.rs` wires upstream's `ComCcsdsSdls`
+(clear-text, and AES with the feature) plus an AOS framer/deframer loop. Upstream
+note: `ComCcsdsSdls` with the default `AggregationSize` can hand `TmFramer` a
+near-full aggregate plus the 2-byte SA index, which leaves an idle residual below
+7 bytes and asserts; `ComCfg.fpp` documents that projects inserting such a layer
+must subtract its overhead from `AggregationSize`. The test keeps aggregates small.

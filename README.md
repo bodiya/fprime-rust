@@ -22,7 +22,7 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
 - **Flight-software discipline**: `#![forbid(unsafe_code)]` everywhere, zero
   third-party dependencies in the default build (the only exceptions sit
   behind optional, off-by-default cargo features: `fprime-svc/zlib` for
-  data-product compression), no steady-state heap allocation (allocate at
+  data-product compression and `fprime-svc/aes-gcm` for SDLS AES-GCM), no steady-state heap allocation (allocate at
   init, recycle after), status enums with the C++ discriminants, `fw_assert`
   for invariants.
 - **A runnable reference deployment** (`fprime-ref`) mirroring the C++ `Ref`
@@ -98,6 +98,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 # Also build/test the zlib data-product compressor (pulls in miniz_oxide)
 cargo test --workspace --features fprime-svc/zlib
 
+# Also build/test the SDLS AES-256-GCM components (pulls in RustCrypto
+# aes-gcm, getrandom and zeroize)
+cargo test --workspace --features fprime-svc/aes-gcm
+
 # Run the reference deployment standalone (1 Hz rate loop; type "quit" to stop)
 cargo run -p fprime-ref
 
@@ -115,7 +119,8 @@ cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000 --framing ccsds
 ```
 
 Requires stable Rust (edition 2024). No external crates in the default build;
-the optional `zlib` feature adds `miniz_oxide` (pure Rust).
+the optional `zlib` feature adds `miniz_oxide` (pure Rust) and the optional
+`aes-gcm` feature adds RustCrypto `aes-gcm` with `getrandom` and `zeroize`.
 
 ## Porting status
 
@@ -137,7 +142,7 @@ the optional `zlib` feature adds `miniz_oxide` (pure Rust).
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format) |
-| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`); wired as the Ref's `ComCcsds` stack by `fprime-ref --framing ccsds` (without `ComAggregator`) |
+| Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer` (First Header Pointer from the context), `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`), `ComAggregator` (with optional TM packet spanning); wired as the Ref's `ComCcsds` stack by `fprime-ref --framing ccsds`. AOS: `AosFramer`/`AosDeframer` (M_PDU, SPP/EPP, spanning packets). SDLS: `CcsdsSdlsFramer`/`CcsdsSdlsDeframer`, `SdlsSaRouter`, `SdlsFileKeyManager`, `ClearTextEncryptor`/`ClearTextDecryptor`, and `AesGcmEncryptor`/`AesGcmDecryptor` (RustCrypto `aes-gcm`; only with the off-by-default `aes-gcm` feature of `fprime-svc`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `AsyncByteStreamBufferAdapter` (async byte-stream driver to passive buffer driver); `LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
 
@@ -166,8 +171,11 @@ can supply real hardware access without forking the component:
 
 State-machine autocoding in `fpp-to-rust` (the front end parses state
 machines; the back end does not generate them yet), `FpySequencer`,
-state-machine autocoding (`Fw/Sm`) and the SDLS security
-layer. Data-product compression is ported, but `DpZLibCompressor` is only
+state-machine autocoding (`Fw/Sm`), and `CfdpManager`. The SDLS security
+layer is ported, but `AesGcmEncryptor`/`AesGcmDecryptor` are only compiled
+with `fprime-svc`'s `aes-gcm` feature, and the Rust Ref, like upstream's
+(which uses `ComCcsds`, not `ComCcsdsSdls`), does not instantiate SDLS or
+AOS. Data-product compression is ported, but `DpZLibCompressor` is only
 compiled with `fprime-svc`'s `zlib` feature, and the Rust Ref, like
 upstream's (where `DpCompression.Subtopology` is commented out), does not
 instantiate it. `no_std`

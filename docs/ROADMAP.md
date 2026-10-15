@@ -143,8 +143,8 @@ subsystems, then the strategic changes.
   files over `space-packet-space-data-link`). The last needed a CCSDS Ref:
   `fprime-ref --framing ccsds` wires upstream's `ComCcsds` chain
   (`spacePacketFramer -> tmFramer`, `CcsdsTcFrameDetector -> tcDeframer ->
-  spacePacketDeframer`, `apidManager`), minus the unported
-  `ComAggregator`. Every check passed against fprime-gds 4.3.1 without a
+  spacePacketDeframer`, `apidManager`), minus the then-unported
+  `ComAggregator` (item 12 has since inserted it). Every check passed against fprime-gds 4.3.1 without a
   Rust fix; `SendPartial` lands at its absolute file offsets on the
   ground, as upstream's does.
 - **Upstream pin** (item 17). `FPRIME_UPSTREAM_COMMIT` names the
@@ -156,6 +156,26 @@ subsystems, then the strategic changes.
   command, event, channel, parameter, record and container of every Ref
   instance matches a Rust constant (base id + component id) and vice
   versa. See "Syncing with upstream" below.
+- **CCSDS AOS / `ComAggregator` / SDLS** (item 12). The CCSDS base was
+  first brought up to 4dee010: `FrameContext.firstHeaderPointer`, the full
+  TM data field as `AggregationSize`, `TmFramer` taking the First Header
+  Pointer from the context and sending a full data field without idle
+  fill, `TcDeframer` carrying the VCID in the context, and
+  `Utils::IdlePacket`. On top: `Svc::ComAggregator` (the FPP
+  `AggregationMachine` hand-written until item 11 lands, signals on the
+  queue in the generated envelope, optional TM packet spanning), now
+  between `spacePacketFramer` and `tmFramer` in `fprime-ref --framing
+  ccsds` with the timeout on rate group 1; `AosFramer` / `AosDeframer`
+  (M_PDU packing and striping, SPP/EPP extraction, VC frame-count gaps,
+  spanning-packet reassembly); the SDLS framework (`CcsdsSdlsFramer` /
+  `CcsdsSdlsDeframer`, `SdlsSaRouter`, `SdlsFileKeyManager`, the
+  `ClearTextEncryptor` / `ClearTextDecryptor` null ciphers, the TM/TC AAD
+  masks); and `AesGcmEncryptor` / `AesGcmDecryptor` on RustCrypto
+  `aes-gcm` behind `fprime-svc`'s off-by-default `aes-gcm` feature
+  (without it they are not compiled). Every upstream unit test is ported,
+  plus the AES-256 GCM-spec vectors, and
+  `crates/fprime-svc/tests/ccsds_sdls_chain.rs` runs upstream's
+  `ComCcsdsSdls` wiring end to end with both cipher pairs.
 
 ## Next: small follow-ups
 
@@ -176,15 +196,6 @@ the Ref deployment.
     style of `component_msg_types!`: states, signals, guards and actions
     with the generated `init()`/`update()` shape and the `Signal` enum on the
     wire.
-12. **CCSDS AOS / `ComAggregator` / SDLS.** `AOSHeader`, `AOSTrailer`,
-    `MPduHeader`, `SaMapEntry`, `SdlsStatus` are declared; nothing consumes
-    them.
-    `ComAggregator` belongs between `spacePacketFramer` and `tmFramer` in
-    the Ref's `--framing ccsds` chain, as in upstream's `ComCcsds`; it
-    needs the 4dee010 `TmFramer` behaviour the Rust port predates (the
-    First Header Pointer taken from `FrameContext.firstHeaderPointer`,
-    which the Rust `FrameContext` lacks, and a full data field sent
-    without idle fill).
 
 ## Strategic
 

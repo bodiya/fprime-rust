@@ -18,7 +18,7 @@
 //! signal* onto the component queue, so all actions and guards run serially
 //! on the component's own thread. FPP state-machine autocoding is not
 //! ported (ROADMAP item 11), so the machine is hand-written here as
-//! [`AggregationState`] plus [`ComAggregator::dispatch_signal`], keeping the
+//! [`AggregationState`] plus a private `dispatch_signal`, keeping the
 //! FPP transition table exactly:
 //!
 //! ```text
