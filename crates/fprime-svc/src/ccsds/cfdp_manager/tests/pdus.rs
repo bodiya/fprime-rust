@@ -7,7 +7,8 @@
 //! with fprime-gds 4.3.1, which itself ships no CFDP engine). They agree
 //! byte for byte except where upstream F´ departs from CCSDS 727.0-B-5,
 //! which the port keeps (see `metadata_pdu_literal_bytes` and
-//! `ack_pdu_literal_bytes`).
+//! `ack_pdu_literal_bytes`); `tools/cfdp-pdu-vectors.py` repeats the
+//! comparison.
 
 use super::*;
 use crate::ccsds::cfdp_manager::pdu::{

@@ -3364,7 +3364,9 @@ Upstream behavior kept on purpose (all covered by tests):
   fprime-gds 4.3.1 installs; fprime-gds ships no CFDP engine): the
   metadata closure-requested flag is the MSB of its octet (0x80; the
   standard and spacepackets use bit 6, 0x40), and ACK(EOF) carries
-  directive subtype 1 (standard: 0). Everything else matched byte for byte.
+  directive subtype 1 (standard: 0). Everything else matched byte for byte;
+  `tools/cfdp-pdu-vectors.py` (run with the fprime-gds venv's Python)
+  repeats the comparison.
 - `insertSortPrio` puts a transaction with no equal-or-higher-priority
   entry at the back of the queue (CF puts it at the front).
 - The move directory is a rename target: the sent file is renamed to the
