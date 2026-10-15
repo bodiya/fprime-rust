@@ -50,7 +50,11 @@ topologies) and the reference compiler's own `fpp-to-cpp` test corpora.
 | `type T` | a `pub use` of the bound Rust type (abstract types must be bound) |
 | `port P` | `pub trait PPort: Send + Sync { fn invoke(&self, port_num, ..) [-> R] }` |
 | `component C` | `CBase`, `CHandlers`, `CComponent`, adapters, `impl_c_component!` (below) |
-| `topology T` | `TTopology { instances }` with `set_id_bases`, `init`, `connect`, `reg_commands`, `load_parameters`, `start_tasks`/`exit_tasks`/`join_tasks` |
+| `topology T` | `TTopology { instances }` with the phases `new`, `init`, `config_components`, `set_id_bases`, `connect`, `reg_commands`, `read_parameters`, `load_parameters`, `start_tasks`/`exit_tasks`/`join_tasks`, `tear_down_components`, `deinit_components`, `setup`/`teardown` |
+| `phase P "code"` (instance init specifier) | Rust code in phase `P` of every topology holding the instance |
+| `state machine M { .. }` | `fprime_comp::fpp_state_machine!` in module `M` |
+| `state machine M` (external) | a bound Rust type implementing `fprime_comp::sm::ExternalStateMachine` |
+| `state machine instance m: M` | base field, `SM_ID_M`, `m_get_state`, `m_send_signal_<s>` / `m_state_machine_invoke`, handlers, dispatch |
 | `serial` port | input: a `fprime_comp::SerializePort` adapter; output: `OutputPort<dyn SerializePort>`; each serializable `port P` also gets `fprime_comp::serializable_port!` |
 | `telemetry packets S` in `T` | `T_STlmPackets` with `PACKET_LIST` / `OMITTED_CHANNELS` for `TlmPacketizer::set_packet_list` |
 | `deployment topology T` / `system S` | with `--dict`: `TTopologyDictionary.json` / `SSystemDictionary.json` |
@@ -58,9 +62,12 @@ topologies) and the reference compiler's own `fpp-to-cpp` test corpora.
 **Bindings.** Framework definitions the workspace hand-writes are never
 regenerated: config aliases map to `fprime_config`, `Fw.Time`/`Fw.Buffer`/the
 buffers/the `Fw` enums to `fprime_fw`, and `Fw.Cmd`, `Fw.Log`, `Svc.Sched`,
-... to the `fprime_comp` port traits. The default table is
-`codegen::Bindings::framework()`; `--bind-type FPP=RUST[:kind]` and
-`--bind-port FPP=RUST` extend it. A port binding may carry per-parameter
+... to the `fprime_comp` port traits, and hand-written components a generated
+topology may instantiate (`Svc.TlmPacketizer` to
+`fprime_svc::tlm_packetizer::TlmPacketizer`). The default table is
+`codegen::Bindings::framework()`; `--bind-type FPP=RUST[:kind]`,
+`--bind-port FPP=RUST` and `--bind-component FPP=RUST` extend it. An
+external state machine is bound like a type (`--bind-type M=RUST`). A port binding may carry per-parameter
 passing modes where a hand-written trait deviates from the default rules
 (`Fw.DpGet`'s buffer is an out-parameter; `Fw.BufferSend`'s moves).
 
@@ -112,10 +119,44 @@ handled by the generated dispatch.
 ### Topologies
 
 Each instance becomes an `Arc<Impl>` field, where `Impl` is the instance's
-`type "path"` clause (interpreted as a Rust path) or
-`<impl prefix><Module>::<Component>`. Connections use the resolved port
-numbers, so pattern graphs and port arrays behave exactly as in the C++
-topology. Every instance must be of a generated component.
+`type "path"` clause (interpreted as a Rust path), the binding of a
+hand-written component, or `<impl prefix><Module>::<Component>`.
+Connections use the resolved port numbers, so pattern graphs and port
+arrays behave exactly as in the C++ topology. The phase methods are the
+C++ topology's (`new` is the instances phase: `Impl::new("<qualified
+instance name>")`; `setup`/`teardown` call the others in the C++ order); a
+component with state machine instances is initialized through its
+generated `init`.
+
+**Init specifiers.** `phase Fpp.ToCpp.Phases.<p> """code"""` holds Rust
+code, placed where `fpp-to-cpp` places the C++: in the phase method
+(`init`, `config_components`, `reg_commands`, `read_parameters`,
+`load_parameters`, `start_tasks`, `exit_tasks` = `stopTasks`, `join_tasks`
+= `freeThreads`, `tear_down_components`, `deinit_components`) it replaces
+the instance's default code, in a block where `self` is the topology (its
+instances are `self.<snake_name>`, the topology module's items — packet
+tables included — are in scope); `instances` code is the expression that
+builds the instance in `new`; `configConstants` / `configObjects` code
+are items in `T_ConfigConstants::<instance>` / `T_ConfigObjects::<instance>`.
+This is how a deployment configures its packetizer, as upstream does
+(`fprime-fpp-demo`'s `Ops` topology):
+
+```fpp
+instance tlmSend: Svc.TlmPacketizer base id 0x5000 queue size 10 {
+  phase Fpp.ToCpp.Phases.configComponents """
+  self.tlm_send.set_packet_list(Ops_OpsPacketsTlmPackets::PACKET_LIST,
+      Ops_OpsPacketsTlmPackets::OMITTED_CHANNELS, 1);
+  """
+}
+```
+
+**Hand-written components.** An instance of a bound component is wired
+through the workspace's hand-written conventions: the core in `active` /
+`queued` / `base`, the special-port glue (`cmd`, `evt`, `tlm`, `prm`), each
+output port a field `snake_case(port)`, each input port a factory
+`snake_case(port)_in` (or `snake_case(port)` when that already ends in
+`_in`), and `new`, `init`, `reg_commands`, `load_parameters`. The FPP
+model of the component must be imported (it is not generated).
 
 ### Serial ports
 
@@ -158,11 +199,49 @@ the C++ file-local tables (`ChannelIds`, `ChannelSizes`, `PacketIds`,
 `PacketGroups`, `PacketDataSizes`, `PacketEntryArrays`, `Packets`,
 `SizeBounds`) with the `static_assert`s as compile-time assertions. The set
 is checked as the dictionary checks it. As in C++, the topology does not
-configure a packetizer; a deployment calls
+configure a packetizer by itself; a deployment calls
 `tlm_send.set_packet_list(T_STlmPackets::PACKET_LIST,
-T_STlmPackets::OMITTED_CHANNELS, level)` (upstream does it in
-`phase Fpp.ToCpp.Phases.configComponents` code). The types come from
+T_STlmPackets::OMITTED_CHANNELS, level)`, in a
+`phase Fpp.ToCpp.Phases.configComponents` init specifier as upstream does
+(see Topologies above). The types come from
 `Options::packetizer_path` (default `::fprime_svc::tlm_packetizer`).
+
+### State machines
+
+An internal `state machine M` becomes `fprime_comp::fpp_state_machine!` in
+module `M` (beside `M`'s nested types): signals numbered by name, every
+state under its `_`-joined qualified name with its parent, leaf states
+numbered in the order of those names (the `State` enum the macro defines,
+which `M.State` names), typed actions, guards, signals and choices with a
+passing mode (`val` for `Copy` types, `str` for strings, `ref` otherwise),
+each choice with the type FPP infers for it. The front end checks the
+machine as the reference compiler does (target scoping, initial
+transitions, duplicate signals, reachability, choice cycles, typed call
+sites). An external machine is a bound Rust type.
+
+A component `C` with `state machine instance` members gets, following the
+contract in `docs/api-notes.md` ("fprime-comp: state machines"):
+
+- in `CBase`, a field per instance (`M::StateMachine` or the external
+  type), `SM_ID_<M>` (`component_sm_ids!`, all instances sorted by name),
+  `<m>_get_state()`, and `MSG_TYPE_EXTERNAL_STATE_MACHINE_SIGNAL` /
+  `MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL` after every other message type,
+  with `MSG_SIZE` covering the machines' signals;
+- in `CHandlers`, `<fq>_action_<a>` / `<fq>_guard_<g>` for every internal
+  machine type (`fq`: the machine's qualified name, `.` → `_`, as C++
+  `FppTest_SmState_Basic_action_a`), and
+  `<m>_state_machine_overflow_hook` for `hook` instances;
+- in `CComponent`, `init(queue_depth)` (the machines in `SmId` order, then
+  the queue), `<m>_send_signal_<s>([value])` for internal instances and
+  `<m>_state_machine_invoke(signal, &data)` for external ones (with the
+  instance's priority and queue-full policy), and the dispatch arms;
+- `CSmHandlers<'_, H>`, adapting the handler trait to each machine's
+  `Handlers`, and with external instances `CSmParents`, implemented by
+  `impl_c_component!` (`&Impl` is the machine's `Parent`).
+
+A struct member of type `Fw.Buffer` is an `fprime_comp::EscrowedBuffer`
+(the `Fw::Buffer` wire layout with an escrow token), so the struct can be
+a signal value.
 
 ## JSON dictionary (`--dict DIR`)
 
@@ -194,12 +273,9 @@ printer and parser.
 
 ## Not generated (yet)
 
-State machines and state machine instances (the target is
-`fprime_comp::fpp_state_machine!` and `fprime_comp::sm`; the contract is
-in `docs/api-notes.md`, "fprime-comp: state machines"); instance init specifiers
-(`phase ... "code"`); instances of hand-written components in a generated
-topology. Anonymous struct constants and abstract-type values are emitted
-as comments.
+Anonymous struct constants and abstract-type values are emitted as
+comments. The topology phases take no `TopologyState` (the C++ `state`
+argument).
 
 ## Using it
 
@@ -230,12 +306,15 @@ src/include.rs      include splicing
 src/transform.rs    implicit state enums
 src/analysis/       symbols, types/values, eval, format strings, components, topologies
 src/analysis/uses.rs  deep used-symbol closure (dictionary contents)
+src/analysis/state_machine.rs  state machine semantics (StateMachineModel)
 src/codegen/        bindings + driver, names, types, ports, component, topology,
-                    serial (serial-port helpers), packets (telemetry packet tables)
+                    serial (serial-port helpers), packets (telemetry packet tables),
+                    state_machine (fpp_state_machine!), sm_instances (component side)
 src/codegen/dictionary.rs  the JSON dictionary back end
 src/json.rs         JSON value, printer, parser
 src/bin/fpp_to_rust.rs
 tests/analysis.rs   reference-rule tests on inline models
-tests/codegen.rs    back-end tests on inline models (serial wiring, packet tables)
+tests/codegen.rs    back-end tests on inline models (serial wiring, packet tables,
+                    state machines, bound components, init specifiers)
 tests/dictionary.rs the reference fpp-to-dict corpus (tests/dict)
 ```

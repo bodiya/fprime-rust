@@ -2657,3 +2657,141 @@ hierarchical-choice machines, the assert/drop/hook policies on overflow,
 priorities and the message bytes; `external_instance` (`SmTest` with `DeviceSm` and `HackSm`).
 The remaining `internal_instance` testers repeat the internal tests through
 the same queue path and are not duplicated.
+
+### fprime-fpp: state machines, init specifiers, hand-written components (ROADMAP item 15)
+
+The rest of item 15: `fpp-to-rust` now emits item 11's state machine
+contract (above) and supports instance init specifiers and instances of
+hand-written components in generated topologies.
+
+```text
+analysis::StateMachineModel (Analysis::state_machines, internal machines only)
+  actions / guards / signals: SmTyped { name, ty: Option<Type> }
+  states: SmState { path, parent, substates, initial, entry, exit, transitions }   flat_name() = path.join("_")
+  choices: SmChoice { path, parent, guard, if_transition, else_transition, ty }    ty = inferred type
+  leaf_numbers(), signals_by_name(), target_name()
+analysis::StateMachineInstanceDef { name, state_machine, priority, queue_full }    ComponentModel::state_machine_instances
+analysis::InitSpecDef { phase, code }                                              InstanceModel::init_specs
+codegen::Bindings::components / bind_component(fpp, rust) / ComponentBinding { path }
+  framework(): Svc.TlmPacketizer -> ::fprime_svc::tlm_packetizer::TlmPacketizer
+  external state machines: bind_type(M, rust, Ref)                 (CLI --bind-component, --bind-type)
+codegen::topology::phases::{CONFIG_CONSTANTS = 0, .., DEINIT_COMPONENTS = 12}     (Fpp.ToCpp.Phases)
+
+state machine M { .. }        -> pub mod M { ::fprime_comp::fpp_state_machine! { state machine M: u8 { .. } } }
+component C (instances m: M, e: E)
+  CBase:      pub m: M::StateMachine, pub e: <bound E>; SM_ID_* (component_sm_ids!, sorted by name);
+              m_get_state(); MSG_TYPE_EXTERNAL_STATE_MACHINE_SIGNAL, MSG_TYPE_INTERNAL_STATE_MACHINE_SIGNAL
+  CHandlers:  <fq(M)>_action_<a>(sm_id, M::Signal[, value]); <fq(M)>_guard_<g>(..) -> bool;
+              m_state_machine_overflow_hook(sm_id, signal, msg)        (internal, `hook`)
+              e_state_machine_overflow_hook(signal, &SmSignalBuffer)  (external, `hook`)
+  CComponent: init(queue_depth[, msg_size]); m_send_signal_<s>([value]);
+              e_state_machine_invoke(<E as ExternalStateMachine>::Signal, &SmSignalBuffer); dispatch arms
+  CSmHandlers<'a, H>(pub &'a H): impl M::Handlers;  CSmParents (external): implemented by impl_c_component!
+topology T
+  new() (instances), init(), config_components(), set_id_bases(), connect(), reg_commands(),
+  read_parameters(), load_parameters(), start_tasks(), exit_tasks() (stopTasks), join_tasks() (freeThreads),
+  tear_down_components(), deinit_components(), setup(), teardown()
+  pub mod T_ConfigConstants { pub mod <inst> { use super::super::*; <code> } }   (and T_ConfigObjects)
+```
+
+**State machines.** The analysis follows `CheckStateMachineSemantics`:
+actions, guards and signals in the machine's scope, states and choices in
+nested scopes (a target `A.B` is looked up from the innermost state
+outwards), one initial transition per machine and per state with
+substates, initial transitions (through choices) staying inside their
+state, one transition per signal and state, every state and choice
+reachable, no choice cycles, choice types as `ComputeTypeOptionMap`
+infers them (the common type of the transitions into the choice: wider
+integer of one signedness, wider float, any two strings → `string`), and
+`CheckActionAndGuardTypes`' conversion rule at every action and guard.
+The generator emits the macro input documented in "Generator contract"
+above. Signal values with an `Fw.Buffer` member: such a member of a
+generated struct is an `EscrowedBuffer` and the struct is not `Clone`.
+
+**Component side.** As the contract specifies; additions where the
+contract left the shape open:
+
+- The senders are `CComponent` methods named as in C++
+  (`m_send_signal_s`, `e_state_machine_invoke`), not `Sender` values: a
+  `hook` instance needs the implementation as its overflow hook, which
+  only the generic component trait can reach (the hook is a closure
+  around `self` for the duration of the call).
+- `init` is a `CComponent` method (the machines' initial transitions call
+  the implementation's actions), which then calls `CBase::init` to create
+  the queue; the topology calls it for such components. Calling
+  `CBase::init` directly would skip the machines (they would assert on
+  their first signal).
+- The actions and guards of the machines are `CHandlers` methods; one
+  generic adapter `CSmHandlers<'_, H>` implements each machine's
+  `Handlers` for any implementation (a blanket `impl M::Handlers for T:
+  CHandlers` would conflict as soon as two components use one machine).
+- External machines take their parent (`ExternalStateMachine::Parent`,
+  usually `dyn <M>_Interface`) from `CSmParents`, which
+  `impl_c_component!` implements with `self` — the one place the concrete
+  implementation type is known, so `&Impl` coerces to `&dyn Interface`.
+  The external overflow hook receives the raw signal value
+  (`FwEnumStoreType`) where C++ passes the interface's signal enum.
+
+**Init specifiers.** Upstream's autocoder pastes each specifier's C++
+into the topology: for `instances` in place of the instance definition,
+for `configConstants` / `configObjects` into namespaces
+`ConfigConstants::<inst>` / `ConfigObjects::<inst>`, and for the
+`initComponents` … `deinitComponents` phases into the phase function, in
+place of the instance's default code there (`init`, `regCommands`,
+`loadParameters`, `start`, `exit`, `join`, `deinit`) or as its only code
+(`configComponents`, `readParameters`, `tearDownComponents`). The Rust
+analogue is the same with Rust code: the phase methods of `TTopology`
+(each specifier in a block, `self` the topology, its instances
+`self.<snake_name>` and the topology module's items in scope), the
+instance's field initializer in `new()` (an expression of type
+`Arc<Impl>`), and modules `T_ConfigConstants::<inst>` /
+`T_ConfigObjects::<inst>` (named per topology because Rust modules cannot
+be reopened like namespaces; they glob-import the topology's module).
+Deviations: no `TopologyState` parameter; the default `deinitComponents`
+code is empty (Rust components release resources on drop); phase numbers
+outside 0..=12 are accepted and ignored, as in C++. The phase is
+evaluated by the analysis (duplicate phases are errors), so a model that
+names `Fpp.ToCpp.Phases` must import `Fpp/ToCpp.fpp` —
+`crates/fprime-ref/fpp/generate-dictionary.sh` now does (its output is
+unchanged).
+
+**Hand-written components.** A bound component is not generated; its
+instances use the conventions of the hand-written `fprime-svc`
+components (see `codegen::ComponentBinding`): `new(name) -> Arc<Self>`,
+the core field by kind, the special-port glue, an output port `p` as field
+`snake(p)`, an input port `p` as factory `snake(p)_in` (or `snake(p)` if it
+already ends in `_in`), `init(queue_depth)`, `reg_commands()`,
+`load_parameters()`. Only `Svc.TlmPacketizer` is bound by default, because
+it is the one checked end to end (`fprime-fpp-demo`'s `Ops` topology);
+other `fprime-svc` components follow the same conventions but are bound
+on request (`--bind-component`), and a mismatch is a compile error in the
+generated topology. The packet-table note of the item 15 section above
+("No automatic `set_packet_list`") is resolved this way: the deployment's
+`configComponents` specifier makes the call, as upstream's does. Two
+related generator changes: the size of a channel whose type has no Rust
+item (defined in an imported FPP file and not bound, like the
+packetizer's `SectionConfigs`) is a number computed from the model; and in
+a generated struct's default, a member of a bound type that takes that
+type's FPP default is written as its `Default` (the hand-written enums do
+not always name their constants as FPP does).
+
+Tests: `crates/fprime-fpp/tests/analysis.rs` (the model, every semantic
+error above, init specifier phases), `tests/codegen.rs` (the macro input,
+the instance side, the binding error, bound components and specifiers in
+a topology); in `fprime-fpp-demo`, `fpp/sm` holds upstream's FppTest
+state machine models, the FpySequencer and ComAggregator machines and
+`Probe` (`fpp/sm/NOTICE.md`): `tests/sm_traces.rs` replays all 19 golden
+trace files of `fprime-comp/tests/sm_traces` (fpp-to-cpp 3.3.0) against
+the generated machines and checks the generated `AggregationMachine`
+against `fprime-svc`'s hand-written one (numbering, message size, the
+`fill` value's bytes); `tests/sm_instances.rs` runs the ported FppTest
+`internal_instance` (`Basic`, `BasicGuardTestAbsType`, `InputPairU16U32`)
+and `external_instance` (`SmTest`) tests on generated components, message
+bytes included; `tests/ops.rs` sets up the `Ops` topology (an active
+`Controller` with an internal `Lifecycle` and an external hand-written
+`Watchdog`, a `Console`, the hand-written `TlmPacketizer`) phase by phase
+— commands driving the lifecycle through the queue, the typed choice, the
+watchdog stopping the lifecycle, the drop and hook policies, the
+packetizer emitting the controller's packet byte for byte after the
+`configComponents` specifier configured it — and once with
+`setup()`/`teardown()` on real threads.

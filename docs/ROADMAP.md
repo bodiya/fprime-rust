@@ -33,10 +33,9 @@ subsystems, then the strategic changes.
   types, port traits, component bases with handler traits, and topology
   wiring. `crates/fprime-fpp-demo` builds a model from FPP at build time
   and tests the generated code end to end; the whole upstream framework
-  model and the Ref deployment analyze. Not generated: state machines
-  (`Fw/Sm`: the `fpp_state_machine!` target of item 11 exists, see item
-  15; serial ports and packet tables landed with item 15). See
-  `crates/fprime-fpp/README.md`.
+  model and the Ref deployment analyze. Serial ports, packet tables, state
+  machines, init specifiers and hand-written components in topologies
+  landed with item 15. See `crates/fprime-fpp/README.md`.
 
 - **Config constants into `fprime-config`** (item 1). `FW_FILE_BUFFER_MAX_SIZE`,
   `FILE_DOWN_COMPLETE_PORTS`, `file_downlink::*`, `file_manager::*` and
@@ -112,7 +111,7 @@ subsystems, then the strategic changes.
   subtopology constants.
 
 - **FPP back end: serial ports and telemetry packet tables** (item 15,
-  except state machines). `fpp-to-rust` targets item 9's
+  first part). `fpp-to-rust` targets item 9's
   `fprime_comp::serial_port` runtime: every generated port definition
   without a return value or an `Fw.Buffer` gets a `serializable_port!`;
   `serial` input ports are `SerializePort` adapters (sync, guarded and
@@ -126,7 +125,7 @@ subsystems, then the strategic changes.
   `PACKET_LIST` / `OMITTED_CHANNELS` that `TlmPacketizer::set_packet_list`
   takes, ordered and checked as `TlmPacketSetCppWriter` does. Like the
   C++ autocoder, the topology does not call `set_packet_list` itself
-  (upstream does it in instance init code). `fprime-fpp-demo` proves both
+  (upstream does it in instance init code, see below). `fprime-fpp-demo` proves both
   end to end: a queued `Relay` between typed ports, and a real
   `TlmPacketizer` packetizing the generated sensor's telemetry from the
   generated tables.
@@ -194,6 +193,29 @@ subsystems, then the strategic changes.
   hierarchical FppTest machines against the reference compiler's C++.
   The FPP front end now numbers the implicit `State` enum in name order,
   as `fpp-to-cpp` does.
+- **FPP back end: state machines, init specifiers, hand-written
+  components** (item 15). The front end checks state machines as the
+  reference's `CheckStateMachineSemantics` does (target scoping, initial
+  transitions, signal uses, reachability, choice cycles, inferred choice
+  types, typed call sites); `fpp-to-rust` emits `fpp_state_machine!` for
+  every internal machine and the whole instance side of item 11's contract
+  (`SM_ID_*` sorted by name, machines initialized before the queue, the
+  signal messages with each instance's priority and policy, overflow
+  hooks, `smDispatch`, external machines bound to Rust types); a struct
+  member of type `Fw.Buffer` becomes an `EscrowedBuffer`. Instance init
+  specifiers carry Rust code, placed per phase where `fpp-to-cpp` places
+  the C++ (the phase methods, `new` for `instances`, `T_ConfigConstants` /
+  `T_ConfigObjects` modules), with `setup`/`teardown` in the C++ order;
+  hand-written components can be bound (`--bind-component`;
+  `Svc.TlmPacketizer` by default) and instantiated in generated
+  topologies. `fprime-fpp-demo` generates upstream's FpySequencer,
+  ComAggregator and FppTest machines and replays all of item 11's
+  `fpp-to-cpp` golden traces against them, runs the FppTest instance
+  tests on generated components, and its `Ops` topology holds a
+  controller with an internal and an external machine and the
+  hand-written `TlmPacketizer`, configured by a `configComponents` init
+  specifier from the generated packet table. The Ref still wires by hand,
+  so its dictionary and wire behavior are unchanged.
 
 ## Next: small follow-ups
 
@@ -210,22 +232,13 @@ the Ref deployment.
 
 10. **`Svc::FpySequencer`.** Larger than `CmdSequencer`; needs the Fpy
     bytecode dispatcher. Its state machine is already expressed with
-    `fpp_state_machine!` in `crates/fprime-comp/tests/sm_traces.rs`.
+    `fpp_state_machine!` in `crates/fprime-comp/tests/sm_traces.rs`, and
+    `fpp-to-rust` generates it from the upstream FPP (`fprime-fpp-demo`).
 
 ## Strategic
 
 13. **`no_std` OSAL seam.** `fprime-os` keeps the seam; making `fprime-fw`
     and `fprime-comp` `no_std` + `alloc` is the first real test of it.
-15. **FPP back-end gaps.** The front end is complete; the Rust back end
-    still lacks state machines and state-machine instances (it should emit
-    `fpp_state_machine!` and the instance plumbing documented in
-    `docs/api-notes.md`, "fprime-comp: state machines"). Serial ports and
-    telemetry packet tables are done (see "Done in phase 2"). Still open
-    here: instance init specifiers (`phase ... """code"""`), which is how
-    upstream deployments call `setPacketList` on their packetizer, and
-    instances of hand-written framework components in a generated
-    topology (so a generated topology could hold the `TlmPacketizer`
-    itself).
 
 ## Syncing with upstream
 
