@@ -288,6 +288,32 @@ pub mod crc_checker {
     pub const FILE_READ_BLOCK: usize = 2048;
 }
 
+/// The `DpCompression` subtopology configuration
+/// (`Svc/Subtopologies/DpCompression/DpCompressionConfig/DpCompressionConfig.fpp`):
+/// the base id of `dpCompressProc` / `dpZLibCompressor` /
+/// `dpZLibCompressorBufferManager` (+0x0000 / +0x1000 / +0x2000) and the two
+/// bins of that buffer manager. Only meaningful with `fprime-svc`'s `zlib`
+/// feature; the Rust Ref, like upstream's, does not instantiate the
+/// subtopology.
+pub mod dp_compression {
+    use super::{FwIdType, FwSizeType};
+
+    /// `DpCompressionConfig.BASE_ID`.
+    pub const BASE_ID: FwIdType = 0x0410_0000;
+    /// `ZLibBuffMgr.compressionBufferStoreSize` — scratch output buffers
+    /// (at least the `DpCompressProc` `CHUNK_SIZE`).
+    pub const COMPRESSION_BUFFER_STORE_SIZE: FwSizeType = 32 * 1024;
+    /// `ZLibBuffMgr.compressionBufferStoreCount`.
+    pub const COMPRESSION_BUFFER_STORE_COUNT: u16 = 2;
+    /// `ZLibBuffMgr.allocBufferStoreSize` — zlib working memory (at least
+    /// the `DpZLibCompressor` `ZLibBufferSize` parameter).
+    pub const ALLOC_BUFFER_STORE_SIZE: FwSizeType = 269_000;
+    /// `ZLibBuffMgr.allocBufferStoreCount`.
+    pub const ALLOC_BUFFER_STORE_COUNT: u16 = 2;
+    /// `ZLibBuffMgr.dpZLibCompressorBufferManagerId`.
+    pub const BUFFER_MANAGER_ID: u16 = 301;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

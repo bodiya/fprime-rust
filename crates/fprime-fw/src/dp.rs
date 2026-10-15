@@ -85,8 +85,9 @@ fpp_enum! {
     pub enum ProcType : u8 {
         /// No processing.
         None = 0x00,
-        /// Processing type 0 (zlib deflate; the compressor itself is out of
-        /// scope for this port — see the module notes in `Svc::DpWriter`).
+        /// Processing type 0 (zlib deflate: `Svc::DpCompressProc` with
+        /// `Svc::DpZLibCompressor`, the latter behind `fprime-svc`'s `zlib`
+        /// cargo feature).
         ZlibDeflate = 0x01,
         /// Processing type 1.
         One = 0x02,

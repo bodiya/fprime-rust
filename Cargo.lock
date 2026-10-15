@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "fprime-comp"
 version = "0.1.0"
 dependencies = [
@@ -77,6 +83,7 @@ dependencies = [
  "fprime-fw",
  "fprime-os",
  "fprime-utils",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -86,4 +93,13 @@ dependencies = [
  "fprime-config",
  "fprime-fw",
  "fprime-os",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
 ]

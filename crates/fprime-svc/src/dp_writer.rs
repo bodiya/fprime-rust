@@ -18,11 +18,12 @@
 //!   `ref Fw::Buffer`). The framework's [`fprime_comp::BufferSendPort`]
 //!   moves the buffer, so the processing fan-out uses [`DpProcPort`], which
 //!   borrows the buffer mutably — same call graph, same in-place mutation.
-//! * The zlib processing components (`Svc::DpZLibCompressor`,
-//!   `Svc::DpCompressProc`) are OUT OF SCOPE for this port (they call libz;
-//!   the workspace has zero third-party dependencies). The fan-out itself is
-//!   ported verbatim, so any processing component can be connected;
-//!   `ProcType::ZlibDeflate` (bit 0) keeps its wire value.
+//! * The fan-out is ported verbatim, so any processing component can be
+//!   connected. Upstream's compression pair is
+//!   [`DpCompressProc`](crate::dp_compress_proc::DpCompressProc) (always
+//!   built) on port 0 — `ProcType::ZlibDeflate`, bit 0 — driving
+//!   `DpZLibCompressor` (`dp_zlib_compressor`, only with the `zlib` cargo
+//!   feature).
 //! * The C++ file is never explicitly closed (it relies on the `Os::File`
 //!   destructor); the Rust [`File`] closes on drop, which is the same thing.
 

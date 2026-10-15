@@ -16,3 +16,16 @@ fprime-fw.workspace = true
 fprime-os.workspace = true
 fprime-utils.workspace = true
 fprime-comp.workspace = true
+
+# The ONLY third-party dependency in the workspace, behind an optional,
+# off-by-default feature (ROADMAP item 14): `zlib` compiles
+# `Svc::DpZLibCompressor` (`dp_zlib_compressor`) on the pure-Rust
+# `miniz_oxide` deflate, so no C toolchain or libz is needed. Without the
+# feature the component is not compiled at all — upstream's CMake likewise
+# skips `Svc_DpZLibCompressor` when libz is not found. `Svc::DpCompressProc`
+# has no compression code of its own and is always built.
+miniz_oxide = { version = "0.9", optional = true, default-features = false, features = ["with-alloc"] }
+
+[features]
+default = []
+zlib = ["dep:miniz_oxide"]

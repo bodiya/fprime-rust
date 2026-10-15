@@ -16,8 +16,11 @@ pub mod com_logger;
 pub mod com_queue;
 pub mod com_stub;
 pub mod dp_catalog;
+pub mod dp_compress_proc;
 pub mod dp_manager;
 pub mod dp_writer;
+#[cfg(feature = "zlib")]
+pub mod dp_zlib_compressor;
 pub mod event_manager;
 pub mod fatal_handler;
 pub mod file_downlink;
