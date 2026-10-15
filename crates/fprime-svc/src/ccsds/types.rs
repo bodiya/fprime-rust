@@ -21,13 +21,14 @@
 //!    accessors and builders alongside the mask/offset constants from
 //!    `Types.fpp`, so round-tripping is byte-exact.
 //! 3. **The CCSDS port traits** ([`ApidSequenceCountPort`],
-//!    [`ErrorNotifyPort`]) from `Svc/Ccsds/Ports/Ports.fpp`. They live here
+//!    [`ErrorNotifyPort`], [`CcsdsSdlsEncryptionPort`], [`CcsdsSdlsDataPort`],
+//!    [`SdlsKeyPort`]) from `Svc/Ccsds/Ports/Ports.fpp`. They live here
 //!    for the same reason `com_stub` defines the byte-stream port traits
 //!    locally: they are CCSDS-specific and `fprime-comp` has no CCSDS
 //!    knowledge.
 
 use fprime_config::FwIndexType;
-use fprime_fw::{Apid, fpp_enum, fpp_struct};
+use fprime_fw::{Apid, Buffer, FrameContext, LinearBuffer, fpp_enum, fpp_struct};
 
 // ---------------------------------------------------------------------------
 // ComCfg constants (default/config/ComCfg.fpp)
@@ -39,20 +40,28 @@ pub const SPACECRAFT_ID: u16 = 0x0044;
 /// Fixed TM transfer-frame size in bytes (`ComCfg::TmFrameFixedSize`).
 pub const TM_FRAME_FIXED_SIZE: usize = 1024;
 
-/// Maximum AOS transfer-frame size (`ComCfg::AosMaxFrameFixedSize`); declared
-/// for parity — the AOS components are out of scope for this port.
+/// Upper bound on the fixed AOS transfer-frame size
+/// (`ComCfg::AosMaxFrameFixedSize`); each [`AosFramer`] / [`AosDeframer`]
+/// instance configures its own size at or below it.
+///
+/// [`AosFramer`]: crate::ccsds::aos_framer::AosFramer
+/// [`AosDeframer`]: crate::ccsds::aos_deframer::AosDeframer
 pub const AOS_MAX_FRAME_FIXED_SIZE: usize = 1536;
 
-/// Maximum payload the ComAggregator hands to the [`TmFramer`] —
-/// `TmFrameFixedSize - 6 - 6 - 1 - 2` (two Space Packet headers, one idle
-/// data byte and the TM trailer). Equals 1009.
+/// Bytes of transfer-frame data field available to the
+/// [`ComAggregator`] output (`ComCfg::AggregationSize`): the TM frame minus
+/// its 6-byte primary header and 2-byte trailer. Equals 1016.
 ///
+/// Projects inserting a layer between the aggregator and the [`TmFramer`]
+/// that adds bytes (e.g. the 2-byte SA index of the `CcsdsSdlsFramer`) must
+/// subtract that overhead here. With packet spanning enabled this must not
+/// exceed 2046 (`0x7FE`), the TM First Header Pointer range;
+/// `ComAggregator::configure` asserts otherwise.
+///
+/// [`ComAggregator`]: crate::com_aggregator::ComAggregator
 /// [`TmFramer`]: crate::ccsds::tm_framer::TmFramer
-pub const AGGREGATION_SIZE: usize = TM_FRAME_FIXED_SIZE
-    - SpacePacketHeader::SERIALIZED_SIZE
-    - SpacePacketHeader::SERIALIZED_SIZE
-    - 1
-    - TMTrailer::SERIALIZED_SIZE;
+pub const AGGREGATION_SIZE: usize =
+    TM_FRAME_FIXED_SIZE - TMHeader::SERIALIZED_SIZE - TMTrailer::SERIALIZED_SIZE;
 
 // ---------------------------------------------------------------------------
 // Enums (Types.fpp)
@@ -95,9 +104,8 @@ fpp_enum! {
 }
 
 fpp_enum! {
-    /// Status of an SDLS (Space Data Link Security) request
-    /// (`Svc::Ccsds::SdlsStatus`). Declared for parity; the SDLS components
-    /// are out of scope for this port.
+    /// Status of an SDLS (Space Data Link Security) encryption/decryption
+    /// request (`Svc::Ccsds::SdlsStatus`).
     pub enum SdlsStatus : u8 {
         /// Request completed successfully.
         Success = 0,
@@ -111,6 +119,8 @@ fpp_enum! {
         DecryptionFailure = 4,
         /// Key retrieval failed.
         KeyError = 5,
+        /// Frame failed its authentication check.
+        MacVerificationFailure = 6,
     }
     default Success
 }
@@ -304,8 +314,17 @@ pub mod tm_subfields {
     pub const PACKET_ORDER_FLAG_MASK: u16 = 0x2000;
     /// Segment Length Identifier mask, `dataFieldStatus` bits `[12:11]`.
     pub const SEG_LENGTH_MASK: u16 = 0x1800;
-    /// First Header Pointer mask, `dataFieldStatus` bits `[10:0]`.
+    /// First Header Pointer mask, `dataFieldStatus` bits `[10:0]`
+    /// (`TMSubfields.fhpMask`).
     pub const FIRST_HEADER_POINTER_MASK: u16 = 0x07FF;
+    /// `TMSubfields.fhpMask`, the 11-bit First Header Pointer field.
+    pub const FHP_MASK: u16 = FIRST_HEADER_POINTER_MASK;
+    /// First Header Pointer: no packet starts in this frame (continuation
+    /// data only) — CCSDS 132.0-B-3 4.1.2.7.6.4.
+    pub const FHP_NO_PACKET_START: u16 = 0x7FF;
+    /// First Header Pointer: the frame holds only idle data — CCSDS
+    /// 132.0-B-3 4.1.2.7.6.5.
+    pub const FHP_IDLE_DATA_ONLY: u16 = 0x7FE;
 }
 
 fpp_struct! {
@@ -557,8 +576,100 @@ fpp_struct! {
 }
 
 // ---------------------------------------------------------------------------
-// AOS / M_PDU (declared for parity; the AOS components are out of scope)
+// AOS / M_PDU
 // ---------------------------------------------------------------------------
+
+/// Offsets and masks for the AOS primary header sub-fields (`Types.fpp`
+/// module `AOSHeaderSubfields`, CCSDS 732.0-B-5 4.1.2).
+pub mod aos_header_subfields {
+    /// Transfer Frame Version Number shift, `globalVcId` bits `[15:14]`.
+    pub const FRAME_VERSION_OFFSET: u32 = 14;
+    /// Spacecraft ID (8 LSBs) shift, `globalVcId` bits `[13:6]`.
+    pub const SPACECRAFT_ID_LSB_OFFSET: u32 = 6;
+    /// Virtual Channel ID shift, `globalVcId` bits `[5:0]`.
+    pub const VIRTUAL_CHANNEL_ID_OFFSET: u32 = 0;
+    /// Transfer Frame Version Number mask.
+    pub const FRAME_VERSION_MASK: u16 = 0xC000;
+    /// Spacecraft ID (8 LSBs) mask.
+    pub const SPACECRAFT_ID_LSB_MASK: u16 = 0x3FC0;
+    /// Virtual Channel ID mask.
+    pub const VIRTUAL_CHANNEL_ID_MASK: u16 = 0x003F;
+    /// VC frame count shift, `frameCountAndSignaling` bits `[31:8]`.
+    pub const VC_FRAME_COUNT_OFFSET: u32 = 8;
+    /// Replay flag shift, bit `[7]`.
+    pub const REPLAY_FLAG_OFFSET: u32 = 7;
+    /// VC frame count cycle use flag shift, bit `[6]`.
+    pub const CYCLE_COUNT_FLAG_OFFSET: u32 = 6;
+    /// Spacecraft ID (2 MSBs) shift, bits `[5:4]`.
+    pub const SPACECRAFT_ID_MSB_OFFSET: u32 = 4;
+    /// VC frame count cycle shift, bits `[3:0]`.
+    pub const VC_FRAME_COUNT_CYCLE_OFFSET: u32 = 0;
+    /// VC frame count mask (24 bits).
+    pub const VC_FRAME_COUNT_MASK: u32 = 0xFFFF_FF00;
+    /// Replay flag mask.
+    pub const REPLAY_FLAG_MASK: u32 = 0x0000_0080;
+    /// VC frame count cycle use flag mask.
+    pub const CYCLE_COUNT_FLAG_MASK: u32 = 0x0000_0040;
+    /// Spacecraft ID (2 MSBs) mask.
+    pub const SPACECRAFT_ID_MSB_MASK: u32 = 0x0000_0030;
+    /// VC frame count cycle mask.
+    pub const VC_FRAME_COUNT_CYCLE_MASK: u32 = 0x0000_000F;
+}
+
+/// Encapsulation Packet Protocol first-octet masks and offsets (`Types.fpp`
+/// module `EPPSubfields`, CCSDS 133.1-B-3 4.1.2.1).
+pub mod epp_subfields {
+    /// Packet Version Number, bits `[7:5]`.
+    pub const PACKET_VERSION_MASK: u8 = 0xE0;
+    /// Protocol ID, bits `[4:2]`.
+    pub const PROTOCOL_ID_MASK: u8 = 0x1C;
+    /// Length of length, bits `[1:0]`.
+    pub const LENGTH_OF_LENGTH_MASK: u8 = 0x03;
+    /// Packet Version Number shift.
+    pub const PACKET_VERSION_OFFSET: u32 = 5;
+    /// Protocol ID shift.
+    pub const PROTOCOL_ID_OFFSET: u32 = 2;
+}
+
+fpp_enum! {
+    /// EPP protocol IDs (`Svc::Ccsds::EppProtocolId`, CCSDS 133.1-B-3
+    /// 4.1.2.3.3).
+    pub enum EppProtocolId : u8 {
+        /// `0b000` — Encapsulation Idle Packet.
+        Idle = 0x00,
+        /// `0b110` — Extended Protocol ID field driven.
+        Extended = 0x06,
+        /// Mission-specific.
+        MissionSpecific = 0x07,
+    }
+    default MissionSpecific
+}
+
+fpp_enum! {
+    /// EPP length-of-length codes (`Svc::Ccsds::EppLengthOfLength`).
+    pub enum EppLengthOfLength : u8 {
+        /// `0b00` — single-byte idle packet.
+        Zero = 0x00,
+        /// `0b01` — two-byte header.
+        One = 0x01,
+        /// `0b10` — four-byte header.
+        Two = 0x02,
+        /// `0b11` — eight-byte header (a four-byte length field).
+        Four = 0x03,
+    }
+    default Zero
+}
+
+/// Bitmask of enabled Packet Version Numbers (`Types.fpp` module
+/// `PvnBitfield`): bit N set means PVN N is enabled.
+pub mod pvn_bitfield {
+    /// `1 << 0` — Space Packet Protocol (PVN 0).
+    pub const SPP_MASK: u8 = 0x01;
+    /// `1 << 7` — Encapsulation Packet Protocol (PVN 7).
+    pub const EPP_MASK: u8 = 0x80;
+    /// `SPP_MASK | EPP_MASK`.
+    pub const VALID_MASK: u8 = 0x81;
+}
 
 /// Special First Header Pointer values (`Types.fpp` module `M_PDUSubfields`).
 pub mod m_pdu_subfields {
@@ -570,7 +681,7 @@ pub mod m_pdu_subfields {
 
 fpp_struct! {
     /// AOS transfer frame primary header, 6 bytes big-endian
-    /// (`Svc::Ccsds::AOSHeader`). Declared for parity with `Types.fpp`.
+    /// (`Svc::Ccsds::AOSHeader`); bit fields per [`aos_header_subfields`].
     #[derive(Clone, Copy, Eq)]
     pub struct AOSHeader {
         /// 2b frame version | 8 LSBs of spacecraft ID | 6b virtual channel ID.
@@ -605,7 +716,7 @@ fpp_struct! {
 
 fpp_struct! {
     /// One security-association-index to port-index mapping entry
-    /// (`Svc::Ccsds::SaMapEntry`). Declared for parity; SDLS is out of scope.
+    /// (`Svc::Ccsds::SaMapEntry`), the element of the `SdlsSaRouter` map.
     #[derive(Clone, Copy, Eq)]
     pub struct SaMapEntry {
         /// Security association index.
@@ -634,6 +745,53 @@ pub trait ApidSequenceCountPort: Send + Sync {
 pub trait ErrorNotifyPort: Send + Sync {
     /// Invoke the port.
     fn invoke(&self, port_num: FwIndexType, error_code: FrameError);
+}
+
+/// An on-stack buffer sized to hold an SDLS key (`Svc::Ccsds::SdlsKeyBuffer`,
+/// a `Fw::LinearBufferTemplate<MAX_SDLS_KEY_SIZE>`): its serialized length
+/// is the key length.
+pub type SdlsKeyBuffer = LinearBuffer<{ fprime_config::sdls::MAX_SDLS_KEY_SIZE }>;
+
+/// `Ccsds.CcsdsSdlsEncryption` — request SDLS encryption/decryption of a
+/// buffer under a security association.
+///
+/// The C++ `ref data: Fw.Buffer` becomes an owned [`Buffer`] moved in (see
+/// ARCHITECTURE.md "buffer-carrying comms ports"); its return travels on the
+/// paired `Svc.ComDataWithContext` return port, as in C++.
+pub trait CcsdsSdlsEncryptionPort: Send + Sync {
+    /// Invoke the port.
+    fn invoke(
+        &self,
+        port_num: FwIndexType,
+        security_association_index: u16,
+        data: Buffer,
+        context: &FrameContext,
+    );
+}
+
+/// `Ccsds.CcsdsSdlsData` — pass forward the result of an SDLS operation:
+/// its status with the output buffer and frame context.
+pub trait CcsdsSdlsDataPort: Send + Sync {
+    /// Invoke the port.
+    fn invoke(
+        &self,
+        port_num: FwIndexType,
+        status: SdlsStatus,
+        data: Buffer,
+        context: &FrameContext,
+    );
+}
+
+/// `Ccsds.SdlsKey` — fill `key` with the key bound to a security
+/// association and return the operation status.
+pub trait SdlsKeyPort: Send + Sync {
+    /// Invoke the port.
+    fn invoke(
+        &self,
+        port_num: FwIndexType,
+        security_association_index: u16,
+        key: &mut SdlsKeyBuffer,
+    ) -> SdlsStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -669,7 +827,11 @@ mod tests {
         assert_eq!(SPACECRAFT_ID, 0x0044);
         assert_eq!(TM_FRAME_FIXED_SIZE, 1024);
         assert_eq!(AOS_MAX_FRAME_FIXED_SIZE, 1536);
-        assert_eq!(AGGREGATION_SIZE, 1009);
+        // TmFrameFixedSize - 6 - 2 (4dee010; the full TM data field).
+        assert_eq!(AGGREGATION_SIZE, 1016);
+        assert_eq!(tm_subfields::FHP_MASK, 0x07FF);
+        assert_eq!(tm_subfields::FHP_NO_PACKET_START, 0x07FF);
+        assert_eq!(tm_subfields::FHP_IDLE_DATA_ONLY, 0x07FE);
     }
 
     /// Literal bytes for a telemetry Space Packet header: PVN 0, type 0, no
@@ -887,11 +1049,41 @@ mod tests {
     fn sdls_and_tfvn_discriminants_match_cpp() {
         assert_eq!(SdlsStatus::Success as u8, 0);
         assert_eq!(SdlsStatus::KeyError as u8, 5);
+        assert_eq!(SdlsStatus::MacVerificationFailure as u8, 6);
+        assert_eq!(SdlsStatus::NUM_CONSTANTS, 7);
         assert_eq!(Tfvn::TmTc as u8, 0);
         assert_eq!(Tfvn::Aos as u8, 1);
         assert_eq!(Tfvn::ProxOne as u8, 2);
         assert_eq!(Tfvn::Uslp as u8, 3);
         assert_eq!(Tfvn::default(), Tfvn::InvalidUninitialized);
+    }
+
+    /// EPP and PVN-bitfield constants match `Types.fpp`.
+    #[test]
+    fn epp_and_pvn_constants_match_cpp() {
+        assert_eq!(EppProtocolId::Idle as u8, 0);
+        assert_eq!(EppProtocolId::Extended as u8, 6);
+        assert_eq!(EppProtocolId::MissionSpecific as u8, 7);
+        assert_eq!(EppProtocolId::default(), EppProtocolId::MissionSpecific);
+        assert_eq!(EppLengthOfLength::Four as u8, 3);
+        assert_eq!(
+            pvn_bitfield::VALID_MASK,
+            pvn_bitfield::SPP_MASK | pvn_bitfield::EPP_MASK
+        );
+        assert_eq!(
+            epp_subfields::PACKET_VERSION_MASK >> epp_subfields::PACKET_VERSION_OFFSET,
+            0x7
+        );
+        assert_eq!(aos_header_subfields::VC_FRAME_COUNT_MASK >> 8, 0x00FF_FFFF);
+    }
+
+    /// The SDLS key buffer holds up to `MAX_SDLS_KEY_SIZE` bytes.
+    #[test]
+    fn sdls_key_buffer_capacity() {
+        use fprime_fw::{SerBuf, SerBufAny};
+        let key = SdlsKeyBuffer::new();
+        assert_eq!(key.capacity(), 32);
+        assert_eq!(key.get_size(), 0);
     }
 
     /// The idle packet header the TM framer writes: APID 0x7FF, sequence

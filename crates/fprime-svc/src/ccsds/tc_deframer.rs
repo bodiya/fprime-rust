@@ -12,8 +12,9 @@
 //! ```
 //!
 //! Validation order (C++ parity — every drop returns the buffer upstream
-//! with the context UNMODIFIED, and the success path forwards the context
-//! unmodified too: this component sets neither `vcId` nor `apid`):
+//! with the context UNMODIFIED; the success path forwards a copy carrying
+//! the frame's virtual channel ID in `vcId`, which the SDLS decryptors
+//! authenticate, and nothing else):
 //!
 //! 1. `size <= 7` → `InvalidPacket` (WARNING_LO). **No `errorNotify` on this
 //!    path** — the only rejection that stays silent on that port.
@@ -265,9 +266,11 @@ impl TcDeframer {
                 - TCHeader::SERIALIZED_SIZE
                 - TCTrailer::SERIALIZED_SIZE,
         );
-        // The context is forwarded UNMODIFIED (no vcId or apid is set).
+        // Carry the VC on in the context (4dee010); nothing else is set.
+        let mut context_copy = *context;
+        context_copy.vc_id = vc_id as u8;
         let p = self.data_out.get();
-        p.target.invoke(p.port_num, data, context);
+        p.target.invoke(p.port_num, data, &context_copy);
     }
 
     /// `dataReturnIn` handler: straight pass-through upstream.
@@ -415,8 +418,9 @@ mod tests {
         let out = rec.data_out.lock().unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, vec![0x01, 0x02, 0x03]);
-        // The context is forwarded UNMODIFIED: no vcId, no apid.
-        assert_eq!(out[0].1, ctx);
+        // The context carries the frame's VCID (0 here); nothing else
+        // changes (no apid).
+        assert_eq!(out[0].1, FrameContext { vc_id: 0, ..ctx });
         assert!(rec.events.lock().unwrap().is_empty());
         assert!(rec.errors.lock().unwrap().is_empty());
     }

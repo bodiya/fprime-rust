@@ -64,7 +64,7 @@ pub const SA_INDEX_UNSET: u16 = 0xFFFF;
 fpp_struct! {
     /// Context info passed between components during framing/deframing
     /// (`ComCfg::FrameContext` FPP struct). Serializes its members in
-    /// declaration order (13 bytes total, no padding).
+    /// declaration order (15 bytes total, no padding).
     #[derive(Clone, Copy, Eq)]
     pub struct FrameContext {
         /// Queue index used by the ComQueue; other components shall not modify.
@@ -86,6 +86,9 @@ fpp_struct! {
         send_now: bool { get_send_now, set_send_now },
         /// Security Association index (set by SDLS deframers, read by framers).
         sa_index: u16 { get_sa_index, set_sa_index },
+        /// 11-bit TM First Header Pointer (set by the ComAggregator when
+        /// packet spanning is enabled, read by the TmFramer).
+        first_header_pointer: u16 { get_first_header_pointer, set_first_header_pointer },
     }
     // The FPP struct defaults from `ComCfg.fpp`; members not listed take
     // their type default (0 / false / the enum `default` constant).
@@ -160,10 +163,11 @@ mod tests {
                 0x08, // pvn = INVALID_UNINITIALIZED
                 0x00, // sendNow = false
                 0xFF, 0xFF, // saIndex = SaIndexUnset
+                0x00, 0x00, // firstHeaderPointer = 0
             ]
         );
-        assert_eq!(FrameContext::SERIALIZED_SIZE, 13);
-        assert_eq!(ctx.serialized_size(), 13);
+        assert_eq!(FrameContext::SERIALIZED_SIZE, 15);
+        assert_eq!(ctx.serialized_size(), 15);
     }
 
     #[test]
@@ -178,6 +182,7 @@ mod tests {
             pvn: Pvn::SpacePacketProtocol,
             send_now: true,
             sa_index: 2,
+            first_header_pointer: 0x07FF,
         };
         let mut buf = LinearBuffer::<32>::new();
         assert_eq!(

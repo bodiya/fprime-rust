@@ -314,6 +314,46 @@ pub mod dp_compression {
     pub const BUFFER_MANAGER_ID: u16 = 301;
 }
 
+/// SDLS configuration: `Svc/Ccsds/Types/config/SdlsKeyConfig/SdlsKeyCfg.fpp`
+/// and `Svc/Ccsds/SdlsSaRouter/config/SdlsSaRouterConfig/SdlsSaRouterCfg.fpp`
+/// (FPP module `SdlsCfg`).
+pub mod sdls {
+    use super::FwIndexType;
+
+    /// Maximum size in bytes of an SDLS key held in an `SdlsKeyBuffer`
+    /// (`SdlsCfg.MAX_SDLS_KEY_SIZE`).
+    pub const MAX_SDLS_KEY_SIZE: usize = 32;
+
+    /// Number of downstream crypto component ports on the `SdlsSaRouter`
+    /// (`SdlsCfg.SaRouterPortCount`).
+    pub const SA_ROUTER_PORT_COUNT: usize = 2;
+
+    /// Number of entries in the SA-to-port routing map
+    /// (`SdlsCfg.SaRouterMapEntryCount`).
+    pub const SA_ROUTER_MAP_ENTRY_COUNT: usize = 2;
+
+    /// Maximum number of processed data buffers outstanding — sent
+    /// downstream, not yet returned (`SdlsCfg.SaRouterMaxOutstandingBuffers`).
+    pub const SA_ROUTER_MAX_OUTSTANDING_BUFFERS: usize = 4;
+
+    /// `SdlsCfg.SaRouterPorts.UNCONNECTED`: the router port standard
+    /// topologies leave unconnected.
+    pub const SA_ROUTER_PORT_UNCONNECTED: FwIndexType = 0;
+
+    /// `SdlsCfg.SaRouterPorts.PLAINTEXT`: the router port the default
+    /// clear-text crypto components are connected to.
+    pub const SA_ROUTER_PORT_PLAINTEXT: FwIndexType = 1;
+
+    /// The compile-time default SA-to-port map (`SdlsCfg.SaMap`), as
+    /// `(securityAssociationIndex, portIndex)` pairs: SA 1 to the
+    /// plain-text port, SA 0 (reserved by CCSDS 355.0-B-2 for Extended
+    /// Procedures) to the unconnected port.
+    pub const SA_MAP: [(u16, FwIndexType); SA_ROUTER_MAP_ENTRY_COUNT] = [
+        (1, SA_ROUTER_PORT_PLAINTEXT),
+        (0, SA_ROUTER_PORT_UNCONNECTED),
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +418,10 @@ mod tests {
         assert_eq!(file_manager::CHUNKS_PER_RATE_TICK, 1);
         assert_eq!(file_manager::DEFAULT_DP_PRIORITY, 10);
         assert_eq!(crc_checker::FILE_READ_BLOCK, 2048);
+        assert_eq!(sdls::MAX_SDLS_KEY_SIZE, 32);
+        assert_eq!(sdls::SA_ROUTER_PORT_COUNT, 2);
+        assert_eq!(sdls::SA_ROUTER_MAP_ENTRY_COUNT, 2);
+        assert_eq!(sdls::SA_ROUTER_MAX_OUTSTANDING_BUFFERS, 4);
+        assert_eq!(sdls::SA_MAP, [(1, 1), (0, 0)]);
     }
 }

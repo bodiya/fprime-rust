@@ -12,12 +12,14 @@
 //! 0                        6                            1022        1024
 //! ```
 //!
-//! The data field is always filled to offset 1022 with exactly one Space
-//! Packet idle packet (APID `0x7FF`, sequence flags `0b11`, `0x44` idle
-//! data) as CCSDS TM 4.2.2.5 requires, and the Frame Error Control Field is
-//! the CRC-16/CCITT-FALSE over frame bytes `[0, 1022)` — computed over the
-//! whole fixed frame, which is correct only because the idle fill always
-//! reaches 1022.
+//! Unless the payload fills the data field exactly (as a spanning
+//! `ComAggregator` delivers it), the rest of the data field is filled to
+//! offset 1022 with exactly one Space Packet idle packet (APID `0x7FF`,
+//! sequence flags `0b11`, `0x44` idle data) as CCSDS TM 4.2.2.5 requires;
+//! the payload must therefore either fill the data field or leave room for
+//! a minimum (7-byte) idle packet. The First Header Pointer comes from the
+//! context (`firstHeaderPointer`, default 0), and the Frame Error Control
+//! Field is the CRC-16/CCITT-FALSE over frame bytes `[0, 1022)`.
 //!
 //! Like the C++ component this framer owns ONE frame buffer and never
 //! deallocates: `dataIn` moves it out (asserting it is currently owned) and
@@ -32,48 +34,40 @@
 //! mod 256.
 
 use crate::ccsds::crc16::Crc16;
-use crate::ccsds::types::{
-    SPACECRAFT_ID, SpacePacketHeader, TM_FRAME_FIXED_SIZE, TMHeader, TMTrailer,
-};
+use crate::ccsds::idle_packet;
+use crate::ccsds::types::{SPACECRAFT_ID, TM_FRAME_FIXED_SIZE, TMHeader, TMTrailer, tm_subfields};
 use fprime_comp::{
     ComDataWithContextPort, OutputPort, PassiveBase, PortRef, SuccessConditionPort,
     input_port_adapter,
 };
 use fprime_config::FwIndexType;
 use fprime_fw::{
-    Apid, Buffer, BufferStorage, Endianness, FrameContext, LengthMode, SerBuf, SerBufAny, Success,
+    Buffer, BufferStorage, Endianness, FrameContext, LengthMode, SerBuf, SerBufAny, Success,
     fw_assert,
 };
 use std::sync::{Arc, Mutex};
 
-/// Idle-data fill pattern (`TmFramer::IDLE_DATA_PATTERN`).
-pub const IDLE_DATA_PATTERN: u8 = 0x44;
+/// Idle-data fill pattern (`Utils::IdlePacket::DATA_PATTERN`).
+pub const IDLE_DATA_PATTERN: u8 = idle_packet::DATA_PATTERN;
 
 /// Offset of the frame trailer: the CRC covers `[0, TRAILER_OFFSET)`.
 pub const TRAILER_OFFSET: usize = TM_FRAME_FIXED_SIZE - TMTrailer::SERIALIZED_SIZE;
 
-/// Largest payload the `dataIn` assert permits
-/// (`TmFrameFixedSize - header - trailer` = 1016).
-///
-/// **Gotcha**: the idle fill then requires at least 7 bytes of its own, so
-/// the real maximum payload is
-/// [`MAX_PAYLOAD_SIZE`] = 1009 — two different asserts guard the same
-/// constraint at different limits, exactly as in C++.
+/// The TM data field size (`TmFramer::TmPayloadCapacity`,
+/// `TmFrameFixedSize - header - trailer` = 1016): the largest payload, which
+/// needs no idle fill.
 pub const TM_PAYLOAD_CAPACITY: usize =
     TM_FRAME_FIXED_SIZE - TMHeader::SERIALIZED_SIZE - TMTrailer::SERIALIZED_SIZE;
 
 /// Smallest legal Space Packet idle packet: 6-byte header + 1 idle byte.
-pub const MIN_IDLE_PACKET_SIZE: usize = SpacePacketHeader::SERIALIZED_SIZE + 1;
+pub const MIN_IDLE_PACKET_SIZE: usize = idle_packet::MIN_SIZE;
 
-/// Largest payload that actually leaves room for the mandatory idle packet
-/// (equal to `ComCfg::AggregationSize`, 1009).
+/// Largest payload that leaves room for an idle packet (1009); payloads of
+/// 1010..=1015 bytes leave a residual too small for one and assert.
 pub const MAX_PAYLOAD_SIZE: usize = TM_PAYLOAD_CAPACITY - MIN_IDLE_PACKET_SIZE;
 
 /// Segment Length Identifier `0b11`, required by CCSDS TM 4.1.2.7.5.
 pub const SEGMENT_LENGTH_ID: u8 = 0x3;
-
-/// Sequence flags `0b11` (unsegmented) used by the idle packet.
-pub const IDLE_SEQUENCE_FLAGS: u8 = 0x3;
 
 /// Framer state: the single frame buffer plus the two frame counters.
 struct TmState {
@@ -149,6 +143,17 @@ impl TmFramer {
     fn data_in_handler(&self, _port_num: FwIndexType, data: Buffer, context: &FrameContext) {
         // C++ parity: the payload must fit header + data field + trailer.
         fw_assert!(data.size() <= TM_PAYLOAD_CAPACITY, data.size() as i32);
+        // The data must either fill the data field exactly or leave room for
+        // a minimum idle packet (4.2.2.5).
+        let residual = TM_PAYLOAD_CAPACITY - data.size();
+        fw_assert!(
+            residual == 0 || residual >= MIN_IDLE_PACKET_SIZE,
+            residual as i32
+        );
+        fw_assert!(
+            context.first_header_pointer <= tm_subfields::FHP_MASK,
+            i32::from(context.first_header_pointer)
+        );
 
         let mut frame_buffer = {
             let mut state = self.state.lock().unwrap();
@@ -171,9 +176,16 @@ impl TmFramer {
                 state.master_frame_count,
                 state.virtual_frame_count,
                 // Every flag clear except the segment length identifier; the
-                // first header pointer is 0 because a single whole packet is
-                // always wrapped at the data field's origin.
-                TMHeader::build_data_field_status(false, false, false, SEGMENT_LENGTH_ID, 0),
+                // First Header Pointer (4.1.2.7.6) comes from the context:
+                // set by a spanning aggregator, else 0 (a packet header at
+                // the data field's origin).
+                TMHeader::build_data_field_status(
+                    false,
+                    false,
+                    false,
+                    SEGMENT_LENGTH_ID,
+                    context.first_header_pointer,
+                ),
             );
             // A single virtual channel is used, so both counts advance
             // together — AFTER being written into the header.
@@ -188,8 +200,11 @@ impl TmFramer {
                 let status =
                     ser.serialize_bytes(data.data(), LengthMode::OmitLength, Endianness::Big);
                 fw_assert!(status.is_ok(), status as i32);
-                // CCSDS TM 4.2.2.5: pad the data field with an idle packet.
-                Self::fill_with_idle_packet(&mut ser);
+                // CCSDS TM 4.2.2.5: pad the data field with an idle packet;
+                // a full data field needs no fill.
+                if residual > 0 {
+                    Self::fill_with_idle_packet(&mut ser);
+                }
             }
             frame_buffer
         };
@@ -219,6 +234,7 @@ impl TmFramer {
     /// followed by [`IDLE_DATA_PATTERN`] bytes.
     fn fill_with_idle_packet(ser: &mut dyn SerBufAny) {
         let start_index = ser.get_size();
+        fw_assert!(start_index <= TRAILER_OFFSET, start_index as i32);
         let idle_packet_size = TRAILER_OFFSET - start_index;
         // C++ parity: at least 6 header bytes + 1 idle byte, and never more
         // than one frame.
@@ -230,21 +246,8 @@ impl TmFramer {
             idle_packet_size <= TM_FRAME_FIXED_SIZE,
             idle_packet_size as i32
         );
-        // The length token is the data-field octet count minus one.
-        let length_token = (idle_packet_size - SpacePacketHeader::SERIALIZED_SIZE - 1) as u16;
-
-        let header = SpacePacketHeader::new(
-            // PVN 0, packet type 0, no secondary header, APID 0x7FF.
-            Apid::SppIdlePacket.as_repr(),
-            SpacePacketHeader::build_packet_sequence_control(IDLE_SEQUENCE_FLAGS, 0),
-            length_token,
-        );
-        let status = ser.serialize(&header, Endianness::Big);
+        let status = idle_packet::serialize(ser, idle_packet_size);
         fw_assert!(status.is_ok(), status as i32);
-        for _ in (start_index + SpacePacketHeader::SERIALIZED_SIZE)..TRAILER_OFFSET {
-            let status = ser.serialize_u8_be(IDLE_DATA_PATTERN);
-            fw_assert!(status.is_ok(), status as i32);
-        }
     }
 
     /// `dataReturnIn` handler: take the frame buffer back. No deallocation —
@@ -557,20 +560,66 @@ mod tests {
         );
     }
 
-    /// Gotcha: a payload that passes the `dataIn` assert but leaves less
-    /// than 7 bytes for the idle packet asserts inside the idle fill.
+    /// A payload that leaves less than a minimum idle packet (but is not a
+    /// full data field) asserts (upstream `testResidualTooSmallForIdlePacket`).
     #[test]
     #[should_panic(expected = "Assert:")]
     fn payload_leaving_no_room_for_the_idle_packet_asserts() {
         let (framer, _rec) = build();
-        // MAX_PAYLOAD_SIZE + 1 is still within TM_PAYLOAD_CAPACITY, so the
-        // dataIn assert passes and the idle-fill assert is the one that
-        // fires.
         feed(
             &framer,
             &vec![0u8; MAX_PAYLOAD_SIZE + 1],
             &FrameContext::default(),
         );
+    }
+
+    /// A data field delivered at full capacity needs no idle fill (upstream
+    /// `testFullDataFieldNoIdleFill`).
+    #[test]
+    fn full_data_field_has_no_idle_fill() {
+        let (framer, rec) = build();
+        let payload: Vec<u8> = (0..TM_PAYLOAD_CAPACITY).map(|i| (i & 0xFF) as u8).collect();
+        feed(&framer, &payload, &FrameContext::default());
+        let out = rec.data_out.lock().unwrap();
+        let frame = &out[0].0;
+        assert_eq!(frame.len(), TM_FRAME_FIXED_SIZE);
+        assert_eq!(
+            &frame[TMHeader::SERIALIZED_SIZE..TRAILER_OFFSET],
+            &payload[..]
+        );
+        assert_eq!(Crc16::compute(frame), 0);
+    }
+
+    /// The First Header Pointer comes from the context (upstream
+    /// `testFirstHeaderPointerFromContext`).
+    #[test]
+    fn first_header_pointer_comes_from_context() {
+        let (framer, rec) = build_with_returner();
+        let fhp = |frame: &[u8]| u16::from_be_bytes([frame[4], frame[5]]) & tm_subfields::FHP_MASK;
+        let mut ctx = FrameContext::default();
+        feed(&framer, &[0u8; 100], &ctx);
+        ctx.first_header_pointer = 42;
+        feed(&framer, &[0u8; 100], &ctx);
+        ctx.first_header_pointer = tm_subfields::FHP_NO_PACKET_START;
+        feed(&framer, &[0u8; 100], &ctx);
+        let out = rec.data_out.lock().unwrap();
+        assert_eq!(fhp(&out[0].0), 0);
+        assert_eq!(fhp(&out[1].0), 42);
+        assert_eq!(fhp(&out[2].0), tm_subfields::FHP_NO_PACKET_START);
+        // The segment length identifier is untouched by the pointer.
+        assert_eq!(out[2].0[4] & 0x18, 0x18);
+    }
+
+    /// A First Header Pointer outside the 11-bit field is a caller error.
+    #[test]
+    #[should_panic(expected = "Assert:")]
+    fn out_of_range_first_header_pointer_asserts() {
+        let (framer, _rec) = build();
+        let ctx = FrameContext {
+            first_header_pointer: tm_subfields::FHP_MASK + 1,
+            ..FrameContext::default()
+        };
+        feed(&framer, &[0u8; 100], &ctx);
     }
 
     /// comStatusIn forwards only when comStatusOut is connected.

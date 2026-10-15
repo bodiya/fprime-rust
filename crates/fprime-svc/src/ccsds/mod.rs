@@ -5,6 +5,7 @@
 
 pub mod apid_manager;
 pub mod crc16;
+pub mod idle_packet;
 pub mod space_packet_deframer;
 pub mod space_packet_framer;
 pub mod tc_deframer;
