@@ -23,6 +23,10 @@
 //! - [`console`] — `Os::Console`, an [`fprime_fw::FwLogger`] backend.
 //! - [`rawtime`] / [`interval_timer`] — `Os::RawTime` (CLOCK_REALTIME
 //!   semantics, 8-byte wire format) and `Os::IntervalTimer`.
+//!
+//! Not here: `Os::ValidateFile` is `fprime_utils::validate_file`. It is
+//! built on `Utils::Hash`, and the crate graph runs `fprime-utils ->
+//! fprime-os`, not the reverse (rationale in that module's docs).
 
 pub mod condition;
 pub mod console;

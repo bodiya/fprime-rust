@@ -55,7 +55,7 @@ crates/
   fprime-config   # type aliases + constants from default/config (no deps)
   fprime-fw       # Fw: serialization, types, strings, time, buffers, packets, assert, logger
   fprime-os       # Os: task, mutex, queue (priority), file, filesystem, directory, console, rawtime
-  fprime-utils    # Utils: CRC32 hash, CRC checker, circular buffer, types queue, rate limiter, token bucket
+  fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...
   fprime-drv      # Drv: byte stream driver model, TCP client/server
@@ -67,7 +67,7 @@ Dependency DAG (arrows point at dependencies):
 ```
 fprime-fw    -> fprime-config
 fprime-os    -> fprime-fw, fprime-config
-fprime-utils -> fprime-fw, fprime-config
+fprime-utils -> fprime-os, fprime-fw, fprime-config
 fprime-comp  -> fprime-fw, fprime-os, fprime-config
 fprime-svc   -> fprime-comp, fprime-utils, (fw, os, config)
 fprime-drv   -> fprime-comp, (fw, os, config)
@@ -563,6 +563,12 @@ normative reference for what the macros expand to.
 - `crc_checker`: file sidecar `.CRC32` (4 **big-endian** bytes since
   upstream nasa/fprime#5775; older CRCChecker builds wrote native-endian),
   2048-byte read blocks.
+- `validate_file`: `Os::ValidateFile` (`validate`, `create_validation` and
+  their `HashBuffer` variants, `Status` with C++ discriminants), 256-byte
+  chunks, the same big-endian `.CRC32` sidecar. It is an `Os` facility
+  built on `Utils::Hash`; it lives here so the crate edge runs
+  `fprime-utils -> fprime-os` (the OSAL stays a leaf, and `Utils` can use
+  `Os::File` as `Utils::CRCChecker` does upstream).
 - `types::CircularBuffer`: byte ring over owned storage; `serialize` refuses
   overwrite (`NoRoomLeft`), `peek`(u8/u32-BE/range at offset), `rotate`
   (consume front), `trim` (drop back), high-water mark.

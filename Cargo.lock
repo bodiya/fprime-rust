@@ -85,4 +85,5 @@ version = "0.1.0"
 dependencies = [
  "fprime-config",
  "fprime-fw",
+ "fprime-os",
 ]

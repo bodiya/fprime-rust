@@ -1,7 +1,7 @@
 //! # Svc::ComLogger — rotating `.com` file logger (active component)
 //!
 //! C++ sources: `Svc/ComLogger/ComLogger.{cpp,hpp,fpp}`,
-//! `Svc/ComLogger/{Commands,Events}.fppi`, `Os/ValidateFileCommon.cpp`.
+//! `Svc/ComLogger/{Commands,Events}.fppi`.
 //! Analysis: `docs/cpp-analysis/svc-misc.md` (ComLogger section + gotchas).
 //!
 //! Every `Fw::ComBuffer` arriving on the async `comIn` port is appended to
@@ -14,9 +14,8 @@
 //! the 2 prefix bytes when storing lengths) is strictly greater than
 //! `max_file_size`. Closing a file — by rotation, by the `CloseFile`
 //! command, or by dropping the component — writes a `.CRC32` sidecar next to
-//! it containing the file's CRC-32 as 4 BIG-ENDIAN bytes (this is the
-//! `Os::ValidateFile` encoding; `Utils::CRCChecker`'s identically-named
-//! sidecar is native-endian and is NOT what this component writes).
+//! it containing the file's CRC-32 as 4 BIG-ENDIAN bytes, written by
+//! `Os::ValidateFile::createValidation` ([`fprime_utils::validate_file`]).
 //!
 //! C++-parity notes carried over from the analysis:
 //! - `comIn`, `pingIn` and `CloseFile` are ALL async, so every piece of file
@@ -46,8 +45,8 @@ use fprime_fw::{
     SerBuf, SerBufAny, SerializeStatus, fw_assert, fw_try,
 };
 use fprime_os::file::{self, File, Mode, WaitType};
-use fprime_os::filesystem;
-use fprime_utils::hash::{HASH_EXTENSION_STRING, Hash, HashBuffer};
+use fprime_utils::hash::HASH_EXTENSION_STRING;
+use fprime_utils::validate_file;
 use std::sync::{Arc, Mutex};
 
 /// Queue message size: the largest async invocation.
@@ -59,149 +58,10 @@ pub const QUEUE_MSG_SIZE: usize = 524;
 /// Queue priority for every async input (no FPP `priority` qualifier).
 const QUEUE_PRIORITY: FwQueuePriorityType = 1;
 
-/// `Os::ValidateFile::VFILE_HASH_CHUNK_SIZE` — the file is hashed in
-/// 256-byte chunks.
-pub const VFILE_HASH_CHUNK_SIZE: usize = 256;
-
 /// Event `file` arguments are `string size 240`, but the generated
 /// `log_*` methods serialize through `Fw::LogStringArg`, so the effective
 /// on-wire cap is `FW_LOG_STRING_MAX_SIZE`.
 const EVENT_STRING_SIZE: usize = FW_LOG_STRING_MAX_SIZE;
-
-/// Port of `Os::ValidateFile::Status` — the ordinals carried by the
-/// `FileValidationError` event's `status` argument.
-#[must_use]
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidateStatus {
-    /// The validation of the file passed / the sidecar was written.
-    ValidationOk = 0,
-    /// The validation of the file did not pass.
-    ValidationFail = 1,
-    /// File doesn't exist (for read).
-    FileDoesntExist = 2,
-    /// No permission to read/write the file.
-    FileNoPermission = 3,
-    /// Invalid size parameter on the file.
-    FileBadSize = 4,
-    /// Validation file doesn't exist (for read).
-    ValidationFileDoesntExist = 5,
-    /// No permission to read/write the validation file.
-    ValidationFileNoPermission = 6,
-    /// Invalid size parameter on the validation file.
-    ValidationFileBadSize = 7,
-    /// No space left on the device for writing.
-    NoSpace = 8,
-    /// Catch-all for other errors.
-    OtherError = 9,
-}
-
-/// Which file a [`file::Status`] came from, for [`translate_status`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusFileType {
-    /// The `.com` file being hashed.
-    File,
-    /// The `.CRC32` sidecar.
-    HashFile,
-}
-
-/// Port of `Os::translateStatus` (ValidateFileCommon.cpp).
-fn translate_status(status: file::Status, file_type: StatusFileType) -> ValidateStatus {
-    match file_type {
-        StatusFileType::File => match status {
-            file::Status::OpOk => ValidateStatus::ValidationOk,
-            file::Status::DoesntExist => ValidateStatus::FileDoesntExist,
-            file::Status::NoSpace => ValidateStatus::NoSpace,
-            file::Status::NoPermission => ValidateStatus::FileNoPermission,
-            file::Status::BadSize => ValidateStatus::FileBadSize,
-            _ => ValidateStatus::OtherError,
-        },
-        StatusFileType::HashFile => match status {
-            file::Status::OpOk => ValidateStatus::ValidationOk,
-            file::Status::DoesntExist => ValidateStatus::ValidationFileDoesntExist,
-            file::Status::NoSpace => ValidateStatus::NoSpace,
-            file::Status::NoPermission => ValidateStatus::ValidationFileNoPermission,
-            file::Status::BadSize => ValidateStatus::ValidationFileBadSize,
-            _ => ValidateStatus::OtherError,
-        },
-    }
-}
-
-/// Port of `Os::computeHash` — CRC-32 of `file_name`, read in
-/// [`VFILE_HASH_CHUNK_SIZE`] chunks.
-fn compute_hash(file_name: &str, hash_buffer: &mut HashBuffer) -> file::Status {
-    let mut file = File::new();
-    let status = file.open(file_name, Mode::OpenRead);
-    if status != file::Status::OpOk {
-        return status;
-    }
-    let mut file_size: FwSizeType = 0;
-    if filesystem::get_file_size(file_name, &mut file_size) != filesystem::Status::OpOk {
-        return file::Status::BadSize;
-    }
-    // C++ parity: the iteration bound is computed from the size at open, so a
-    // file that grows while being hashed is a BAD_SIZE error, not a hang.
-    let max_itr = file_size / (VFILE_HASH_CHUNK_SIZE as FwSizeType) + 1;
-
-    let mut hash = Hash::new();
-    hash.init();
-    let mut buffer = [0u8; VFILE_HASH_CHUNK_SIZE];
-    let mut size: FwSizeType = 0;
-    let mut cnt: FwSizeType = 0;
-    while cnt <= max_itr {
-        size = buffer.len() as FwSizeType;
-        let status = file.read(&mut buffer, &mut size, WaitType::NoWait);
-        if status != file::Status::OpOk {
-            return status;
-        }
-        if size == 0 {
-            break;
-        }
-        hash.update(&buffer[..size as usize]);
-        cnt += 1;
-    }
-    file.close();
-    if size != 0 {
-        return file::Status::BadSize;
-    }
-    *hash_buffer = hash.finalize_buffer();
-    file::Status::OpOk
-}
-
-/// Port of `Os::writeHash` — the 4-byte big-endian digest.
-fn write_hash(hash_file_name: &str, hash_buffer: &HashBuffer) -> file::Status {
-    let mut hash_file = File::new();
-    let status = hash_file.open(hash_file_name, Mode::OpenWrite);
-    if status != file::Status::OpOk {
-        return status;
-    }
-    let digest_len = hash_buffer.as_slice().len() as FwSizeType;
-    let mut size: FwSizeType = digest_len;
-    let status = hash_file.write(hash_buffer.as_slice(), &mut size, WaitType::NoWait);
-    if status != file::Status::OpOk {
-        return status;
-    }
-    if size != digest_len {
-        return file::Status::BadSize;
-    }
-    hash_file.close();
-    file::Status::OpOk
-}
-
-/// Port of `Os::ValidateFile::createValidation(fileName, hashFileName)`:
-/// hash `file_name` and store the digest in `hash_file_name`.
-pub fn create_validation(file_name: &str, hash_file_name: &str) -> ValidateStatus {
-    let mut hash_buffer = HashBuffer::new();
-    let status = compute_hash(file_name, &mut hash_buffer);
-    if status != file::Status::OpOk {
-        return translate_status(status, StatusFileType::File);
-    }
-    let status = write_hash(hash_file_name, &hash_buffer);
-    if status != file::Status::OpOk {
-        return translate_status(status, StatusFileType::HashFile);
-    }
-    ValidateStatus::ValidationOk
-}
 
 /// C++ `ComLogger::FileMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,7 +138,7 @@ impl ComLogger {
     /// file: string size 240)` — WARNING_HI.
     pub const EVENTID_FILE_WRITE_ERROR: FwEventIdType = 0x01;
     /// `FileValidationError(validationFile, file, status: U32)` —
-    /// WARNING_LO.
+    /// WARNING_LO. `status` is the [`validate_file::Status`] ordinal.
     pub const EVENTID_FILE_VALIDATION_ERROR: FwEventIdType = 0x02;
     /// `FileClosed(file: string size 240)` — DIAGNOSTIC.
     pub const EVENTID_FILE_CLOSED: FwEventIdType = 0x03;
@@ -548,11 +408,11 @@ impl ComLogger {
 
     /// C++ `writeHashFile()`.
     fn write_hash_file(&self, state: &mut ComLoggerState) {
-        let status = create_validation(
+        let status = validate_file::create_validation(
             state.file_name.as_str().unwrap_or_default(),
             state.hash_file_name.as_str().unwrap_or_default(),
         );
-        if status != ValidateStatus::ValidationOk {
+        if status != validate_file::Status::ValidationOk {
             self.log_file_validation_error(&state.hash_file_name, &state.file_name, status as u32);
         }
     }
@@ -653,7 +513,7 @@ impl Drop for ComLogger {
         };
         if state.file_mode == FileMode::Open {
             state.file.close();
-            let _ = create_validation(
+            let _ = validate_file::create_validation(
                 state.file_name.as_str().unwrap_or_default(),
                 state.hash_file_name.as_str().unwrap_or_default(),
             );
@@ -763,6 +623,7 @@ mod tests {
     use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, LogTextPort, TimePort};
     use fprime_fw::{TextLogString, Time, TimeBase};
     use fprime_os::task::TASK_DEFAULT;
+    use fprime_utils::hash::Hash;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1146,34 +1007,6 @@ mod tests {
     }
 
     #[test]
-    fn create_validation_writes_a_big_endian_sidecar() {
-        let dir = temp_dir("validate");
-        let path = dir.join("data.bin");
-        std::fs::write(&path, b"123456789").unwrap();
-        let name = path.to_str().unwrap();
-        let hash_name = format!("{name}.CRC32");
-        assert_eq!(
-            create_validation(name, &hash_name),
-            ValidateStatus::ValidationOk
-        );
-        // The canonical CRC-32 test vector, big-endian.
-        assert_eq!(
-            std::fs::read(&hash_name).unwrap(),
-            vec![0xCB, 0xF4, 0x39, 0x26]
-        );
-    }
-
-    #[test]
-    fn create_validation_on_a_missing_file_reports_the_file_status() {
-        let dir = temp_dir("validate_missing");
-        let name = dir.join("nope.bin").to_str().unwrap().to_string();
-        assert_eq!(
-            create_validation(&name, &format!("{name}.CRC32")),
-            ValidateStatus::FileDoesntExist
-        );
-    }
-
-    #[test]
     fn validation_error_is_reported_as_an_event() {
         // Close a file whose sidecar cannot be written: make the hash file
         // name point into a directory that does not exist by removing the
@@ -1202,7 +1035,7 @@ mod tests {
         let args = &events[0].2;
         assert_eq!(
             args[args.len() - 4..],
-            (ValidateStatus::FileDoesntExist as u32).to_be_bytes()
+            (validate_file::Status::FileDoesntExist as u32).to_be_bytes()
         );
         assert_eq!(events[1].0, ID_BASE + ComLogger::EVENTID_FILE_CLOSED);
     }

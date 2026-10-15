@@ -2,13 +2,18 @@
 //!
 //! - [`hash`] — `Utils::Hash` CRC32 (IEEE 802.3) and `HashBuffer`
 //! - [`crc_checker`] — `Utils::CRCChecker` file checksum sidecars
+//! - [`validate_file`] — `Os::ValidateFile`: validate a file against its
+//!   `.CRC32` hash file, or create one (an `Os` facility that lives here
+//!   because it is built on [`hash`]; see the module docs for the placement
+//!   and for its sidecar encoding next to [`crc_checker`]'s)
 //! - [`types`] — `Types::CircularBuffer` byte ring and `Types::Queue`
 //!   fixed-message FIFO/LIFO
 //! - [`rate_limiter`] — `Utils::RateLimiter`
 //! - [`token_bucket`] — `Utils::TokenBucket`
 //!
 //! Analyses: `docs/cpp-analysis/utils-misc.md` and the Utils::Hash section
-//! of `docs/cpp-analysis/svc-comms.md`. None of these types are thread safe
+//! of `docs/cpp-analysis/svc-comms.md`; `Os::ValidateFile` in
+//! `docs/cpp-analysis/os.md`. None of these types are thread safe
 //! (C++ parity); callers wrap them in concurrency constructs.
 
 pub mod cfdp;
@@ -17,6 +22,7 @@ pub mod hash;
 pub mod rate_limiter;
 pub mod token_bucket;
 pub mod types;
+pub mod validate_file;
 
 pub use crc_checker::{
     CRC_FILE_READ_BLOCK, CrcStat, create_checksum_file, read_crc32_from_file, verify_checksum,

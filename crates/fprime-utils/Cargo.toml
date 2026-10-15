@@ -1,6 +1,6 @@
 [package]
 name = "fprime-utils"
-description = "F Prime Rust port: support libraries - CRC32 hash, CRC checker, circular buffer, rate limiting"
+description = "F Prime Rust port: support libraries - CRC32 hash, CRC checker, file validation, circular buffer, rate limiting"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 fprime-config.workspace = true
 fprime-fw.workspace = true
+fprime-os.workspace = true
