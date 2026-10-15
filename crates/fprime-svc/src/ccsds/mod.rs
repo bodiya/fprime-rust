@@ -3,6 +3,8 @@
 //!
 //! Implemented by the CCSDS wave; see `docs/cpp-analysis/ccsds.md`.
 
+pub mod aos_deframer;
+pub mod aos_framer;
 pub mod apid_manager;
 pub mod crc16;
 pub mod idle_packet;
