@@ -83,17 +83,16 @@ subsystems, then the strategic changes.
   `FileChunkDataRecord` containers, and the `Ref` topology wiring on `dpMgr`
   index 1.
 
-## Next: small follow-ups found in phase 2
+## Next: small follow-ups
 
-These surfaced while porting items 2–7. None changes the wire format of the
-Ref deployment.
+These surfaced while porting the items above. None changes the wire format of
+the Ref deployment.
 
-- **Restrict the Ref's `FileManager` sandbox** to the deployment's data
-  directory, as `prmDb`/`fileDownlink` already are, if fail-open-to-`/`
-  (the upstream `FileHandling` default) is not wanted.
-- **`cargo doc` warnings.** An ambiguous `[`file`]` link in `fprime-os` and
-  `Self::lock` in `tlm_packetizer.rs`; fix them and add `RUSTDOCFLAGS=-D
-  warnings` to the checks.
+- **`Utils::Hash` file-extension helpers.** `getFileExtensionString`,
+  `addFileExtension` and `getFileExtensionLength` (exercised by upstream's
+  `CRCCheckerTester` GoldenValue case) have no Rust equivalent yet.
+- **`Drv::ByteStreamBufferAdapter`.** The synchronous sibling of the ported
+  `AsyncByteStreamBufferAdapter`.
 
 ## Then: larger subsystems
 
