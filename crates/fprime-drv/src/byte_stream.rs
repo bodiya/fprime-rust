@@ -18,6 +18,29 @@
 //! The `recvReturnIn` direction (`Fw.BufferSend`) reuses
 //! [`fprime_comp::BufferSendPort`] directly — re-exported below — exactly as
 //! the C++ interface reuses the framework `Fw.BufferSend` port type.
+//!
+//! ## Synchronous vs asynchronous driver interfaces
+//!
+//! `Drv/Interfaces` defines two driver shapes over these port types:
+//!
+//! | port           | `ByteStreamDriver` (sync)          | `AsyncByteStreamDriver`              |
+//! |----------------|------------------------------------|--------------------------------------|
+//! | `ready`        | out [`ByteStreamReadyPort`]        | out [`ByteStreamReadyPort`]          |
+//! | `recv`         | out [`ByteStreamDataPort`]         | out [`ByteStreamDataPort`]           |
+//! | `send`         | guarded in [`ByteStreamSendPort`]  | async in [`BufferSendPort`]          |
+//! | `sendReturnOut`| —                                  | out [`ByteStreamDataPort`]           |
+//! | `recvReturnIn` | guarded in [`BufferSendPort`]      | guarded in [`BufferSendPort`]        |
+//!
+//! The async interface introduces no new port types: its `send` is the
+//! framework `Fw.BufferSend` (the buffer MOVES to the driver) and its
+//! `sendReturnOut` reuses `Drv.ByteStreamData` to hand the same buffer back
+//! with the send status (`SEND_RETRY` asks the client to resend it). The
+//! client side (`Drv.PassiveAsyncByteStreamDriverClient`, used by
+//! `Svc::ComStub` as `drvAsyncSendOut` / `drvAsyncSendReturnIn`) is the
+//! mirror image. At the pinned upstream revision no driver component
+//! implements `AsyncByteStreamDriver` — the TCP drivers and the UART driver
+//! (`Drv/PosixUartDriver`, formerly `LinuxUartDriver`) all import the
+//! synchronous `ByteStreamDriver` — so none is provided here either.
 
 use fprime_config::FwIndexType;
 use fprime_fw::serial::{Deserialize, Endianness, SerBufAny, Serialize, SerializeStatus};
@@ -99,8 +122,10 @@ pub trait ByteStreamSendPort: Send + Sync {
 }
 
 /// `Drv.ByteStreamData` — receive delivery (and, for async drivers, the send
-/// callback). The buffer moves to the receiver, which must eventually return
-/// it via the driver's `recvReturnIn` (`Fw.BufferSend`) for deallocation.
+/// callback). The buffer moves to the receiver. For `recv` it must
+/// eventually go back via the driver's `recvReturnIn` (`Fw.BufferSend`) for
+/// deallocation; for an async `sendReturnOut` it is the sender's own buffer
+/// coming home with the send status.
 pub trait ByteStreamDataPort: Send + Sync {
     /// Deliver a buffer with its receive status.
     fn invoke(&self, port_num: FwIndexType, buffer: Buffer, status: ByteStreamStatus);

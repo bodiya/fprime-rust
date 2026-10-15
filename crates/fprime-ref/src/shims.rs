@@ -14,6 +14,12 @@
 //! - `com_stub.drv_send_out` -> [`SvcToDrvSendShim`] -> driver `send_in`
 //! - `com_stub.drv_receive_return_out` -> driver `recv_return_in` needs NO
 //!   shim: both sides are the framework `fprime_comp::BufferSendPort`.
+//!
+//! An asynchronous driver (`Drv.AsyncByteStreamDriver`; none exists in the
+//! reference topology) would reuse these: driver `sendReturnOut` ->
+//! [`DrvToSvcDataShim`] -> `com_stub.drv_async_send_return_in`, and
+//! `com_stub.drv_async_send_out` -> driver `send` needs no shim (both sides
+//! are `fprime_comp::BufferSendPort`).
 
 use fprime_config::FwIndexType;
 use fprime_fw::Buffer;
