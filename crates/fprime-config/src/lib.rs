@@ -398,6 +398,47 @@ pub mod sdls {
     ];
 }
 
+/// `Os::Generic::LocklessPriorityQueue` configuration
+/// (`default/config/LocklessQueueCfg.hpp`).
+pub mod lockless_queue {
+    use super::FwSizeType;
+
+    /// Unsigned integral type of the lockless queue slot state-tag word
+    /// (`LocklessStateTagType`): the low two bits hold the slot state, the
+    /// rest the ABA epoch tag (62 tag bits for `u64`, 30 for `u32`, 14 for
+    /// `u16`, 6 for `u8`). The target must have native atomic
+    /// compare-and-swap of this width; a width it lacks fails to compile
+    /// (the C++ `static_assert`s on `ATOMIC_*_LOCK_FREE`).
+    ///
+    /// Deviation: upstream defaults to `U64` and leaves narrowing to the
+    /// project on targets without lock-free 64-bit atomics; here the
+    /// default narrows to `u32` automatically on such targets (thumbv7em,
+    /// for example), so the default configuration builds everywhere.
+    #[cfg(target_has_atomic = "64")]
+    pub type LocklessStateTagType = u64;
+    /// See the `target_has_atomic = "64"` definition (this is the narrowed
+    /// default for targets without 64-bit atomics).
+    #[cfg(not(target_has_atomic = "64"))]
+    pub type LocklessStateTagType = u32;
+
+    /// Backoff (microseconds) between bounded scans on the BLOCKING
+    /// send/receive paths (`LOCKLESS_QUEUE_BLOCKING_BACKOFF_US`). Must be
+    /// greater than 0: a zero backoff could livelock on a strict-priority
+    /// scheduler.
+    pub const LOCKLESS_QUEUE_BLOCKING_BACKOFF_US: u32 = 100;
+
+    /// Alignment (bytes) of each queue slot
+    /// (`LOCKLESS_QUEUE_SLOT_ALIGNMENT`): the target's cache-line size
+    /// avoids false sharing; a smaller power of two saves memory on
+    /// constrained targets. Must be a power of two from 1 to 4096.
+    pub const LOCKLESS_QUEUE_SLOT_ALIGNMENT: FwSizeType = 64;
+
+    /// Retry passes through the slot array before a NONBLOCKING operation
+    /// returns FULL/EMPTY (`LOCKLESS_QUEUE_MAX_RETRY_PASSES`); bounds a
+    /// non-blocking call at `depth * passes` slot visits. At least 1.
+    pub const LOCKLESS_QUEUE_MAX_RETRY_PASSES: FwSizeType = 4;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,5 +508,15 @@ mod tests {
         assert_eq!(sdls::SA_ROUTER_MAP_ENTRY_COUNT, 2);
         assert_eq!(sdls::SA_ROUTER_MAX_OUTSTANDING_BUFFERS, 4);
         assert_eq!(sdls::SA_MAP, [(1, 1), (0, 0)]);
+    }
+
+    #[test]
+    fn lockless_queue_defaults_match_cpp() {
+        assert_eq!(lockless_queue::LOCKLESS_QUEUE_BLOCKING_BACKOFF_US, 100);
+        assert_eq!(lockless_queue::LOCKLESS_QUEUE_SLOT_ALIGNMENT, 64);
+        assert_eq!(lockless_queue::LOCKLESS_QUEUE_MAX_RETRY_PASSES, 4);
+        // Upstream default U64 on hosts with 64-bit atomics.
+        #[cfg(target_has_atomic = "64")]
+        assert_eq!(size_of::<lockless_queue::LocklessStateTagType>(), 8);
     }
 }

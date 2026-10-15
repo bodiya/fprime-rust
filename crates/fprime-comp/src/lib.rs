@@ -51,6 +51,15 @@
 //! sampling and blocking queue waits then come from the platform the
 //! deployment registers with `fprime_os::register_platform` (see
 //! `fprime_os::platform` and ARCHITECTURE.md "no_std", ROADMAP item 13).
+//!
+//! Interrupt senders: build with the `lockless-queue` feature (forwarded to
+//! `fprime-os`) so component queues use the ISR-safe
+//! `Os::Generic::LocklessPriorityQueue`; an async input port whose
+//! queue-full policy is non-blocking (`assert`, `drop`, `hook`) can then be
+//! invoked from an interrupt handler, since the send path takes no lock.
+//! (One exception on targets without 64-bit atomics, e.g. thumbv7em: the
+//! `drop` policy's dropped-message counter is a `fprime_fw::sync::AtomicU64`,
+//! which falls back to a spin lock there.)
 
 #![no_std]
 

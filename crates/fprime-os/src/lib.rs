@@ -8,8 +8,11 @@
 //! enum verbatim with explicit discriminants.
 //!
 //! Modules:
-//! - [`queue`] — `Os::Queue` over `Os::Generic::PriorityQueue`: the priority
-//!   message queue with FIFO-within-priority ordering and blocking semantics.
+//! - [`queue`] — `Os::Queue`: the priority message queue with
+//!   FIFO-within-priority ordering and blocking semantics, over one of the
+//!   [`generic`] delegates — `Os::Generic::PriorityQueue` (default) or the
+//!   ISR-safe `Os::Generic::LocklessPriorityQueue` (`lockless-queue`
+//!   feature).
 //! - [`task`] — `Os::Task` state machine over `std::thread`.
 //! - [`mutex`] / [`condition`] — `Os::Mutex` (+ `ScopeLock`) and
 //!   `Os::ConditionVariable` wrappers.
@@ -31,14 +34,16 @@
 //!   default elsewhere), selected by `cfg` type alias.
 //!
 //! `no_std` (ROADMAP item 13): with the default `std` feature off (and
-//! `spin` on) the crate is the `no_std` + `alloc` subset [`queue`],
-//! [`task`], [`rawtime`], [`interval_timer`], [`generic`] and the [`stub`]
-//! [`cpu`] / [`memory`] backends; task start/join/delay, `RawTime::now`
-//! and the blocking-queue wait go through the `platform` seam, which the
-//! deployment implements (`platform::Platform`, registered with
-//! `register_platform`). Files, directories, the console, the `Os::Mutex`
-//! / `Os::ConditionVariable` wrappers and the Linux cpu/memory backends
-//! are `std`-only.
+//! `spin` on) the crate is the `no_std` + `alloc` subset [`queue`] (both
+//! delegates), [`task`], [`mutex`], [`condition`], [`rawtime`],
+//! [`interval_timer`], [`generic`] and the [`stub`] [`cpu`] / [`memory`]
+//! backends; task start/join/delay, `RawTime::now` and the blocking
+//! queue / mutex / condition-variable waits go through the `platform`
+//! seam, which the deployment implements (`platform::Platform`, registered
+//! with `register_platform`). Files, directories, the console and the
+//! Linux cpu/memory backends (which read procfs/sysfs through `Os::File`;
+//! a target with procfs is a hosted Linux target, which has `std`) are
+//! `std`-only.
 //!
 //! Not here: `Os::ValidateFile` is `fprime_utils::validate_file`. It is
 //! built on `Utils::Hash`, and the crate graph runs `fprime-utils ->
@@ -58,7 +63,6 @@ extern crate alloc;
 #[cfg(all(test, not(feature = "std")))]
 extern crate std;
 
-#[cfg(feature = "std")]
 pub mod condition;
 #[cfg(feature = "std")]
 pub mod console;
@@ -76,7 +80,6 @@ pub mod interval_timer;
 #[cfg(feature = "std")]
 pub mod linux;
 pub mod memory;
-#[cfg(feature = "std")]
 pub mod mutex;
 #[cfg(not(feature = "std"))]
 pub mod platform;
@@ -87,7 +90,6 @@ pub mod sandboxed_file;
 pub mod stub;
 pub mod task;
 
-#[cfg(feature = "std")]
 pub use condition::ConditionVariable;
 #[cfg(feature = "std")]
 pub use console::{CONSOLE, Console, ConsoleStream};
@@ -98,7 +100,6 @@ pub use directory::Directory;
 pub use file::File;
 pub use interval_timer::IntervalTimer;
 pub use memory::{Memory, MemoryInterface};
-#[cfg(feature = "std")]
 pub use mutex::{OsMutex, ScopeLock};
 #[cfg(not(feature = "std"))]
 pub use platform::{Platform, TaskHandle, register_platform};

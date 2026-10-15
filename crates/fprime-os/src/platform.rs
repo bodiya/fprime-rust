@@ -2,10 +2,10 @@
 //! deployment supplies so the `no_std` subset of this crate can run.
 //!
 //! In the default `std` build this module does not exist: [`crate::task`]
-//! runs on `std::thread`, [`crate::rawtime`] reads `std::time::SystemTime`
-//! and [`crate::queue`] blocks on `std::sync::Condvar`. In a build without
-//! `std` (`--no-default-features --features spin`), those three facilities
-//! call the [`Platform`] registered here instead:
+//! runs on `std::thread`, [`crate::rawtime`] reads `std::time::SystemTime`,
+//! and [`crate::queue`], [`crate::mutex`] and [`crate::condition`] block on
+//! `std::sync`. In a build without `std` (`--no-default-features --features
+//! spin`), those facilities call the [`Platform`] registered here instead:
 //!
 //! | facility                        | `std` backend          | `no_std` seam                      |
 //! |---------------------------------|------------------------|------------------------------------|
@@ -13,24 +13,35 @@
 //! | `Os::Task::delay`               | `std::thread::sleep`   | [`Platform::delay`]                |
 //! | `Os::RawTime::now`              | `SystemTime::now`      | [`Platform::raw_time_now`]         |
 //! | blocking `Os::Queue` send/recv  | `Condvar` wait/notify  | poll + [`Platform::queue_wait`]    |
+//! | contended `Os::Mutex` lock, `Os::ConditionVariable` pend | `std::sync` | poll + [`Platform::sync_wait`] |
 //!
 //! Register the platform once, at startup, before any task starts
 //! ([`register_platform`]). Until one is registered, `Task::start` and
 //! `Task::delay` return [`task::Status::NotSupported`], `RawTime::now`
-//! returns [`rawtime::Status::NotSupported`], and blocking queue waits spin
-//! with `core::hint::spin_loop` — non-blocking queue operations, the
+//! returns [`rawtime::Status::NotSupported`], and blocking queue, mutex and
+//! condition-variable waits spin with `core::hint::spin_loop` (the
+//! lockless queue's blocking backoff, `Task::delay`, returns at once) —
+//! non-blocking queue operations, the
 //! queued-component dispatch loop driven from a superloop or interrupt, and
 //! everything in `fprime-fw` need no platform at all.
 //!
-//! Blocking queues poll instead of waiting on a condition variable: the
-//! waiter releases the queue lock, calls [`Platform::queue_wait`], and
-//! re-checks. This is the same shape as upstream's
-//! `Os::Generic::LocklessPriorityQueue` (Os/Generic/LocklessPriorityQueue.cpp),
-//! whose blocking paths back off with `Os::Task::delay` — an RTOS port
-//! should yield or delay there so lower-priority senders can run. The queue
-//! state itself is guarded by a `spin` lock (`fprime_fw::sync`); do not send
-//! to a queue from an interrupt that can preempt a holder of that queue's
-//! lock on the same core.
+//! Blocking queues on the default lock-based delegate poll instead of
+//! waiting on a condition variable: the waiter releases the queue lock,
+//! calls [`Platform::queue_wait`], and re-checks. This is the same shape as
+//! upstream's `Os::Generic::LocklessPriorityQueue`
+//! (Os/Generic/LocklessPriorityQueue.cpp), whose blocking paths back off
+//! with `Os::Task::delay` — an RTOS port should yield or delay there so
+//! lower-priority senders can run. That delegate's state is guarded by a
+//! `spin` lock (`fprime_fw::sync`), so do not send to it from an interrupt
+//! that can preempt a holder of that queue's lock on the same core; build
+//! with the `lockless-queue` feature (the ported `LocklessPriorityQueue`,
+//! whose non-blocking calls take no lock and whose blocking calls back off
+//! through [`Platform::delay`]) when interrupts send to queues.
+//!
+//! `Os::Mutex` ([`crate::mutex::OsMutex`]) and `Os::ConditionVariable`
+//! ([`crate::condition::ConditionVariable`]) work the same way: a contended
+//! lock and a pending wait poll, calling [`Platform::sync_wait`] between
+//! checks.
 
 use crate::rawtime::{self, RawTime};
 use crate::task::{self, Arguments};
@@ -77,6 +88,14 @@ pub trait Platform: Sync {
     fn queue_wait(&self) {
         core::hint::spin_loop();
     }
+
+    /// Called each time an `Os::Mutex` lock finds the mutex held, and
+    /// while an `Os::ConditionVariable` pend waits for a notification (the
+    /// mutex released); the operation re-checks when this returns.
+    /// Default: [`Platform::queue_wait`], the same backoff.
+    fn sync_wait(&self) {
+        self.queue_wait();
+    }
 }
 
 static PLATFORM: OnceLock<&'static dyn Platform> = OnceLock::new();
@@ -99,6 +118,16 @@ pub fn get() -> Option<&'static dyn Platform> {
 pub(crate) fn queue_wait() {
     match get() {
         Some(platform) => platform.queue_wait(),
+        None => core::hint::spin_loop(),
+    }
+}
+
+/// One `Os::Mutex` / `Os::ConditionVariable` backoff step:
+/// [`Platform::sync_wait`], or a spin hint while no platform is
+/// registered.
+pub(crate) fn sync_wait() {
+    match get() {
+        Some(platform) => platform.sync_wait(),
         None => core::hint::spin_loop(),
     }
 }

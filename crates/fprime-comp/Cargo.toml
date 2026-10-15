@@ -18,6 +18,9 @@ std = ["fprime-fw/std", "fprime-os/std"]
 # subset whose tasks / clock / blocking waits a platform supplies. Build
 # with `--no-default-features --features spin`.
 spin = ["fprime-fw/spin", "fprime-os/spin"]
+# Component queues on the ISR-safe `Os::Generic::LocklessPriorityQueue`
+# (forwards to fprime-os; see its `lockless-queue` feature).
+lockless-queue = ["fprime-os/lockless-queue"]
 
 [dependencies]
 fprime-config.workspace = true

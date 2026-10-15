@@ -1,10 +1,23 @@
-//! Shared OSAL result types.
+//! The `Os::Generic` namespace: shared OSAL result types and the
+//! OS-agnostic queue delegates.
 //!
-//! Port of the `Os::Generic` namespace in `Os/Os.hpp`: the plain OK/ERROR
-//! status and the used/total pair shared by [`crate::cpu`] (as
-//! `Os::Cpu::Ticks`) and [`crate::memory`] (as `Os::Memory::Usage`).
+//! - The plain OK/ERROR [`Status`] and the used/total pair [`UsedTotal`]
+//!   (`Os/Os.hpp`) shared by [`crate::cpu`] (as `Os::Cpu::Ticks`) and
+//!   [`crate::memory`] (as `Os::Memory::Usage`).
+//! - The two `Os::Queue` delegates (`Os/Generic/`):
+//!   [`PriorityQueue`], the lock-based
+//!   default, and
+//!   [`LocklessPriorityQueue`],
+//!   the ISR-safe one selected by the `lockless-queue` feature (see
+//!   [`crate::queue`]).
 
 use fprime_config::FwSizeType;
+
+pub mod lockless_priority_queue;
+pub mod priority_queue;
+
+pub use lockless_priority_queue::LocklessPriorityQueue;
+pub use priority_queue::PriorityQueue;
 
 /// Port of `Os::Generic::Status` — exact C++ discriminants.
 #[must_use]

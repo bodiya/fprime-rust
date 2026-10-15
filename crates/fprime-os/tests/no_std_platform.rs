@@ -1,7 +1,10 @@
 //! The `no_std` OSAL seam end to end (ROADMAP item 13): with the `std`
-//! feature off, `Os::Task`, `Os::RawTime::now` and blocking `Os::Queue`
-//! waits route through the registered `platform::Platform`, and report
-//! `NOT_SUPPORTED` (or spin) before one is registered.
+//! feature off, `Os::Task`, `Os::RawTime::now`, blocking `Os::Queue` waits
+//! and `Os::Mutex` / `Os::ConditionVariable` waits route through the
+//! registered `platform::Platform`, and report `NOT_SUPPORTED` (or spin)
+//! before one is registered. Also run with `--features lockless-queue`,
+//! where the blocking receive backs off through `Platform::delay` instead
+//! of `Platform::queue_wait`.
 //!
 //! Run with `cargo test -p fprime-os --no-default-features --features spin`.
 //! In the default `std` build this file compiles to nothing. One test
@@ -10,7 +13,10 @@
 
 #![cfg(not(feature = "std"))]
 
+use fprime_config::lockless_queue::LOCKLESS_QUEUE_BLOCKING_BACKOFF_US;
 use fprime_fw::TimeInterval;
+use fprime_os::condition::{ConditionVariable, Status as ConditionStatus};
+use fprime_os::mutex::OsMutex;
 use fprime_os::platform::{self, Platform, TaskHandle};
 use fprime_os::queue::{BlockingType, Queue, Status as QueueStatus};
 use fprime_os::rawtime::{self, RawTime};
@@ -22,6 +28,14 @@ use std::sync::{LazyLock, Mutex};
 static STARTED: Mutex<Vec<(String, u8, u64)>> = Mutex::new(Vec::new());
 static DELAYS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 static QUEUE_WAITS: AtomicU32 = AtomicU32::new(0);
+/// Blocking-receive backoff steps (through `queue_wait`, or through `delay`
+/// with the lockless delegate).
+static BACKOFFS: AtomicU32 = AtomicU32::new(0);
+static SYNC_WAITS: AtomicU32 = AtomicU32::new(0);
+/// The condition variable the fake's `sync_wait` notifies, to prove a
+/// pend polls and re-checks.
+static CONDITION: ConditionVariable = ConditionVariable::new();
+static MUTEX: OsMutex = OsMutex::new();
 /// The queue the fake's `queue_wait` feeds, to prove a blocked receive
 /// re-checks after each backoff step.
 static FED: LazyLock<Queue> = LazyLock::new(Queue::new);
@@ -54,6 +68,12 @@ impl Platform for Fake {
             .lock()
             .unwrap()
             .push((interval.get_seconds(), interval.get_useconds()));
+        if cfg!(feature = "lockless-queue")
+            && (interval.get_seconds(), interval.get_useconds())
+                == (0, LOCKLESS_QUEUE_BLOCKING_BACKOFF_US)
+        {
+            backoff_step();
+        }
         task::Status::OpOk
     }
 
@@ -62,20 +82,32 @@ impl Platform for Fake {
     }
 
     fn queue_wait(&self) {
-        // Third backoff step: deliver the message the receiver waits for.
-        if QUEUE_WAITS.fetch_add(1, Ordering::SeqCst) == 2 {
-            assert_eq!(
-                FED.send(&[0xAB], 3, BlockingType::NonBlocking),
-                QueueStatus::OpOk
-            );
+        QUEUE_WAITS.fetch_add(1, Ordering::SeqCst);
+        backoff_step();
+    }
+
+    fn sync_wait(&self) {
+        // Second poll of the pending wait: notify it.
+        if SYNC_WAITS.fetch_add(1, Ordering::SeqCst) == 1 {
+            CONDITION.notify();
         }
+    }
+}
+
+/// Third backoff step: deliver the message the receiver waits for.
+fn backoff_step() {
+    if BACKOFFS.fetch_add(1, Ordering::SeqCst) == 2 {
+        assert_eq!(
+            FED.send(&[0xAB], 3, BlockingType::NonBlocking),
+            QueueStatus::OpOk
+        );
     }
 }
 
 static FAKE: Fake = Fake;
 
 #[test]
-fn platform_seam_routes_task_time_and_queue_waits() {
+fn platform_seam_routes_task_time_queue_and_sync_waits() {
     // --- before registration ------------------------------------------------
     assert!(platform::get().is_none());
     let task = Task::new();
@@ -147,5 +179,35 @@ fn platform_seam_routes_task_time_and_queue_waits() {
         QueueStatus::OpOk
     );
     assert_eq!((buf[0], size, prio), (0xAB, 1, 3));
-    assert_eq!(QUEUE_WAITS.load(Ordering::SeqCst), 3);
+    assert_eq!(BACKOFFS.load(Ordering::SeqCst), 3);
+    if cfg!(feature = "lockless-queue") {
+        // LocklessPriorityQueue backs off with Os::Task::delay.
+        let backoff = (0, LOCKLESS_QUEUE_BLOCKING_BACKOFF_US);
+        assert_eq!(
+            DELAYS.lock().unwrap().as_slice(),
+            &[(2, 30), backoff, backoff, backoff]
+        );
+        assert_eq!(QUEUE_WAITS.load(Ordering::SeqCst), 0);
+    } else {
+        assert_eq!(QUEUE_WAITS.load(Ordering::SeqCst), 3);
+    }
+
+    // --- a condition-variable pend polls through sync_wait ------------------
+    let lock = MUTEX.lock();
+    let (status, lock) = CONDITION.pend(lock);
+    assert_eq!(status, ConditionStatus::OpOk);
+    // Woken by the notify the second poll issued, mutex re-acquired.
+    assert_eq!(SYNC_WAITS.load(Ordering::SeqCst), 2);
+    assert!(MUTEX.try_lock().is_err());
+    drop(lock);
+
+    // --- a contended mutex lock polls through sync_wait ---------------------
+    let held = MUTEX.lock();
+    let contender = std::thread::spawn(|| drop(MUTEX.lock()));
+    while SYNC_WAITS.load(Ordering::SeqCst) < 3 {
+        std::thread::yield_now();
+    }
+    drop(held);
+    contender.join().unwrap();
+    assert!(MUTEX.try_lock().is_ok());
 }

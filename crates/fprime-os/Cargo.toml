@@ -18,6 +18,11 @@ std = ["fprime-fw/std"]
 # interval timer, stub cpu/memory, over the `platform` seam. Build with
 # `--no-default-features --features spin`.
 spin = ["fprime-fw/spin"]
+# Make `Os::Generic::LocklessPriorityQueue` the `Os::Queue` delegate (the
+# equivalent of linking upstream's DefaultLocklessPriorityQueue.cpp instead
+# of DefaultPriorityQueue.cpp): ISR-safe non-blocking send/receive.
+# Recommended for no_std deployments that send to queues from interrupts.
+lockless-queue = []
 
 [dependencies]
 fprime-config.workspace = true

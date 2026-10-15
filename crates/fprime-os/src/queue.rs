@@ -1,46 +1,53 @@
 //! The F Prime priority message queue.
 //!
-//! Port of `Os::Queue` (Os/Queue.{hpp,cpp}) over the default delegate
-//! `Os::Generic::PriorityQueue` (Os/Generic/PriorityQueue.{hpp,cpp}) with its
-//! `Types::MaxHeap` stable max-heap — see `docs/cpp-analysis/os.md`.
+//! Port of the `Os::Queue` facade (Os/Queue.{hpp,cpp}) and its delegate
+//! interface `Os::QueueInterface` — see `docs/cpp-analysis/os.md`. The
+//! facade owns the name, the configured depth/message size and the
+//! create-once check, and forwards to one delegate chosen at build time,
+//! as upstream links exactly one `Default*Queue.cpp`:
 //!
-//! Semantics preserved exactly:
-//! - fixed slab storage (`depth * message_size` bytes allocated at
-//!   [`Queue::create`]), a circular free-index ring, and per-slot sizes;
-//! - a stable max-heap: highest priority first, FIFO within equal priority
-//!   (the C++ MaxHeap tie-breaks equal priorities by insertion order);
-//! - one mutex plus two condition variables — senders wait while full,
-//!   receivers wait while empty, and each side notifies one waiter AFTER
-//!   releasing the lock;
-//! - the `Os::Queue` facade checks: `create` asserts depth/size > 0 and
-//!   returns [`Status::AlreadyCreated`] on a second create; `send` with a
-//!   message larger than the configured size returns
-//!   [`Status::SizeMismatch`]; `receive` with a destination smaller than the
-//!   CONFIGURED message size (not the actual message size) returns
-//!   [`Status::SizeMismatch`]; non-blocking send on full returns
-//!   [`Status::Full`], non-blocking receive on empty returns
-//!   [`Status::Empty`].
+//! | build | delegate ([`DefaultQueue`]) | upstream |
+//! |---|---|---|
+//! | default | [`PriorityQueue`](crate::generic::PriorityQueue): stable max-heap under one mutex, condition-variable blocking | `Os/Generic/DefaultPriorityQueue.cpp` |
+//! | feature `lockless-queue` | [`LocklessPriorityQueue`](crate::generic::LocklessPriorityQueue): atomic slot state machine, ISR-safe non-blocking calls, polling blocking calls | `Os/Generic/DefaultLocklessPriorityQueue.cpp` |
+//!
+//! The feature is the recommended configuration for `no_std` deployments
+//! that send to component queues from interrupt handlers: the default
+//! delegate's state is behind a (spin) lock, which an interrupt that
+//! preempted a holder on the same core would spin on forever. With the
+//! lockless delegate, the whole async-port send path — the facade's
+//! created check is a once-cell read — takes no lock (send with a
+//! non-blocking queue-full policy from an ISR; blocking calls poll and
+//! must stay in task context). Without interrupt senders the default is
+//! the better choice: blocked receivers sleep until signaled instead of
+//! waking every `LOCKLESS_QUEUE_BLOCKING_BACKOFF_US`. Both delegates are
+//! always compiled and can also be used directly through
+//! [`QueueInterface`].
+//!
+//! Facade semantics (both delegates): highest priority first, FIFO within
+//! equal priority; `create` asserts depth/size > 0 and returns
+//! [`Status::AlreadyCreated`] on a second create; `send` with a message
+//! larger than the configured size returns [`Status::SizeMismatch`];
+//! `receive` with a destination smaller than the CONFIGURED message size
+//! (not the actual message size) returns [`Status::SizeMismatch`];
+//! non-blocking send on full returns [`Status::Full`], non-blocking
+//! receive on empty returns [`Status::Empty`]; everything before `create`
+//! returns [`Status::Uninitialized`].
 //!
 //! Concurrency model: unlike the C++ front class, [`Queue`] uses interior
 //! mutability throughout — every method (including `create`) takes `&self`,
 //! so a `Queue` is shared as `Arc<Queue>` across sender and receiver threads
-//! with no external locking.
+//! with no external locking. The created configuration and delegate live in
+//! a write-once cell, so reading them takes no lock.
 //!
-//! `no_std` (ROADMAP item 13): the data mutex is the `fprime_fw::sync` spin
-//! lock and there is no condition variable — a blocking send/receive
-//! releases the lock, takes one `platform::Platform::queue_wait`
-//! backoff step and re-checks (the polling shape of upstream's
-//! `Os::Generic::LocklessPriorityQueue`). Everything else, including the
-//! status flow and FIFO-within-priority order, is identical.
+//! C++ `teardown()` is `Drop` (storage is freed with the `Queue`), and the
+//! C++ `create` `id` (used only by the optional QueueRegistry) is not
+//! ported.
 
-use alloc::boxed::Box;
-use alloc::collections::BinaryHeap;
-use alloc::vec;
-use alloc::vec::Vec;
-use core::cmp::Reverse;
+use crate::generic;
 use fprime_config::{FW_QUEUE_NAME_BUFFER_SIZE, FwQueuePriorityType, FwSizeType};
 use fprime_fw::fw_assert;
-use fprime_fw::sync::{AtomicU64, Mutex, MutexGuard, Ordering};
+use fprime_fw::sync::{AtomicU64, OnceLock, Ordering};
 use fprime_fw::{FwString, SerBuf, SerBufAny};
 
 /// Queue name string (C++ `Os::QueueString`, capacity
@@ -90,39 +97,63 @@ pub enum BlockingType {
     NonBlocking = 1,
 }
 
-/// One stable max-heap entry (C++ `Types::MaxHeap::Node`). Derived ordering
-/// is lexicographic: priority DESC first, then `Reverse(order)` — the oldest
-/// entry wins among equal priorities, reproducing the MaxHeap age tie-break
-/// (FIFO within one priority).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct HeapNode {
-    priority: FwQueuePriorityType,
-    order: Reverse<u64>,
-    index: usize,
+/// Port of `Os::QueueInterface`: what an `Os::Queue` delegate implements.
+///
+/// Deviation: C++ delegates are constructed empty and then `create`d (and
+/// assert on use before that); here `create` constructs the delegate, so an
+/// uncreated delegate cannot be used — the uncreated state is the
+/// [`Queue`] facade's. `teardown` is `Drop`, and the unused `id`/`name`
+/// arguments of the C++ `create` are not taken.
+pub trait QueueInterface: Send + Sync + Sized {
+    /// Allocate storage for `depth` messages of up to `message_size` bytes
+    /// (all of it, once). Asserts both are nonzero.
+    fn create(depth: usize, message_size: usize) -> Result<Self, Status>;
+
+    /// Send `buffer` at `priority`: [`Status::SizeMismatch`] if it exceeds
+    /// the message size, [`Status::Full`] if non-blocking and no space.
+    fn send(
+        &self,
+        buffer: &[u8],
+        priority: FwQueuePriorityType,
+        block_type: BlockingType,
+    ) -> Status;
+
+    /// Receive the highest-priority (oldest among equals) message into
+    /// `destination`, which must hold it (asserted); [`Status::Empty`] if
+    /// non-blocking and nothing is queued.
+    fn receive(
+        &self,
+        destination: &mut [u8],
+        block_type: BlockingType,
+        actual_size: &mut FwSizeType,
+        priority: &mut FwQueuePriorityType,
+    ) -> Status;
+
+    /// Number of messages currently receivable.
+    fn get_messages_available(&self) -> FwSizeType;
+
+    /// Maximum number of messages ever queued at once.
+    fn get_message_high_water_mark(&self) -> FwSizeType;
 }
 
-/// All queue state guarded by the single data mutex (C++ `PriorityQueueHandle`
-/// plus the `Os::Queue` wrapper fields).
-#[derive(Default)]
-struct QueueState {
-    created: bool,
+/// The `Os::Queue` delegate of this build: the lock-based
+/// [`generic::PriorityQueue`] (upstream `DefaultPriorityQueue.cpp`).
+#[cfg(not(feature = "lockless-queue"))]
+pub type DefaultQueue = generic::PriorityQueue;
+
+/// The `Os::Queue` delegate of this build: the ISR-safe
+/// [`generic::LocklessPriorityQueue`], selected by the `lockless-queue`
+/// feature (upstream `DefaultLocklessPriorityQueue.cpp`).
+#[cfg(feature = "lockless-queue")]
+pub type DefaultQueue = generic::LocklessPriorityQueue;
+
+/// A created queue: the facade fields C++ `Os::Queue` keeps
+/// (`m_name`/`m_depth`/`m_size`) plus the delegate.
+struct Created {
     name: QueueString,
     depth: usize,
     message_size: usize,
-    /// Unordered per-slot slabs: `depth * message_size` bytes; message `i`
-    /// lives at `i * message_size`.
-    data: Box<[u8]>,
-    /// Per-slot stored message size.
-    sizes: Box<[usize]>,
-    /// Circular free-index list.
-    indices: Box<[usize]>,
-    start_index: usize,
-    stop_index: usize,
-    heap: BinaryHeap<HeapNode>,
-    /// Monotonic insertion counter (C++ `MaxHeap::m_order`).
-    order: u64,
-    /// Maximum simultaneous messages seen (C++ `highMark`).
-    high_mark: usize,
+    delegate: DefaultQueue,
 }
 
 /// Global created-queue count (C++ `Os::Queue::s_queueCount`, guarded by a
@@ -130,174 +161,98 @@ struct QueueState {
 static QUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// The F Prime priority message queue (see module docs).
-#[derive(Default)]
 pub struct Queue {
-    state: Mutex<QueueState>,
-    /// Senders wait here while the queue is full (C++ `m_full`).
-    not_full: Signal,
-    /// Receivers wait here while the queue is empty (C++ `m_empty`).
-    not_empty: Signal,
+    created: OnceLock<Created>,
 }
 
-fn lock_state(mutex: &Mutex<QueueState>) -> MutexGuard<'_, QueueState> {
-    // A poisoned lock means another thread panicked mid-operation; the C++
-    // equivalent is a crashed FW_ASSERT. The `fprime_fw::sync` mutex
-    // recovers the guard so remaining threads see consistent-enough state
-    // to shut down.
-    mutex.lock()
-}
-
-/// One wait condition of the queue: a `std::sync::Condvar` in the `std`
-/// build.
-#[cfg(feature = "std")]
-#[derive(Default)]
-struct Signal(std::sync::Condvar);
-
-#[cfg(feature = "std")]
-impl Signal {
-    /// Atomically release `guard` and wait for a notification, then
-    /// re-acquire the lock (spurious wakeups allowed; callers loop).
-    fn wait<'a>(
-        &self,
-        _mutex: &'a Mutex<QueueState>,
-        guard: MutexGuard<'a, QueueState>,
-    ) -> MutexGuard<'a, QueueState> {
-        self.0
-            .wait(guard)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Wake one waiter.
-    fn notify_one(&self) {
-        self.0.notify_one();
+impl Default for Queue {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// One wait condition of the queue: polling over the platform seam in the
-/// `no_std` build (see the module docs).
-#[cfg(not(feature = "std"))]
-#[derive(Default)]
-struct Signal;
-
-#[cfg(not(feature = "std"))]
-impl Signal {
-    /// Release the lock, take one platform backoff step, re-acquire. The
-    /// caller re-checks its condition, exactly as after a condvar wakeup.
-    fn wait<'a>(
-        &self,
-        mutex: &'a Mutex<QueueState>,
-        guard: MutexGuard<'a, QueueState>,
-    ) -> MutexGuard<'a, QueueState> {
-        drop(guard);
-        crate::platform::queue_wait();
-        lock_state(mutex)
-    }
-
-    /// Nothing to wake: waiters poll.
-    fn notify_one(&self) {}
+/// `FwSizeType` to `usize`; a size the target cannot address is a
+/// programming error.
+fn to_usize(value: FwSizeType) -> usize {
+    let converted = usize::try_from(value);
+    fw_assert!(converted.is_ok());
+    converted.unwrap_or(0)
 }
 
 impl Queue {
     /// Construct an uncreated queue. All operations except [`Queue::create`]
     /// return [`Status::Uninitialized`] until `create` succeeds.
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            created: OnceLock::new(),
+        }
     }
 
-    /// Create the queue storage (port of `Os::Queue::create` +
-    /// `PriorityQueue::create`). Allocates the message slab, free-index ring,
-    /// and heap up front; steady state never allocates.
+    /// Create the queue storage (port of `Os::Queue::create` + the
+    /// delegate's `create`). Allocates everything up front; steady state
+    /// never allocates.
     ///
     /// C++ parity: FW_ASSERTs `depth > 0 && message_size > 0` (crash, not
-    /// status); a second create returns [`Status::AlreadyCreated`]. The C++
-    /// `id` parameter (used only for the optional QueueRegistry) is not
-    /// ported.
+    /// status); a second create returns [`Status::AlreadyCreated`]; a
+    /// delegate allocation failure is returned as is.
     pub fn create(&self, name: &str, depth: FwSizeType, message_size: FwSizeType) -> Status {
         fw_assert!(depth > 0);
         fw_assert!(message_size > 0);
-        let depth = depth as usize;
-        let message_size = message_size as usize;
-        let mut state = lock_state(&self.state);
-        if state.created {
+        if self.created.get().is_some() {
             return Status::AlreadyCreated;
         }
-        state.name.set(name);
-        state.depth = depth;
-        state.message_size = message_size;
-        state.data = vec![0u8; depth * message_size].into_boxed_slice();
-        state.sizes = vec![0usize; depth].into_boxed_slice();
-        state.indices = (0..depth).collect::<Vec<usize>>().into_boxed_slice();
-        state.start_index = 0;
-        state.stop_index = 0;
-        state.heap = BinaryHeap::with_capacity(depth);
-        state.order = 0;
-        state.high_mark = 0;
-        state.created = true;
-        drop(state);
+        let depth = to_usize(depth);
+        let message_size = to_usize(message_size);
+        let delegate = match DefaultQueue::create(depth, message_size) {
+            Ok(delegate) => delegate,
+            Err(status) => return status,
+        };
+        let mut queue_name = QueueString::new();
+        queue_name.set(name);
+        let created = Created {
+            name: queue_name,
+            depth,
+            message_size,
+            delegate,
+        };
+        // A concurrent create that won the race keeps its configuration.
+        if self.created.set(created).is_err() {
+            return Status::AlreadyCreated;
+        }
         QUEUE_COUNT.fetch_add(1, Ordering::Relaxed);
         Status::OpOk
     }
 
-    /// Send a message (port of `Os::Queue::send` +
-    /// `PriorityQueue::send`).
+    /// Send a message (port of `Os::Queue::send` + the delegate's `send`).
     ///
     /// Status flow: [`Status::Uninitialized`] before create;
     /// [`Status::SizeMismatch`] when `buffer.len()` exceeds the configured
     /// message size; [`Status::Full`] for a non-blocking send on a full
-    /// queue. A blocking send waits on the not-full condition. The receiver
-    /// notification is issued after the lock is released (C++ parity).
+    /// queue (the lockless delegate may also report it spuriously under
+    /// contention). A blocking send waits for space.
     pub fn send(
         &self,
         buffer: &[u8],
         priority: FwQueuePriorityType,
         block_type: BlockingType,
     ) -> Status {
-        let mut state = lock_state(&self.state);
-        if !state.created {
+        let Some(created) = self.created.get() else {
             return Status::Uninitialized;
-        }
-        if buffer.len() > state.message_size {
+        };
+        if buffer.len() > created.message_size {
             return Status::SizeMismatch;
         }
-        // Wait for space (senders wait on m_full in C++).
-        while state.heap.len() >= state.depth {
-            if block_type == BlockingType::NonBlocking {
-                return Status::Full;
-            }
-            state = self.not_full.wait(&self.state, state);
-        }
-        // find_index(): pop the free-index ring at start_index.
-        let index = state.indices[state.start_index];
-        state.start_index = (state.start_index + 1) % state.depth;
-        // Heap push cannot fail: heap size < depth was just checked under
-        // the same lock (C++ asserts the push succeeded).
-        let node = HeapNode {
-            priority,
-            order: Reverse(state.order),
-            index,
-        };
-        state.order = state.order.wrapping_add(1);
-        state.heap.push(node);
-        // store_data(): copy into the slot slab.
-        let offset = index * state.message_size;
-        state.data[offset..offset + buffer.len()].copy_from_slice(buffer);
-        state.sizes[index] = buffer.len();
-        state.high_mark = state.high_mark.max(state.heap.len());
-        drop(state);
-        // C++ parity: notify one receiver AFTER unlocking.
-        self.not_empty.notify_one();
-        Status::OpOk
+        created.delegate.send(buffer, priority, block_type)
     }
 
     /// Receive the highest-priority message (port of `Os::Queue::receive` +
-    /// `PriorityQueue::receive`). `actual_size` and `priority` are outputs.
+    /// the delegate's `receive`). `actual_size` and `priority` are outputs.
     ///
     /// Status flow: [`Status::Uninitialized`] before create;
     /// [`Status::SizeMismatch`] when `destination.len()` is smaller than the
     /// queue's CONFIGURED message size (C++ checks the configured size, not
     /// the pending message's size); [`Status::Empty`] for a non-blocking
-    /// receive on an empty queue. A blocking receive waits on the not-empty
-    /// condition.
+    /// receive on an empty queue. A blocking receive waits for a message.
     pub fn receive(
         &self,
         destination: &mut [u8],
@@ -305,42 +260,15 @@ impl Queue {
         actual_size: &mut FwSizeType,
         priority: &mut FwQueuePriorityType,
     ) -> Status {
-        let mut state = lock_state(&self.state);
-        if !state.created {
+        let Some(created) = self.created.get() else {
             return Status::Uninitialized;
-        }
-        if destination.len() < state.message_size {
+        };
+        if destination.len() < created.message_size {
             return Status::SizeMismatch;
         }
-        while state.heap.is_empty() {
-            if block_type == BlockingType::NonBlocking {
-                return Status::Empty;
-            }
-            state = self.not_empty.wait(&self.state, state);
-        }
-        // Pop cannot fail: non-empty was just checked under the same lock
-        // (C++ asserts the pop succeeded).
-        let node = match state.heap.pop() {
-            Some(node) => node,
-            None => return Status::UnknownError,
-        };
-        let size = state.sizes[node.index];
-        // C++ parity: actualSize <= capacity is an FW_ASSERT inside the
-        // delegate, NOT a status return (the wrapper's configured-size check
-        // above already guarantees it).
-        fw_assert!(size <= destination.len());
-        let offset = node.index * state.message_size;
-        destination[..size].copy_from_slice(&state.data[offset..offset + size]);
-        // return_index(): push the freed slot at stop_index.
-        let stop = state.stop_index;
-        state.indices[stop] = node.index;
-        state.stop_index = (state.stop_index + 1) % state.depth;
-        drop(state);
-        // C++ parity: notify one sender AFTER unlocking.
-        self.not_full.notify_one();
-        *actual_size = size as FwSizeType;
-        *priority = node.priority;
-        Status::OpOk
+        created
+            .delegate
+            .receive(destination, block_type, actual_size, priority)
     }
 
     /// Send the valid region (`[0..ser_loc]`) of a serialization buffer
@@ -384,33 +312,41 @@ impl Queue {
         status
     }
 
-    /// Number of messages currently queued. C++ parity note: the C++
-    /// implementation reads the heap size WITHOUT the lock (racy by design);
-    /// this port takes the lock — the value is still stale the moment it is
-    /// returned, so the semantics are equivalent.
+    /// Number of messages currently queued (0 before create; the
+    /// delegate's `getMessagesAvailable`).
     pub fn get_messages_available(&self) -> FwSizeType {
-        lock_state(&self.state).heap.len() as FwSizeType
+        self.created
+            .get()
+            .map_or(0, |created| created.delegate.get_messages_available())
     }
 
-    /// Maximum number of messages ever simultaneously queued (C++
-    /// `getMessageHighWaterMark`, read under the lock).
+    /// Maximum number of messages ever simultaneously queued (0 before
+    /// create; the delegate's `getMessageHighWaterMark`).
     pub fn get_message_high_water_mark(&self) -> FwSizeType {
-        lock_state(&self.state).high_mark as FwSizeType
+        self.created
+            .get()
+            .map_or(0, |created| created.delegate.get_message_high_water_mark())
     }
 
     /// Configured queue depth (0 before create).
     pub fn get_depth(&self) -> FwSizeType {
-        lock_state(&self.state).depth as FwSizeType
+        self.created
+            .get()
+            .map_or(0, |created| created.depth as FwSizeType)
     }
 
     /// Configured maximum message size (0 before create).
     pub fn get_message_size(&self) -> FwSizeType {
-        lock_state(&self.state).message_size as FwSizeType
+        self.created
+            .get()
+            .map_or(0, |created| created.message_size as FwSizeType)
     }
 
-    /// Queue name as set at create.
+    /// Queue name as set at create (empty before create).
     pub fn get_name(&self) -> QueueString {
-        lock_state(&self.state).name.clone()
+        self.created
+            .get()
+            .map_or_else(QueueString::new, |created| created.name.clone())
     }
 
     /// Number of queues created process-wide (C++ `Os::Queue::getNumQueues`).
@@ -753,6 +689,35 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(value, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn delegate_follows_the_lockless_queue_feature() {
+        let expected = if cfg!(feature = "lockless-queue") {
+            "LocklessPriorityQueue"
+        } else {
+            "PriorityQueue"
+        };
+        let name = core::any::type_name::<DefaultQueue>();
+        assert_eq!(name.rsplit("::").next(), Some(expected));
+    }
+
+    // C++ parity: a failed delegate create leaves the facade uncreated (the
+    // lockless delegate reports allocation failure as a status).
+    #[cfg(feature = "lockless-queue")]
+    #[test]
+    fn failed_create_leaves_queue_uninitialized() {
+        let queue = Queue::new();
+        assert_eq!(
+            queue.create("huge", 4, isize::MAX as FwSizeType / 2),
+            Status::AllocationFailed
+        );
+        assert_eq!(queue.get_depth(), 0);
+        assert_eq!(
+            queue.send(&[1], 0, BlockingType::NonBlocking),
+            Status::Uninitialized
+        );
+        assert_eq!(queue.create("ok", 2, 4), Status::OpOk);
     }
 
     #[test]
