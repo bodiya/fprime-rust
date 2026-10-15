@@ -71,6 +71,19 @@ subsystems, then the strategic changes.
   fallback to truncating the original, and the size cap). Upstream does
   not rotate: a line that would exceed the cap closes the file for good.
   The upstream Ref does not instantiate it, so neither does the Rust Ref.
+- **`Svc::GenericHub`** (item 9), with the serialize ports it needs:
+  `fprime_comp::serial_port` ports `Fw::InputSerializePort` /
+  `OutputSerializePort` and the generated `invokeSerial` paths
+  (`serializable_port!`, `connect_serial`, `connect_typed`), so any typed
+  call without a return value or `Fw::Buffer` can cross a hub and be
+  replayed on a typed port. The hub's `[type][port][size][payload]` wire
+  format, its buffer moves and the upstream unit tests are ported; an
+  integration test joins two deployments (remote commanding through a
+  `CmdDispatcher`, its events, a ping round trip, a buffer). Upstream
+  undersizes the `eventIn`/`tlmIn` scratch buffers and asserts on 505/506-byte
+  argument buffers; the Rust hub forwards them. `Fw::ObjRegistry` turned
+  out to be unused by the hub and stays unported. The upstream Ref does not
+  instantiate a hub.
 - **`Os::SandboxedFile` / `Os::FilePathUtils` moved to `fprime-os`**
   (`file_path_utils.rs`, `sandboxed_file.rs`). `FileUplink`, `FileDownlink`
   and `PrmDb` all use the one implementation; `PrmDb`'s private `String`-based
@@ -96,9 +109,6 @@ the Ref deployment.
 
 ## Then: larger subsystems
 
-9. **`Svc::GenericHub`.** The serialize-port and `ObjRegistry` machinery it
-   needs was skipped in phase 1; the async envelope is already
-   hub-compatible (see `docs/api-notes.md`, fprime-comp §4).
 10. **`Svc::FpySequencer`.** Larger than `CmdSequencer`; needs the Fpy
     bytecode dispatcher and its own state machine (see item 11).
 11. **State-machine autocoding (`Fw/Sm`).** A declarative-macro layer in the
@@ -118,7 +128,10 @@ the Ref deployment.
     dependency (or a vendored deflate); `ProcType::ZlibDeflate` is already on
     the wire.
 15. **FPP back-end gaps.** The front end is complete; the Rust back end
-    still lacks state-machine instances (needs item 11) and serial ports.
+    still lacks state-machine instances (needs item 11) and serial ports
+    (the runtime they would target, `fprime_comp::serial_port`, landed with
+    item 9: generate `serial` port instances as `SerializePort`s and a
+    `serializable_port!` for each generated port definition).
     Telemetry packet sets are analyzed and written to the dictionary but
     the Rust topology does not yet instantiate a packetizer from them.
 

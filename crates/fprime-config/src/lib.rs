@@ -266,6 +266,21 @@ pub mod file_manager {
     pub const DEFAULT_DP_PRIORITY: FwDpPriorityType = 10;
 }
 
+/// `Svc::GenericHub` port-array sizes (`GenericHubCfg.fpp`). Both hubs of a
+/// pair must agree: hub A's inputs are hub B's outputs and vice versa.
+pub mod generic_hub {
+    /// `GenericHubCfg.NumSerialInputPorts` — size of `serialIn`.
+    pub const NUM_SERIAL_INPUT_PORTS: usize = 10;
+    /// `GenericHubCfg.NumBufferInputPorts` — size of `bufferIn` /
+    /// `bufferInReturn`.
+    pub const NUM_BUFFER_INPUT_PORTS: usize = 10;
+    /// `GenericHubCfg.NumSerialOutputPorts` — size of `serialOut`.
+    pub const NUM_SERIAL_OUTPUT_PORTS: usize = 10;
+    /// `GenericHubCfg.NumBufferOutputPorts` — size of `bufferOut` /
+    /// `bufferOutReturn`.
+    pub const NUM_BUFFER_OUTPUT_PORTS: usize = 10;
+}
+
 /// `Utils::CRCChecker` configuration (`CRCCheckerConfig.hpp`).
 pub mod crc_checker {
     /// Block size for streaming a file through the CRC

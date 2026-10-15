@@ -41,12 +41,12 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   express faithfully stays hand-written — the macros never half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
-  FpySequencer, GenericHub, state-machine autocoding (`Fw/Sm`), the
+  FpySequencer, state-machine autocoding (`Fw/Sm`), the
   SDLS/AOS CCSDS siblings and zlib data-product compression. Everything
   listed as a phase-1 gap in earlier revisions of this document
   (CmdSequencer, file services, data products, TlmPacketizer, the CCSDS
-  stack, ComLogger, the Linux drivers, ActiveTextLogger) has since been
-  ported.
+  stack, ComLogger, the Linux drivers, ActiveTextLogger, GenericHub with
+  the serialize ports it needs) has since been ported.
 
 ## Workspace layout
 
@@ -391,6 +391,19 @@ impl<P: ?Sized> OutputPort<P> {
 ```
 
 Invocation: `let p = self.tlm_out.get(); p.target.invoke(p.port_num, id, &mut time, &mut buf);`
+
+Serialize ports (`fprime_comp::serial_port`, C++ `Fw::InputSerializePort` /
+`OutputSerializePort` under `FW_PORT_SERIALIZATION`): the FPP `serial` port
+type is `trait SerializePort { fn invoke_serial(&self, port_num, buffer: &mut
+dyn SerBufAny) -> SerializeStatus }`, the call's arguments serialized in
+declaration order exactly as the generated `<Port>PortSerializer` writes
+them. A port trait opts in with `serializable_port!` (implemented for every
+standard port without a return value or `Fw::Buffer`); then
+`typed_out.connect_serial(serial_in_ref)` wraps the target in a
+`SerialCallAdapter` (typed → bytes, the generated `Output<P>Port::invoke`
+serial branch) and `serial_out.connect_typed(typed_in_ref)` wraps it in a
+`TypedCallAdapter` (bytes → typed, `Input<P>Port::invokeSerial`).
+`Fw::ObjRegistry` is not involved and is not ported.
 Port arrays are `[OutputPort<P>; N]`. Wiring happens once, before tasks start
 (`OnceLock` ⇒ lock-free invocation afterwards).
 
@@ -526,6 +539,7 @@ generated (`Debug` covers diagnostics; no consumer needs it yet).
 | `component_msg_types!` | the component's queue-message discriminants as associated consts, numbered from 1 (0 is the EXIT sentinel) |
 | `input_port_adapter!` | SYNC/GUARDED input: adapter struct + port-trait impl forwarding to a named handler on the caller's thread + the `fn <name>(self: &Arc<Self>, port_num) -> PortRef<dyn XPort>` factory |
 | `async_input_port_adapter!` | ASYNC input: the same, plus the byte-exact envelope write (`[msg_type i32 BE][port_num i16 BE][args in order]`), the queue-full policy, an optional `pre_msg_hook`/`overflow_hook`, and the matching `fn <name>_deserialize(msg) -> Option<(args..)>` used by `dispatch_message` |
+| `serializable_port!` | a port trait's serialization (`<Port>PortSerializer`, `<Port>PortBuffer::CAPACITY`, `Input<Port>Port::invokeSerial`): both directions between the typed trait and `SerializePort`, from one argument list |
 
 Port arguments are declared once, with a passing mode that fixes both the
 trait-method signature and the codec — `val x: T` (`x: T`), `ref x: T`
@@ -592,6 +606,8 @@ config constants, and quirks listed there:
 - Comms: `ComQueue` (active), `ComStub`, `FprimeFramer`, `FprimeDeframer`,
   `FrameAccumulator` + `FprimeFrameDetector` / `CcsdsTcFrameDetector`,
   `FprimeRouter`, `BufferManager`
+- Hub pattern: `GenericHub` (passive; `[type U32][port U32][size U16][payload]`
+  messages over any buffer driver)
 - `fprime-drv`: `ByteStreamStatus { OpOk=0, SendRetry=1, RecvNoData=2,
   OtherError=3 }` + ports, `TcpClient`, `TcpServer` (std::net; read thread +
   reconnect thread; status mapping per the analysis); later additions:

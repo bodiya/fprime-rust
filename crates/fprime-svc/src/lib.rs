@@ -27,6 +27,7 @@ pub mod fprime_deframer;
 pub mod fprime_framer;
 pub mod fprime_router;
 pub mod frame_accumulator;
+pub mod generic_hub;
 pub mod health;
 pub mod linux_timer;
 pub mod passive_rate_group;

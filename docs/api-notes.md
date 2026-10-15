@@ -354,7 +354,7 @@ Deviations/decisions (all C++-behavior-preserving):
 1. doDispatch split: C++ generates one doDispatch per component; here QueuedBase::do_dispatch does receive + msg_type read + EXIT check (before port_num — per the documented gotcha), and the component's ComponentDispatch::dispatch_message does the switch starting with read_port_num. Wire format unchanged.
 2. ActiveBase::start is generic (start<C: ActiveComponent>(&Arc<C>,..)) rather than taking Arc<dyn ActiveComponent>, because dyn-to-dyn trait upcasting needs Rust 1.86 and the workspace floor is 1.85. It fw_asserts that component.active_base() is the same base being started. The cooperative one-step-per-call s_taskStateMachine is not ported (os Task::is_cooperative() is always false); the Lifecycle stages are still tracked in an atomic for observability.
 3. OutputPort second-connect fw_asserts (OnceLock), stricter than C++ silently overwriting a connection — catches wiring bugs only. Port tracing ("+ name for tracing" in ARCHITECTURE) not implemented: no tracing consumer exists yet; PortRef/OutputPort have Debug impls instead.
-4. ObjRegistry/SimpleObjRegistry and serialize-ports (Input/OutputSerializePort) are not ported (raw-pointer registry is debug-only; GenericHub is a phase-1 non-goal). The envelope helpers keep the byte format hub-compatible for later.
+4. ObjRegistry/SimpleObjRegistry are not ported (raw-pointer registry is debug-only). Serialize ports (Input/OutputSerializePort) landed with GenericHub in ROADMAP item 9 (`serial_port`; see the item 9 notes at the end).
 5. receive-side non-Empty queue errors in do_dispatch are fw_assert (C++ generated code asserts them) rather than returning Error; dispatch_message deserialize failures return MsgDispatchStatus::Error (the softer of the C++ "ERROR/assert" options, letting active loops keep running — verified by a test).
 6. EXIT is returned by do_dispatch for queued components too (dispatch_available_messages just breaks with it), matching C++.
 7. EventGlue::log_event takes the pre-formatted text as &str; formatting cost is paid even when text logging is unconnected if the caller uses format! unconditionally — callers can guard with text_log_out.is_connected() if it matters. Event-string truncation to FW_LOG_STRING_MAX_SIZE is the arg-writer closure's job via FwString::serialize_to_truncated (documented on log_event).
@@ -1982,3 +1982,88 @@ renders non-UTF-8 text lossily, while the file gets the raw bytes; the
 `SEVERITY ERROR` branch is unrepresentable. The tests use per-test directories and
 check the file, as upstream does; the console path is not captured because the
 global `Fw::Logger` is shared with other tests in the binary.
+
+### fprime-comp + fprime-svc: serialize ports and `Svc::GenericHub` (ROADMAP item 9)
+
+Serialize ports (`fprime_comp::serial_port`, re-exported at the crate root):
+
+```text
+trait SerializePort: Send + Sync                       // FPP `serial`; C++ InputPortBase::invokeSerial
+  fn invoke_serial(&self, port_num, buffer: &mut dyn SerBufAny) -> SerializeStatus
+trait SerializablePort: Send + Sync                    // implemented for `dyn XPort` by serializable_port!
+  const CAPACITY: usize                                // C++ <Port>PortBuffer::CAPACITY
+  fn invoke_serial_on(target: &Self, port_num, buffer) -> SerializeStatus   // Input<P>Port::invokeSerial
+  fn serial_call_adapter(Arc<dyn SerializePort>) -> Arc<Self>               // registerSerialPort
+struct SerialCallAdapter   // typed -> serial: implements every serializable port trait; new(target); target()
+struct TypedCallAdapter<P: ?Sized>   // serial -> typed: impl SerializePort; new(Arc<P>)
+impl<P: ?Sized + SerializablePort> OutputPort<P> { fn connect_serial(&self, PortRef<dyn SerializePort>) }
+impl OutputPort<dyn SerializePort> { fn connect_typed<P: ?Sized + SerializablePort + 'static>(&self, PortRef<P>) }
+macro serializable_port! { port: Trait; args { val|ref|mut|buf name: Type, .. } }   // types: FppSized + Default
+Serializable standard ports: Sched, Cycle, Ping, WatchDog, Cmd, CmdReg, CmdResponse, Log, LogText,
+  Tlm, Time, Com, SuccessCondition, PrmSet, FatalEvent. Not: BufferSend, ComDataWithContext
+  (Fw::Buffer), BufferGet, PrmGet (return values).
+fprime_fw: impl FppSized for LinearBuffer<N> (N + 2); fprime_os: impl FppSized for RawTime (8).
+```
+
+A serialized call is the arguments in declaration order, big-endian, exactly
+as the generated `<Port>PortSerializer::serializePortArgs` writes them
+(buffers and strings with a `u16` length). The typed → serial path asserts
+both the argument serialization and the serial call's status, as the
+generated `Output<P>Port::invoke` does; the serial → typed path returns the
+first failing deserialization status without invoking (bad enums and
+non-`0xFF`/`0x00` bools are `DeserFormatError`). `ref`/`mut`/`buf`
+arguments are copy-in only across a serialized call. Deviations: ports with a
+return value or an `Fw::Buffer` do not implement `SerializablePort`, so
+wiring them to a serial port is a compile error (C++ asserts, or serializes a
+pointer); `Fw::ObjRegistry` is not involved (C++ serial ports never use it)
+and stays unported. `fpp-to-rust` does not yet emit `serializable_port!` or
+serial port instances (ROADMAP item 15).
+
+```text
+GenericHub (fprime_svc::generic_hub, PASSIVE; no commands, events, telemetry or state)
+  new(name) -> Arc<Self>
+  Inputs (sync): event_in(0) Log, tlm_in(0) Tlm, serial_in(0..10) SerializePort,
+    buffer_in(0..10) BufferSend, cmd_disp_in(0..5) Com, cmd_resp_in(0..5) CmdResponse,
+    from_buffer_driver(0), to_buffer_driver_return(0), buffer_out_return(0..10) (BufferSend)
+  Outputs: buffer_in_return[10], cmd_resp_out[5], allocate (BufferGet), deallocate,
+    to_buffer_driver, from_buffer_driver_return, event_out, tlm_out,
+    serial_out[10] (SerializePort), buffer_out[10], cmd_disp_out[5]
+  HEADER_SIZE = 10; enum HubType : u32 { Port=0, Buffer=1, Event=2, Channel=3, CmdDisp=4,
+    CmdResp=5, Max=6 }, HubType::from_wire(u32) -> Option<HubType>
+Config: fprime_config::generic_hub::{NUM_SERIAL_INPUT_PORTS, NUM_BUFFER_INPUT_PORTS,
+  NUM_SERIAL_OUTPUT_PORTS, NUM_BUFFER_OUTPUT_PORTS} = 10 (GenericHubCfg.fpp);
+  command arrays use CMD_DISPATCHER_SEQUENCE_PORTS (5).
+Wiring: typed_out.connect_serial(hub.serial_in(n)); hub.serial_out[n].connect_typed(comp.x_in(m)).
+```
+
+Wire format, byte-exact: `[type U32][port U32][size U16][payload]`; payloads:
+serial = the call's bytes; buffer = the window bytes; event =
+`[id U32][Time][severity U8][LogBuffer u16+bytes]`; channel =
+`[id U32][Time][TlmBuffer u16+bytes]`; command dispatch = `[command bytes, no
+length][context U32]`; command response = `[opCode U32][cmdSeq U32][response
+U8]`. The allocation request is payload + 10; the payload length is cast to
+`FwBuffSizeType` first, so (as upstream) both the token and the copied count
+truncate above 65535 bytes. Receive drops (and returns the buffer) on a short
+buffer, `type >= Max`, a declared size different from the received payload, a
+payload decode failure, and an out-of-range or unconnected destination;
+events and telemetry only exist on port 0. Buffer messages are delivered in
+place: the transport buffer's window is advanced past the header, it moves out
+on `bufferOut`, and comes back through `bufferOutReturn` to
+`fromBufferDriverReturn` still advanced (C++ returns the shifted pointer).
+`bufferIn` copies and returns the original immediately.
+
+Deviations: the `eventIn`/`tlmIn` scratch buffers include the 2-byte length
+token that upstream forgets, so 505/506-byte argument buffers are forwarded
+instead of tripping `FW_ASSERT` (same bytes on the wire otherwise); the
+`send_data` null-data assert becomes "a `bufferIn` buffer has storage"; the
+`serialOut` call status is discarded, as upstream. Tests: the eight upstream
+cases (two hubs back to back, the tester as driver and allocator with a single
+transport storage, so a missed return fails the next allocation), literal
+bytes for every message type, the max-size event/channel case, malformed
+payloads, unconnected destinations, typed calls through a hub pair, and
+`tests/generic_hub_pair.rs`: two deployments with their own `BufferManager`s,
+a remote `NO_OP` dispatched by B's `CmdDispatcher` with its events and
+response coming back to A, a `Svc.Ping` round trip through both hubs' serial
+ports, and a buffer — ending with zero buffers outstanding on both sides.
+The upstream Ref has no hub, so neither does the Rust Ref (no dictionary
+change).

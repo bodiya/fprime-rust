@@ -98,10 +98,10 @@ Requires stable Rust (edition 2024). No external crates.
 | Area | Components / features |
 | --- | --- |
 | Core types & serialization | `Fw` serialization engine, `LinearBuffer`/`ExtBuf`, `ComBuffer`/`CmdArgBuffer`/`LogBuffer`/`TlmBuffer`/`ParamBuffer`, fixed strings, `Time`/`TimeInterval`, FPP enums, `Fw::Buffer` (owned), `CmdPacket`/`LogPacket`/`TlmPacket`, `FilePacket`, `DpContainer`, `PolyType`, assert hooks, `Fw::Logger` |
-| Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!` (component/port scaffolding) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
+| Codegen layer | `fpp_enum!`, `fpp_struct!`, `fpp_array!` (FPP data types) and `component_msg_types!`, `input_port_adapter!`, `async_input_port_adapter!`, `serializable_port!` (component/port scaffolding and port serialization) — declarative macros replacing the mechanical parts of the C++ autocoder's output |
 | FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits, component bases with handler traits, and topology wiring, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary; `tools/gds-crosscheck.py` runs the stock `fprime-gds` against the Rust Ref binary and checks that commands sent through the GDS execute and that the Ref's events and telemetry decode (passes against fprime-gds 4.3.1) |
-| Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
+| Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | OSAL | Priority queue (stable max-heap, blocking semantics), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
@@ -110,6 +110,7 @@ Requires stable Rust (edition 2024). No external crates.
 | File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
 | Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
+| Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format) |
 | Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
 | Drivers | `TcpClient`, `TcpServer` (byte-stream model); `AsyncByteStreamBufferAdapter` (async byte-stream driver to passive buffer driver); `LinuxGpioDriver`, `PosixUartDriver`, `LinuxI2cDriver`, `LinuxSpiDriver` as full component surfaces over backend traits (see the hardware note below) |
 | Support | CRC-32 (`Utils::Hash`), CRC sidecar checker and `Os::ValidateFile` (both big-endian `.CRC32`), circular buffer, fixed-message queue, `RateLimiter`, `TokenBucket` |
@@ -139,7 +140,7 @@ can supply real hardware access without forking the component:
 
 State-machine autocoding in `fpp-to-rust` (the front end parses state
 machines; the back end does not generate them yet), `FpySequencer`,
-`GenericHub`, state-machine autocoding (`Fw/Sm`), the SDLS security layer, and zlib data-product compression
+state-machine autocoding (`Fw/Sm`), the SDLS security layer, and zlib data-product compression
 (`DpZLibCompressor`/`DpCompressProc`, which would need a third-party
 dependency — `ProcType::ZlibDeflate` is kept for wire parity). `no_std`
 targets remain a design goal of the OSAL seam rather than a current feature.
