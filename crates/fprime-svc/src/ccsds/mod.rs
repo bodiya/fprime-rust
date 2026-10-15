@@ -21,6 +21,7 @@ pub mod aos_framer;
 pub mod apid_manager;
 pub mod ccsds_sdls_deframer;
 pub mod ccsds_sdls_framer;
+pub mod cfdp_manager;
 pub mod clear_text_decryptor;
 pub mod clear_text_encryptor;
 pub mod crc16;

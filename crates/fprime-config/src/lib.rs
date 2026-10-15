@@ -358,6 +358,55 @@ pub mod fpy_sequencer {
     pub const MAX_SERIAL_PORTS: FwIndexType = 5;
 }
 
+/// `Svc::Ccsds::CfdpManager` configuration: `default/config/CfdpCfg.fpp`
+/// (FPP module `Svc.Ccsds.Cfdp`) and `default/config/CfdpCfg.hpp`.
+pub mod cfdp {
+    /// Number of CFDP channels (`NumChannels`).
+    pub const NUM_CHANNELS: usize = 2;
+    /// File path size used for CFDP file system operations
+    /// (`MaxFilePathSize`).
+    pub const MAX_FILE_PATH_SIZE: usize = 200;
+    /// Entity id (`EntityId = U32`): the maximum width of an EID; the
+    /// encoded width in a PDU header may be smaller.
+    pub type EntityId = u32;
+    /// Transaction sequence number (`TransactionSeq = U32`).
+    pub type TransactionSeq = u32;
+    /// File size and offset type (`FileSize = U32`).
+    pub type FileSize = u32;
+    /// Maximum transmitted PDU size in bytes (`MaxPduSize`).
+    pub const MAX_PDU_SIZE: usize = 1024;
+    /// Maximum NAK segment requests in one NAK PDU (`NakMaxSegments`).
+    pub const NAK_MAX_SEGMENTS: usize = 58;
+    /// Maximum TLVs per PDU (`MaxTlv`).
+    pub const MAX_TLV: usize = 4;
+    /// R2 CRC calculation chunk size (`R2CrcChunkSize`).
+    pub const R2_CRC_CHUNK_SIZE: usize = 1024;
+    /// Maximum simultaneous file receives per channel (`MaxSimultaneousRx`).
+    pub const MAX_SIMULTANEOUS_RX: usize = 5;
+    /// Maximum outstanding commanded file transmits per channel
+    /// (`MaxCommandedPlaybackFilesPerChan`).
+    pub const MAX_COMMANDED_PLAYBACK_FILES_PER_CHAN: usize = 10;
+    /// Maximum commanded directory playbacks per channel
+    /// (`MaxCommandedPlaybackDirectoriesPerChan`).
+    pub const MAX_COMMANDED_PLAYBACK_DIRECTORIES_PER_CHAN: usize = 2;
+    /// Maximum polling directories per channel (`MaxPollingDirPerChan`).
+    pub const MAX_POLLING_DIR_PER_CHAN: usize = 5;
+    /// Active transfers per playback/polling directory
+    /// (`NumTransactionsPerPlayback`).
+    pub const NUM_TRANSACTIONS_PER_PLAYBACK: usize = 5;
+    /// Completed-transaction history entries per channel
+    /// (`NumHistoriesPerChannel`; 65536 is the maximum).
+    pub const NUM_HISTORIES_PER_CHANNEL: usize = 256;
+    /// RX chunks per transaction, per channel
+    /// (`CFDP_CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION`, `CfdpCfg.hpp`).
+    pub const CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION: [u32; NUM_CHANNELS] =
+        [NAK_MAX_SEGMENTS as u32, NAK_MAX_SEGMENTS as u32];
+    /// TX chunks per transaction, per channel
+    /// (`CFDP_CHANNEL_NUM_TX_CHUNKS_PER_TRANSACTION`, `CfdpCfg.hpp`).
+    pub const CHANNEL_NUM_TX_CHUNKS_PER_TRANSACTION: [u32; NUM_CHANNELS] =
+        [NAK_MAX_SEGMENTS as u32, NAK_MAX_SEGMENTS as u32];
+}
+
 /// SDLS configuration: `Svc/Ccsds/Types/config/SdlsKeyConfig/SdlsKeyCfg.fpp`
 /// and `Svc/Ccsds/SdlsSaRouter/config/SdlsSaRouterConfig/SdlsSaRouterCfg.fpp`
 /// (FPP module `SdlsCfg`).
@@ -508,6 +557,13 @@ mod tests {
         assert_eq!(sdls::SA_ROUTER_MAP_ENTRY_COUNT, 2);
         assert_eq!(sdls::SA_ROUTER_MAX_OUTSTANDING_BUFFERS, 4);
         assert_eq!(sdls::SA_MAP, [(1, 1), (0, 0)]);
+        assert_eq!(cfdp::NUM_CHANNELS, 2);
+        assert_eq!(cfdp::MAX_FILE_PATH_SIZE, 200);
+        assert_eq!(cfdp::MAX_PDU_SIZE, 1024);
+        assert_eq!(cfdp::NAK_MAX_SEGMENTS, 58);
+        assert_eq!(cfdp::MAX_TLV, 4);
+        assert_eq!(cfdp::NUM_HISTORIES_PER_CHANNEL, 256);
+        assert_eq!(cfdp::CHANNEL_NUM_RX_CHUNKS_PER_TRANSACTION, [58, 58]);
     }
 
     #[test]
