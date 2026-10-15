@@ -95,6 +95,20 @@ subsystems, then the strategic changes.
   `productGetOut`/`productSendOut`, `FileChunkHeaderRecord` +
   `FileChunkDataRecord` containers, and the `Ref` topology wiring on `dpMgr`
   index 1.
+- **zlib data-product compression** (item 14). `Svc::DpCompressProc` (the
+  in-place chunking state machine that rewrites a container as
+  `CompressionRecord`s, the `CompressChunk` port, `CompressionAlgorithm` and
+  `CompressionMetadata`) is always built; `Svc::DpZLibCompressor` is behind
+  `fprime-svc`'s off-by-default `zlib` feature, the workspace's first
+  third-party dependency (pure-Rust `miniz_oxide`, so no C toolchain). With
+  the feature off the compressor is not compiled, as upstream's CMake skips
+  it without libz, and an unwired `DpCompressProc` passes products through.
+  The deflate bytes differ from libz's but are standard zlib streams:
+  `fprime-dp` (fprime-gds 4.3.1) decodes a Rust-written compressed `.fdp`
+  back to the original records. Upstream's Ref leaves
+  `DpCompression.Subtopology` commented out, so the Rust Ref and its
+  dictionary are unchanged; `fprime_config::dp_compression` carries the
+  subtopology constants.
 
 ## Next: small follow-ups
 
@@ -123,10 +137,6 @@ the Ref deployment.
 
 13. **`no_std` OSAL seam.** `fprime-os` keeps the seam; making `fprime-fw`
     and `fprime-comp` `no_std` + `alloc` is the first real test of it.
-14. **zlib data-product compression** (`DpZLibCompressor`,
-    `DpCompressProc`). Needs a policy decision on a first third-party
-    dependency (or a vendored deflate); `ProcType::ZlibDeflate` is already on
-    the wire.
 15. **FPP back-end gaps.** The front end is complete; the Rust back end
     still lacks state-machine instances (needs item 11) and serial ports
     (the runtime they would target, `fprime_comp::serial_port`, landed with

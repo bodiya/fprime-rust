@@ -20,7 +20,9 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
   priority), rate groups, command registration/dispatch, event filtering and
   throttling, double-buffered telemetry storage, health pings.
 - **Flight-software discipline**: `#![forbid(unsafe_code)]` everywhere, zero
-  third-party dependencies, no steady-state heap allocation (allocate at
+  third-party dependencies in the default build (the only exceptions sit
+  behind optional, off-by-default cargo features: `fprime-svc/zlib` for
+  data-product compression), no steady-state heap allocation (allocate at
   init, recycle after), status enums with the C++ discriminants, `fw_assert`
   for invariants.
 - **A runnable reference deployment** (`fprime-ref`) mirroring the C++ `Ref`
@@ -78,6 +80,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
+# Also build/test the zlib data-product compressor (pulls in miniz_oxide)
+cargo test --workspace --features fprime-svc/zlib
+
 # Run the reference deployment standalone (1 Hz rate loop; type "quit" to stop)
 cargo run -p fprime-ref
 
@@ -89,7 +94,8 @@ cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000
 cargo run -p fprime-ref -- --data-dir ./run-data
 ```
 
-Requires stable Rust (edition 2024). No external crates.
+Requires stable Rust (edition 2024). No external crates in the default build;
+the optional `zlib` feature adds `miniz_oxide` (pure Rust).
 
 ## Porting status
 
@@ -108,7 +114,7 @@ Requires stable Rust (edition 2024). No external crates.
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
 | File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), CFDP checksum |
-| Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit) |
+| Data products | `DpManager`, `BufferAccumulator`, `DpWriter`, `DpCatalog` (`.fdp` files, catalog transmit), `DpCompressProc` (in-place chunked compression into `CompressionRecord`s) and `DpZLibCompressor` (zlib streams via pure-Rust `miniz_oxide`; only with the off-by-default `zlib` feature of `fprime-svc`) |
 | Comms stack (F Prime) | `FprimeFramer`, `FprimeDeframer`, `FrameAccumulator` + `FprimeFrameDetector`, `FprimeRouter`, `ComQueue`, `ComStub` (synchronous and asynchronous driver paths), `BufferManager`, `ComLogger` |
 | Hub pattern | `GenericHub` (events, telemetry, serialized typed port calls, buffers and remote command dispatch/response between deployments; byte-exact hub wire format) |
 | Comms stack (CCSDS) | CRC-16 frame error control, Space Packet primary header, TM/TC transfer frames, `ApidManager`, `SpacePacketFramer`/`SpacePacketDeframer`, `TmFramer`, `TcDeframer`, `CcsdsTcFrameDetector` (TC uplink frame synchronizer for `FrameAccumulator`) |
@@ -140,9 +146,11 @@ can supply real hardware access without forking the component:
 
 State-machine autocoding in `fpp-to-rust` (the front end parses state
 machines; the back end does not generate them yet), `FpySequencer`,
-state-machine autocoding (`Fw/Sm`), the SDLS security layer, and zlib data-product compression
-(`DpZLibCompressor`/`DpCompressProc`, which would need a third-party
-dependency — `ProcType::ZlibDeflate` is kept for wire parity). `no_std`
+state-machine autocoding (`Fw/Sm`) and the SDLS security
+layer. Data-product compression is ported, but `DpZLibCompressor` is only
+compiled with `fprime-svc`'s `zlib` feature, and the Rust Ref, like
+upstream's (where `DpCompression.Subtopology` is commented out), does not
+instantiate it. `no_std`
 targets remain a design goal of the OSAL seam rather than a current feature.
 The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

@@ -1190,7 +1190,7 @@ configure (DpWriter/DpCatalog) -> reg_commands -> active.start.
 
 DELIBERATE DEVIATIONS (each documented in the module headers)
 
-1. zlib is OUT OF SCOPE, as instructed: `Svc::DpZLibCompressor` and `Svc::DpCompressProc` are not ported (they call libz; the workspace has zero third-party deps). `ProcType::ZlibDeflate` (0x01) is kept for wire parity and DpWriter's 5-port `procTypes & (1<<portNum)` fan-out is ported verbatim, so any processing component can be wired later. With nothing connected procTypes is 0x00 and `perform_processing` is a no-op; the rest of the chain is fully functional.
+1. (Superseded by ROADMAP item 14 — see "fprime-svc: data-product compression" at the end of this file.) zlib is OUT OF SCOPE, as instructed: `Svc::DpZLibCompressor` and `Svc::DpCompressProc` are not ported (they call libz; the workspace has zero third-party deps). `ProcType::ZlibDeflate` (0x01) is kept for wire parity and DpWriter's 5-port `procTypes & (1<<portNum)` fan-out is ported verbatim, so any processing component can be wired later. With nothing connected procTypes is 0x00 and `perform_processing` is a no-op; the rest of the chain is fully functional.
 
 2. Home of the port traits: DpGet/DpRequest/DpResponse/DpSend are defined in `fprime_fw::dp` (they are declared in `Fw/Dp/Dp.fpp` next to `DpState` and are meaningless without `DpContainer`; `fprime-comp` is not writable by this task). `Svc.DpWritten` is defined in `fprime_svc::dp_writer`, next to its only emitter (Svc/DpPorts holds nothing else). Both are `: Send + Sync` object-safe traits and work with `fprime_comp::OutputPort<dyn ...>` unchanged.
 
@@ -2067,3 +2067,133 @@ response coming back to A, a `Svc.Ping` round trip through both hubs' serial
 ports, and a buffer — ending with zero buffers outstanding on both sides.
 The upstream Ref has no hub, so neither does the Rust Ref (no dictionary
 change).
+
+### fprime-svc: data-product compression — `DpCompressProc`, `DpZLibCompressor` (ROADMAP item 14)
+
+Ports `Svc/DpCompressProc` (with `Types/CompressionTypes.fpp` and
+`Ports/CompressChunk.fpp`) and `Svc/DpZLibCompressor` (with `Types/ZLib.fpp`)
+at 4dee010, plus their unit tests.
+
+```
+Cargo: fprime-svc feature `zlib` (off by default) = dep:miniz_oxide 0.9
+       (pure Rust, default-features = false + with-alloc; pulls adler2).
+       The default build has no third-party dependency.
+
+fprime_svc::dp_compress_proc          (always built)
+  fpp_enum CompressionAlgorithm : u8 { Uncompressed = 0, ZlibDeflate = 1 }
+  fpp_struct CompressionMetadata { algorithm }            // SERIALIZED_SIZE 1
+  ChunkBuffer<'a>   new(&mut [u8]); size(); set_size(); capacity(); data(); data_mut()
+  trait CompressChunkPort: invoke(port, &mut ChunkBuffer, min_compression, write_offset)
+                           -> CompressionAlgorithm
+  COMPRESSION_HEADER_SIZE = 7      // FwDpIdType + FwSizeStoreType + metadata
+  DpCompressProc (passive)
+    new(name) -> Arc; reg_commands(); load_parameters()
+    param_get_chunk_size() -> (u16, ParamValid); param_get_enable() -> (Enabled, ParamValid)
+    clear_event_throttles()
+    Inputs:  proc_request(n) (sync, DpProcPort — DpWriter.procBufferSendOut[n]),
+             cmd_in(n) (sync Fw.Cmd)
+    Outputs: compress_chunk (optional), dp_get / dp_send (declared, unused),
+             cmd / evt / prm glue
+    OPCODE_CHUNK_SIZE_PRM_SET/SAVE = 0/1, OPCODE_ENABLE_PRM_SET/SAVE = 2/3
+    PARAMID_CHUNK_SIZE = 0 (u16, default 32768), PARAMID_ENABLE = 1 (default ENABLED)
+    EVENTID_COMPRESSION_COMPLETE 0 (DIAGNOSTIC), _DID_NOT_COMPRESS 1 (ACTIVITY_LO),
+      _INVALID_HEADER 2, _BUFFER_TOO_SMALL_FOR_PACKET 3, _CONTAINER_TOO_LARGE 4
+      (WARNING_HI); 1..=4 throttle 10
+    RECORDID_COMPRESSION_RECORD = 0 (U8 array), CONTAINERID_DUMMY = 0
+
+fprime_svc::dp_zlib_compressor        (#[cfg(feature = "zlib")])
+  fpp_enum ZLibData : i32 { Binary = 0, Text = 1 }        // declared upstream, unused
+  Z_STREAM_ERROR = -2, Z_MEM_ERROR = -4, Z_BUF_ERROR = -5, Z_DEFAULT_COMPRESSION = -1
+  ZLIB_DEFLATE_MEMORY = 268096; ZLIB_UINT_MAX = u32::MAX
+  DpZLibCompressor (passive)
+    new(name) -> Arc (allocates the encoder); reg_commands(); load_parameters()
+    param_get_compression_level() -> (i8, ParamValid)
+    param_get_zlib_buffer_size() -> (FwSizeType, ParamValid); clear_event_throttles()
+    Inputs:  compress_chunk(n) (sync CompressChunkPort), cmd_in(n)
+    Outputs: buffer_compression_get/_return, buffer_zlib_get/_return, cmd/evt/prm glue
+    OPCODE_COMPRESSIONLEVEL_PRM_SET/SAVE = 0/1, OPCODE_ZLIBBUFFERSIZE_PRM_SET/SAVE = 2/3
+    PARAMID_COMPRESSION_LEVEL = 0 (i8, default 6), PARAMID_ZLIB_BUFFER_SIZE = 1 (default 269000)
+    EVENTID_ZLIB_COMPRESSION_BAD_BUFFER 0, _ZLIB_ALLOC_BAD_BUFFER 1, _ZLIB_INIT_ERROR 2,
+      _ZLIB_DEFLATE_ERROR 3, _BUFFER_TOO_BIG_FOR_ZLIB 4 (WARNING_LO, throttle 5);
+      _ZLIB_NO_COMPRESSION 5, _ZLIB_COMPRESSION 6, _ZLIB_MEMORY_USAGE 7 (DIAGNOSTIC)
+
+fprime_config::dp_compression   BASE_ID 0x04100000, COMPRESSION_BUFFER_STORE_SIZE 32 KiB x2,
+                                ALLOC_BUFFER_STORE_SIZE 269000 x2, BUFFER_MANAGER_ID 301
+```
+
+All ids, opcodes and the two types were checked against a dictionary generated
+with the three subtopology instances added to the Ref model (not committed).
+
+Behaviour as upstream. `DpCompressProc` bypasses on `ENABLE = DISABLED` or an
+unconnected `compressChunk`, rejects a buffer under `MIN_PACKET_SIZE`, an
+undeserializable header, a buffer of 65535 bytes or more (record sizes are
+`FwSizeStoreType`) and a header data size past the buffer, then cuts the data
+region into `min(CHUNK_SIZE, dataSize)` chunks. Chunks over 4 headers (28 bytes)
+are offered with `min_compression`/`write_offset` of `chunk − 2h`/`h` (`INIT`,
+`LAST_*`) or `chunk − 3h`/`2h` (`PRE_COMMIT`), and the C++ state machine rewrites
+the region in place: one record per compressed chunk, one per run of raw chunks,
+the leading raw run moved up by a header when the first compressible chunk
+appears. Nothing compressed → `DidNotCompress` and the bytes are untouched;
+otherwise `CompressionComplete`, the header's data size is set and the header
+re-serialized. `DpWriter` re-reads the header, shrinks the buffer and hashes the
+compressed data. Each record is `[idBase + 0 : u32][1 + n : u16][algorithm : u8]
+[n bytes]`; fprime-gds's decoder matches `dpCompressProc.CompressionRecord` by
+name, inflates and re-decodes, so the instance must be named `dpCompressProc`.
+Checked live: a Rust-written compressed `.fdp` (twelve records, 11306 → 3789
+bytes) decoded with `fprime-dp decode` (fprime-gds 4.3.1) to the original 1101
+records. `DpZLibCompressor` gets a `min_compression`-byte scratch buffer, then a
+`ZLibBufferSize` arena (each failure: event, return what was obtained,
+`UNCOMPRESSED`), runs `deflateInit(level)` + one `deflate(Z_FINISH)`, and on
+`Z_STREAM_END` copies the stream into the chunk at `write_offset` and emits
+`ZLibCompression` + `ZLibMemoryUsage`; otherwise `ZLibNoCompression` (plus
+`ZLibDeflateError` on a real error). Both buffers always go back.
+
+Deviations:
+
+- **Encoder.** `miniz_oxide` instead of libz: the stream is standard zlib, but its
+  bytes and length differ, so the "compressed output larger than the buffer"
+  threshold falls at slightly different sizes (upstream's `AboveMinSize` test
+  pins libz's 52 bytes for 32 KiB of zeros; the port finds the encoder's own
+  length). Levels behave as `deflateInit`: −1 → 6, 0–9 accepted, anything else
+  `ZLibInitError(Z_STREAM_ERROR, "")`.
+- **Working memory.** C++ runs zlib's allocator over the `bufferZLibGet` arena.
+  `miniz_oxide` cannot use an external arena, so the encoder is allocated once in
+  `new` and reset per chunk (no steady-state allocation). The arena is still
+  requested and returned; one smaller than `ZLIB_DEFLATE_MEMORY` (zlib's
+  `deflateInit` need for `windowBits` 15 / `memLevel` 8, the figure upstream's
+  `InsufficientZLibMem` test pins) fails as `deflateInit` would
+  (`ZLibInitError(Z_MEM_ERROR, "insufficient memory")`), and `ZLibMemoryUsage`
+  reports that figure. The encoder is behind a mutex, so concurrent calls run one
+  at a time; resetting it may use about 64 KiB of stack in unoptimized builds.
+- **Ports.** `procRequest` is a `DpProcPort` (borrows the buffer, like the rest of
+  `DpWriter`'s fan-out); `CompressChunk`'s `ref Fw.Buffer` view becomes a
+  `ChunkBuffer` borrow of the chunk.
+- **Parameter commands** use the workspace convention (`FORMAT_ERROR` for a
+  short/long argument, `VALIDATION_ERROR` for a bad `Fw.Enabled`,
+  `EXECUTION_ERROR` for a save with `prmSetOut` unwired). `load_parameters`
+  follows the generated C++: a `VALID` value that deserializes, else the FPP
+  default with `DEFAULT`. Before it runs both components `fw_assert` on
+  `FW_PARAM_OK`, as in C++.
+- `ZLibDeflateError` carries an empty message (no `strm->msg`).
+- **Feature off.** `DpZLibCompressor` is not compiled, as upstream's CMake drops
+  it without libz; `DpCompressProc` still builds and, with nothing on
+  `compressChunk`, passes products through.
+- **Ref.** Upstream's Ref has `DpCompression.Subtopology` and its rate-group and
+  `dpWriterProcOut[0]` connections commented out, so neither the Rust Ref nor its
+  dictionary changes. To wire it in a deployment built with `--features
+  fprime-svc/zlib`: instantiate the three components at
+  `fprime_config::dp_compression::BASE_ID` (+0, +0x1000, +0x2000), set up the
+  buffer manager with the two `dp_compression` bins, connect
+  `dpWriter.proc_buffer_send_out[0]` to `dpCompressProc.proc_request(0)`,
+  `compress_chunk` to the compressor, both buffer port pairs to the manager, the
+  manager's `sched_in` to a rate group, and add the instances to the FPP model
+  before regenerating the dictionary. `crates/fprime-svc/tests/dp_compression.rs`
+  wires exactly this.
+
+Tests port all eight `DpZLibCompressorTestMain` cases (every compressed chunk
+inflated back and compared) and all `DpCompressProcTestMain` cases with the same
+scripted compressor (the `Random` rule runs 2000 iterations from a fixed seed
+rather than 10000 time-seeded ones), plus the error branches, the threshold and
+offset arithmetic, the record wire bytes, throttles and the parameter commands.
+The integration test runs `DpWriter` → `DpCompressProc` → `DpZLibCompressor` →
+`BufferManager` and decodes the `.fdp` file the way the ground does.

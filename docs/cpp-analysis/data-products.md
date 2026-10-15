@@ -77,6 +77,11 @@ Files: `Svc/FileDownlinkPorts/FileDownlinkPorts.fpp`
 
 ### zlib-dependent components (OUT OF SCOPE)
 
+> Later ported as ROADMAP item 14: `fprime_svc::dp_compress_proc` (always
+> built) and `fprime_svc::dp_zlib_compressor` (behind the off-by-default
+> `zlib` cargo feature, on pure-Rust `miniz_oxide`). The analysis below is
+> kept as written; see `docs/api-notes.md` for the port.
+
 Files: `Svc/DpZLibCompressor/DpZLibCompressor.fpp`, `Svc/DpCompressProc/DpCompressProc.fpp`, `Svc/DpCompressProc/Ports/CompressChunk.fpp`, `Svc/DpCompressProc/Types/CompressionTypes.fpp`
 
 Svc::DpCompressProc (passive) hangs off DpWriter.procBufferSendOut and drives Svc::DpZLibCompressor (passive) via `port CompressChunk(ref buffer: Fw.Buffer, min_compression: FwSizeType, write_offset: FwSizeType) -> Svc.CompressionAlgorithm`; `enum CompressionAlgorithm: U8 { UNCOMPRESSED=0, ZLIB_DEFLATE=1 }`; `dictionary struct CompressionMetadata { algorithm: CompressionAlgorithm }`. DpZLibCompressor calls libz deflateInit/deflate directly. These are NOT portable to zero-dependency Rust and are OUT OF SCOPE. The only coupling to the in-scope components is the ProcType bit mask: DpWriter fans out on bit index (1<<portNum) over 5 procBufferSendOut ports, bit 0 == PROC_TYPE_ZLIB_DEFLATE. With no processing components wired, procTypes is 0x00 and performProcessing is a no-op — the rest of the pipeline is fully functional.

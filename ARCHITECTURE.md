@@ -25,7 +25,11 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
 4. **Flight-software discipline**: no heap allocation in steady state (allocate
    at initialization, recycle after), bounded loops, explicit handling of every
    status, no `unwrap()` outside tests and init-time invariants.
-5. **Zero third-party dependencies.** The framework uses only `std`.
+5. **Zero third-party dependencies.** The framework uses only `std`. The
+   only exceptions are optional cargo features that are off by default and
+   pull in a pure-Rust crate for one component: `fprime-svc`'s `zlib`
+   (`miniz_oxide`, for `Svc::DpZLibCompressor`). The default build stays
+   dependency-free.
 
 **Non-goals (phase 1)**
 
@@ -41,12 +45,14 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   express faithfully stays hand-written — the macros never half-work.
 - No `no_std` support yet (the OSAL keeps a clean seam for it).
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
-  FpySequencer, state-machine autocoding (`Fw/Sm`), the
-  SDLS/AOS CCSDS siblings and zlib data-product compression. Everything
+  FpySequencer, state-machine autocoding (`Fw/Sm`) and the
+  SDLS/AOS CCSDS siblings. Everything
   listed as a phase-1 gap in earlier revisions of this document
   (CmdSequencer, file services, data products, TlmPacketizer, the CCSDS
   stack, ComLogger, the Linux drivers, ActiveTextLogger, GenericHub with
-  the serialize ports it needs) has since been ported.
+  the serialize ports it needs) has since been ported, as has zlib
+  data-product compression (`DpCompressProc` always, `DpZLibCompressor`
+  behind the `zlib` feature).
 
 ## Workspace layout
 
