@@ -130,7 +130,6 @@ fn per_cycle_pdu_throttle_spreads_file_data_over_cycles() {
         assert!(cfg.serialize_to(&mut buf, Endianness::Big).is_ok());
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, buf.as_slice().to_vec());
     });
     let dir = temp_dir();
@@ -467,7 +466,6 @@ fn rx_eof_md_size_mismatch_and_rename_failure() {
             assert!(cfg.serialize_to(&mut buf, Endianness::Big).is_ok());
             g.prm_db
                 .lock()
-                .unwrap()
                 .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, buf.as_slice().to_vec());
         })
     };
@@ -887,7 +885,6 @@ fn tx_inactivity_timeout_with_a_long_ack_timer() {
         assert!(cfg.serialize_to(&mut buf, Endianness::Big).is_ok());
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, buf.as_slice().to_vec());
     });
     let (seq, _) = s2_in_closeout(&h, 100);
@@ -914,7 +911,6 @@ fn file_remove_failed_and_fail_keep_file_move() {
         assert!(cfg.serialize_to(&mut buf, Endianness::Big).is_ok());
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, buf.as_slice().to_vec());
     });
     let src = path_in(&dir, "del.bin");
@@ -936,7 +932,6 @@ fn file_remove_failed_and_fail_keep_file_move() {
     let h2 = Harness::with_params(|g| {
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, {
                 let mut cfg = ChannelArrayParams::fpp_default();
                 cfg[0].max_outgoing_pdus_per_cycle = 2;
@@ -1105,10 +1100,7 @@ fn event_text_matches_the_fpp_format() {
             _severity: LogSeverity,
             text: &mut fprime_fw::TextLogString,
         ) {
-            self.0
-                .lock()
-                .unwrap()
-                .push(text.as_str().unwrap_or("").to_string());
+            self.0.lock().push(text.as_str().unwrap_or("").to_string());
         }
     }
     let h = Harness::new();
@@ -1118,7 +1110,7 @@ fn event_text_matches_the_fpp_format() {
         .log_warning_lo_rx_crc_mismatch(Class::Class2, 100, 7, 0xAB, 0xCD);
     h.comp.log_activity_lo_set_flow_state(1, Flow::Frozen);
     assert_eq!(
-        *text.0.lock().unwrap(),
+        *text.0.lock(),
         [
             "RX class CLASS_2 transaction 100:7 CRC mismatch: expected 0xab actual 0xcd",
             "Set channel 1 to FROZEN"

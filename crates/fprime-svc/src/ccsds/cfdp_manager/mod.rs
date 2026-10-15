@@ -104,6 +104,7 @@ use fprime_config::{
     FwEventIdType, FwIdType, FwIndexType, FwOpcodeType, FwPacketDescriptorType, FwPrmIdType,
     FwQueuePriorityType, FwSizeType,
 };
+use fprime_fw::sync::{Arc, Mutex};
 use fprime_fw::{
     Buffer, CmdArgBuffer, CmdResponse, CmdStringArg, ComPacketType, Deserialize, Enabled,
     Endianness, FwDefaultString, LengthMode, LinearBuffer, LogBuffer, LogSeverity, ParamBuffer,
@@ -111,7 +112,6 @@ use fprime_fw::{
 };
 use fprime_os::queue::{BlockingType, Queue, Status as QueueStatus};
 use std::fmt::{self, Write as _};
-use std::sync::{Arc, Mutex};
 
 /// C++ `CfdpManager::PACKET_DESCRIPTOR_SIZE`: the `FwPacketDescriptorType`
 /// prefixed to every PDU buffer.
@@ -478,8 +478,8 @@ impl CfdpManager {
     /// every channel's pools, zero the telemetry, and create the `fileIn`
     /// handoff queue (asserts that it is created).
     pub fn configure(&self, file_queue_depth: FwSizeType) {
-        *self.engine.lock().unwrap() = Some(Engine::new());
-        *self.file_in_queue_depth.lock().unwrap() = file_queue_depth;
+        *self.engine.lock() = Some(Engine::new());
+        *self.file_in_queue_depth.lock() = file_queue_depth;
         let status = self.file_in_queue.create(
             "cfdpFileInQueue",
             file_queue_depth,
@@ -490,7 +490,7 @@ impl CfdpManager {
 
     /// C++ `cleanup`: release the engine.
     pub fn cleanup(&self) {
-        *self.engine.lock().unwrap() = None;
+        *self.engine.lock() = None;
     }
 
     fn id_base(&self) -> FwIdType {
@@ -507,7 +507,7 @@ impl CfdpManager {
     /// Run `f` on the engine (asserts `configure` was called — C++
     /// `FW_ASSERT(m_engine != nullptr)`).
     pub(crate) fn with_engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
-        let mut guard = self.engine.lock().unwrap();
+        let mut guard = self.engine.lock();
         fw_assert!(guard.is_some());
         match guard.as_mut() {
             Some(engine) => f(engine),
@@ -520,7 +520,7 @@ impl CfdpManager {
     /// The generated `loadParameters()`.
     pub fn load_parameters(&self) {
         let id_base = self.id_base();
-        let mut p = self.params.lock().unwrap();
+        let mut p = self.params.lock();
         macro_rules! load {
             ($field:ident, $id:expr, $default:expr) => {{
                 let mut buf = ParamBuffer::new();
@@ -579,7 +579,7 @@ impl CfdpManager {
     /// Read one parameter, asserting it is usable (`FW_PARAM_OK`: every
     /// CFDP parameter has a default, so anything else is a coding error).
     fn param<T: Clone>(&self, get: impl FnOnce(&CfdpParams) -> &Param<T>) -> T {
-        let p = self.params.lock().unwrap();
+        let p = self.params.lock();
         let param = get(&p);
         fw_assert!(param.valid.is_ok(), param.valid.as_repr() as i32);
         param.value.clone()
@@ -587,7 +587,7 @@ impl CfdpManager {
 
     /// `paramGet_<name>` for tests and tools: the value and its validity.
     fn param_get<T: Clone>(&self, get: impl FnOnce(&CfdpParams) -> &Param<T>) -> (T, ParamValid) {
-        let p = self.params.lock().unwrap();
+        let p = self.params.lock();
         let param = get(&p);
         (param.value.clone(), param.valid)
     }
@@ -684,7 +684,7 @@ impl CfdpManager {
             i32::from(channel),
             NUM_CHANNELS as i32
         );
-        let p = self.params.lock().unwrap();
+        let p = self.params.lock();
         fw_assert!(
             p.channel_config.valid.is_ok(),
             p.channel_config.valid.as_repr() as i32
@@ -748,7 +748,7 @@ impl CfdpManager {
 
     /// The generated `<PARAM>_PRM_SET` handler.
     fn param_set(&self, id: FwPrmIdType, args: &mut CmdArgBuffer) -> CmdResponse {
-        let mut p = self.params.lock().unwrap();
+        let mut p = self.params.lock();
         match id {
             Self::PARAMID_LOCAL_EID => set_param(&mut p.local_eid, args),
             Self::PARAMID_OUTGOING_FILE_CHUNK_SIZE => {
@@ -786,7 +786,7 @@ impl CfdpManager {
         }
         let mut buf = ParamBuffer::new();
         let status = {
-            let p = self.params.lock().unwrap();
+            let p = self.params.lock();
             let value: &dyn Serialize = match id {
                 Self::PARAMID_LOCAL_EID => &p.local_eid.value,
                 Self::PARAMID_OUTGOING_FILE_CHUNK_SIZE => &p.outgoing_file_chunk_size.value,
@@ -909,7 +909,7 @@ impl CfdpManager {
     /// `FileInDefault*` parameters on the component thread; a failed start
     /// (or an out-of-range default channel) is reported on `fileDoneOut`.
     pub(crate) fn drain_file_in_queue(&self, engine: &mut Engine) {
-        let depth = *self.file_in_queue_depth.lock().unwrap();
+        let depth = *self.file_in_queue_depth.lock();
         for _ in 0..depth {
             let mut msg = LinearBuffer::<FILE_IN_REQUEST_SIZE>::new();
             let mut priority: FwQueuePriorityType = 0;
@@ -1557,7 +1557,7 @@ impl SendFileRequestPort for CfdpManager {
         offset: u32,
         length: u32,
     ) -> SendFileResponse {
-        let _guard = self.guard.lock().unwrap();
+        let _guard = self.guard.lock();
         let context = port_num as u32;
         // Partial-file retransmit is not supported.
         if offset > 0 || length > 0 {

@@ -25,11 +25,11 @@ use crate::ccsds::cfdp_manager::transaction::TxnIdx;
 use fprime_comp::queued::MsgDispatchStatus as DispatchStatus;
 use fprime_comp::{CmdRegPort, CmdResponsePort, LogPort, PrmGetPort, PrmSetPort, TlmPort};
 use fprime_config::cfdp::{MAX_COMMANDED_PLAYBACK_FILES_PER_CHAN, MAX_PDU_SIZE};
+use fprime_fw::sync::{AtomicBool, AtomicU32, Ordering};
 use fprime_fw::{ExtBuf, ParamBuffer, Time, TlmBuffer};
 use fprime_utils::cfdp::Checksum;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub(super) const ID_BASE: FwIdType = 0x4000;
 pub(super) const TEST_GROUND_EID: EntityId = 100;
@@ -85,14 +85,14 @@ pub(super) struct Ground {
 
 impl Ground {
     pub fn clear(&self) {
-        self.events.lock().unwrap().clear();
-        self.tlm.lock().unwrap().clear();
-        self.cmd_responses.lock().unwrap().clear();
-        self.data_out.lock().unwrap().clear();
-        self.deallocated.lock().unwrap().clear();
-        self.data_in_returned.lock().unwrap().clear();
-        self.file_done.lock().unwrap().clear();
-        self.pings.lock().unwrap().clear();
+        self.events.lock().clear();
+        self.tlm.lock().clear();
+        self.cmd_responses.lock().clear();
+        self.data_out.lock().clear();
+        self.deallocated.lock().clear();
+        self.data_in_returned.lock().clear();
+        self.file_done.lock().clear();
+        self.pings.lock().clear();
     }
 }
 
@@ -107,7 +107,6 @@ impl LogPort for Ground {
     ) {
         self.events
             .lock()
-            .unwrap()
             .push((id - ID_BASE, severity, args.as_slice().to_vec()));
     }
 }
@@ -122,7 +121,6 @@ impl TlmPort for Ground {
     ) {
         self.tlm
             .lock()
-            .unwrap()
             .push((id - ID_BASE, val.as_slice().to_vec()));
     }
 }
@@ -137,7 +135,6 @@ impl CmdResponsePort for Ground {
     ) {
         self.cmd_responses
             .lock()
-            .unwrap()
             .push((op_code - ID_BASE, cmd_seq, response));
     }
 }
@@ -148,7 +145,7 @@ impl CmdRegPort for Ground {
 
 impl PingPort for Ground {
     fn invoke(&self, _port_num: FwIndexType, key: u32) {
-        self.pings.lock().unwrap().push(key);
+        self.pings.lock().push(key);
     }
 }
 
@@ -166,13 +163,13 @@ impl BufferGetPort for Ground {
 
 impl SendFileCompletePort for Ground {
     fn invoke(&self, _port_num: FwIndexType, resp: SendFileResponse) {
-        self.file_done.lock().unwrap().push(resp);
+        self.file_done.lock().push(resp);
     }
 }
 
 impl PrmGetPort for Ground {
     fn invoke(&self, _port_num: FwIndexType, id: FwPrmIdType, val: &mut ParamBuffer) -> ParamValid {
-        match self.prm_db.lock().unwrap().get(&(id - ID_BASE)) {
+        match self.prm_db.lock().get(&(id - ID_BASE)) {
             Some(bytes) => {
                 val.reset_ser();
                 assert!(
@@ -190,7 +187,6 @@ impl PrmSetPort for Ground {
     fn invoke(&self, _port_num: FwIndexType, id: FwPrmIdType, val: &mut ParamBuffer) {
         self.prm_sets
             .lock()
-            .unwrap()
             .push((id - ID_BASE, val.as_slice().to_vec()));
     }
 }
@@ -215,19 +211,16 @@ impl BufferSendPort for Sink {
                 .ground
                 .data_out
                 .lock()
-                .unwrap()
                 .push((port_num, buffer.data().to_vec())),
             SinkKind::Deallocate => self
                 .ground
                 .deallocated
                 .lock()
-                .unwrap()
                 .push((port_num, buffer.size())),
             SinkKind::DataInReturn => self
                 .ground
                 .data_in_returned
                 .lock()
-                .unwrap()
                 .push((port_num, buffer.size())),
         }
     }
@@ -430,13 +423,7 @@ impl Harness {
 
     /// Ids of the events emitted, in order.
     pub fn event_ids(&self) -> Vec<FwEventIdType> {
-        self.ground
-            .events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|e| e.0)
-            .collect()
+        self.ground.events.lock().iter().map(|e| e.0).collect()
     }
 
     /// Argument bytes of every emitted event `id`.
@@ -444,7 +431,6 @@ impl Harness {
         self.ground
             .events
             .lock()
-            .unwrap()
             .iter()
             .filter(|e| e.0 == id)
             .map(|e| e.2.clone())
@@ -453,7 +439,7 @@ impl Harness {
 
     /// The command responses.
     pub fn cmd_responses(&self) -> Vec<(FwOpcodeType, u32, CmdResponse)> {
-        self.ground.cmd_responses.lock().unwrap().clone()
+        self.ground.cmd_responses.lock().clone()
     }
 
     /// The PDUs sent, without their descriptors.
@@ -461,7 +447,6 @@ impl Harness {
         self.ground
             .data_out
             .lock()
-            .unwrap()
             .iter()
             .map(|(_, b)| {
                 assert_eq!(&b[..2], &[0x00, 0x03], "FW_PACKET_FILE descriptor");
@@ -472,7 +457,7 @@ impl Harness {
 
     /// The latest `ChannelTelemetry` value.
     pub fn tlm(&self) -> ChannelTelemetryArray {
-        let tlm = self.ground.tlm.lock().unwrap();
+        let tlm = self.ground.tlm.lock();
         let (id, bytes) = tlm.last().expect("telemetry written");
         assert_eq!(*id, CfdpManager::CHANID_CHANNEL_TELEMETRY);
         let mut buf = TlmBuffer::new();
@@ -487,7 +472,7 @@ impl Harness {
 
     /// The `fileDoneOut` responses.
     pub fn file_done(&self) -> Vec<SendFileResponse> {
-        self.ground.file_done.lock().unwrap().clone()
+        self.ground.file_done.lock().clone()
     }
 
     /// Upstream's `waitForTransactionRecycle`: clear the history and run

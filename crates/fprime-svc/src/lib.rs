@@ -27,8 +27,8 @@
 //! `std`-only (they need a file system or the host OS): `file_uplink`,
 //! `file_downlink`, `file_manager`, `prm_db`, `dp_writer`, `dp_catalog`,
 //! `com_logger`, `cmd_sequencer`, `fpy_sequencer` (sequence files),
-//! `system_resources` (procfs and file-system usage) and
-//! `ccsds::sdls_file_key_manager`. See ARCHITECTURE.md "no_std".
+//! `system_resources` (procfs and file-system usage),
+//! `ccsds::sdls_file_key_manager` and `ccsds::cfdp_manager`. See ARCHITECTURE.md "no_std".
 
 // The std build keeps the std prelude (the file-based components are
 // hosted code); only the `no_std` build drops it. Unit tests always run on

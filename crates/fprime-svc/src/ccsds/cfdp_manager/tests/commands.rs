@@ -700,7 +700,7 @@ fn data_in_ignores_short_buffers_and_other_packet_types() {
     let h = Harness::new();
     h.send_raw(CH0, &[0x00]);
     h.send_raw(CH0, &[0x00, 0x00, 0, 0, 0, 0, 0, 0]);
-    assert_eq!(*h.ground.data_in_returned.lock().unwrap(), [(0, 1), (0, 8)]);
+    assert_eq!(*h.ground.data_in_returned.lock(), [(0, 1), (0, 8)]);
     assert!(h.event_ids().is_empty());
     h.run_cycle();
     assert_eq!(h.tlm()[0].recv_pdu, 0);
@@ -797,7 +797,6 @@ fn file_in_with_invalid_default_channel_reports_invalid() {
     let h = Harness::with_params(|g| {
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_FILE_IN_DEFAULT_CHANNEL, vec![9]);
     });
     let p = h.comp.file_in(0);

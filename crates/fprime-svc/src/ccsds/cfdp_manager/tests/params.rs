@@ -182,7 +182,7 @@ fn prm_save_pushes_the_value_to_the_database() {
     let rsp = prm_set(&h, CfdpManager::OPCODE_FILEINDEFAULTKEEP_PRM_SAVE, |_| {});
     assert_eq!(rsp, CmdResponse::Ok);
     assert_eq!(
-        *h.ground.prm_sets.lock().unwrap(),
+        *h.ground.prm_sets.lock(),
         [
             (CfdpManager::PARAMID_LOCAL_EID, vec![0, 0, 0, 42]),
             (CfdpManager::PARAMID_FILE_IN_DEFAULT_KEEP, vec![0]),
@@ -193,7 +193,7 @@ fn prm_save_pushes_the_value_to_the_database() {
 #[test]
 fn database_values_load_as_valid() {
     let h = Harness::with_params(|g| {
-        let mut db = g.prm_db.lock().unwrap();
+        let mut db = g.prm_db.lock();
         db.insert(CfdpManager::PARAMID_LOCAL_EID, vec![0, 0, 1, 0]);
         // A value that does not deserialize falls back to the default.
         db.insert(CfdpManager::PARAMID_OUTGOING_FILE_CHUNK_SIZE, vec![1]);

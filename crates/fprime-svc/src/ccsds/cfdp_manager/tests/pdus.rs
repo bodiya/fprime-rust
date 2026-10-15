@@ -1032,7 +1032,7 @@ fn engine_send_fd_counts_data_bytes() {
         assert_eq!(c.send_fd(&mgr, &fd), Status::Success);
         assert_eq!(c.tlm.sent_file_data_bytes, 64);
     });
-    let (port, bytes) = h.ground.data_out.lock().unwrap()[0].clone();
+    let (port, bytes) = h.ground.data_out.lock()[0].clone();
     assert_eq!(port, 1, "dataOut port = channel");
     let rx = decode_fd(&bytes[2..]);
     assert_eq!((rx.get_offset(), rx.get_data()), (50, &data[..]));

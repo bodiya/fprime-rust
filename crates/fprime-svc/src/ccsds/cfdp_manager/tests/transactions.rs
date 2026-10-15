@@ -1073,7 +1073,7 @@ fn ping_is_echoed() {
     let p = h.comp.ping_in(0);
     p.target.invoke(p.port_num, 1234);
     h.dispatch();
-    assert_eq!(*h.ground.pings.lock().unwrap(), [1234]);
+    assert_eq!(*h.ground.pings.lock(), [1234]);
 }
 
 #[test]
@@ -1084,7 +1084,7 @@ fn data_return_in_deallocates_on_the_same_port() {
         p.target.invoke(p.port_num, Buffer::allocate(16));
         h.dispatch();
     }
-    assert_eq!(*h.ground.deallocated.lock().unwrap(), [(0, 16), (1, 16)]);
+    assert_eq!(*h.ground.deallocated.lock(), [(0, 16), (1, 16)]);
 }
 
 #[test]
@@ -1099,7 +1099,6 @@ fn class2_rx_without_metadata_uses_a_temp_file_and_naks_for_metadata() {
         assert!(cfg.serialize_to(&mut buf, Endianness::Big).is_ok());
         g.prm_db
             .lock()
-            .unwrap()
             .insert(CfdpManager::PARAMID_CHANNEL_CONFIG, buf.as_slice().to_vec());
     });
     let local = h.local_eid();
