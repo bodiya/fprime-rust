@@ -102,18 +102,24 @@ cargo test --workspace --features fprime-svc/zlib
 # aes-gcm, getrandom and zeroize)
 cargo test --workspace --features fprime-svc/aes-gcm
 
-# no_std + alloc: fprime-config, fprime-fw, fprime-comp and the no_std
-# subset of fprime-os without the default `std` feature. Locks then come
-# from the `spin` crate, which the `spin` feature enables (cargo cannot turn
-# a dependency on when a feature is OFF, so the feature is explicit).
-cargo build -p fprime-fw -p fprime-os -p fprime-comp --no-default-features --features spin
-cargo test  -p fprime-fw -p fprime-os -p fprime-comp --no-default-features --features spin
-# ... and for a bare-metal target, which has no std at all
+# no_std + alloc: fprime-config, fprime-fw, fprime-comp, fprime-utils,
+# fprime-svc and the no_std subset of fprime-os without the default `std`
+# feature (the file-based utilities and components drop out). Locks then
+# come from the `spin` crate, which the `spin` feature enables (cargo
+# cannot turn a dependency on when a feature is OFF, so it is explicit).
+NOSTD_PKGS="-p fprime-fw -p fprime-os -p fprime-comp -p fprime-utils -p fprime-svc"
+cargo build $NOSTD_PKGS --no-default-features --features spin
+cargo test  $NOSTD_PKGS --no-default-features --features spin
+# ... and for a bare-metal target, which has no std at all (the example is
+# a superloop-driven file-free deployment built from fprime-svc components)
 rustup target add thumbv7em-none-eabihf
-cargo build --target thumbv7em-none-eabihf -p fprime-fw -p fprime-os -p fprime-comp \
+cargo build --target thumbv7em-none-eabihf $NOSTD_PKGS --no-default-features --features spin
+cargo build --target thumbv7em-none-eabihf -p fprime-svc --example no_std_deployment \
     --no-default-features --features spin
 # ... with the ISR-safe lockless queue delegate (Os::Generic::LocklessPriorityQueue)
-cargo test -p fprime-os -p fprime-comp --no-default-features --features spin,lockless-queue
+cargo test -p fprime-os -p fprime-comp -p fprime-svc --no-default-features --features spin,lockless-queue
+# ... and with fprime-svc's optional features
+cargo test -p fprime-svc --no-default-features --features spin,zlib,aes-gcm
 # All of the above plus clippy, MSRV 1.85 and the dependency-tree checks
 tools/check-no-std.sh
 
@@ -137,7 +143,7 @@ Requires stable Rust (edition 2024). No external crates in the default build;
 the optional `zlib` feature adds `miniz_oxide` (pure Rust), the optional
 `aes-gcm` feature adds RustCrypto `aes-gcm` with `getrandom` and `zeroize`,
 and the `no_std` configuration (`--no-default-features --features spin`)
-adds `spin` (lock types only).
+adds `spin` (lock types only); the optional features work there too.
 
 ## Porting status
 
@@ -152,7 +158,7 @@ adds `spin` (lock types only).
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
 | State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
 | OSAL | Priority queue (stable max-heap, blocking semantics; or the ISR-safe `LocklessPriorityQueue` delegate with the `lockless-queue` feature), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
-| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp` and the `fprime-os` queue/task/mutex/condition-variable/raw-time/interval-timer/stub-cpu-memory subset build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; tasks, the clock and blocking-queue/mutex/condvar backoff come from a deployment-supplied `fprime_os::platform::Platform`; `lockless-queue` makes component queues ISR-safe (`tools/check-no-std.sh`) |
+| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp`, the `fprime-os` queue/task/mutex/condition-variable/raw-time/interval-timer/stub-cpu-memory subset, `fprime-utils` (but `crc_checker`/`validate_file`) and every file-free `fprime-svc` component (rate groups, `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime and CCSDS comms, `GenericHub`, text loggers, `FatalHandler`, `PosixTime`/`LinuxTimer`, `DpManager`; also with `zlib`/`aes-gcm`) build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; a `#![no_std]` superloop deployment example (`fprime-svc/examples/no_std_deployment.rs`) is tested on the host; tasks, the clock and blocking-queue/mutex/condvar backoff come from a deployment-supplied `fprime_os::platform::Platform`; `lockless-queue` makes component queues ISR-safe (`tools/check-no-std.sh`) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `LinuxTimer`, `SystemResources` |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup` |
 | Sequencing | `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
@@ -198,14 +204,18 @@ upstream's (where `DpCompression.Subtopology` is commented out), does not
 instantiate it. `FpySequencer` is ported, but neither upstream's Ref nor
 the Rust Ref instantiates it, and the Fpy compiler (`fprime-fpyc`) is not
 part of fprime-gds 4.3.1, so its tests build sequences byte by byte.
-`no_std`: `fprime-config`, `fprime-fw`, `fprime-comp` and a subset of
+`no_std`: `fprime-config`, `fprime-fw`, `fprime-comp`, a subset of
 `fprime-os` (queue, task, mutex, condition variable, raw time, interval
-timer, stub cpu/memory) build as `no_std` + `alloc`; a deployment supplies
-tasks, the clock and the blocking-wait backoff through
-`fprime_os::platform::Platform`, and enables `lockless-queue` if
-interrupts send to component queues. The
-services, drivers, utilities and the file/console half of `fprime-os` are
-still `std`-only (see ARCHITECTURE.md "no_std").
+timer, stub cpu/memory), `fprime-utils` but its two file modules, and every
+`fprime-svc` component that needs no file system or console (rate groups,
+command dispatch, events, telemetry, health, the F Prime and CCSDS comms
+stacks, the hub, the text loggers, `FatalHandler`, `PosixTime`,
+`LinuxTimer`, `DpManager`, ...) build as `no_std` + `alloc`; a deployment
+supplies tasks, the clock and the blocking-wait backoff through
+`fprime_os::platform::Platform` (or drives its queues from a superloop),
+and enables `lockless-queue` if interrupts send to component queues. The
+file-based services, the drivers and the file/console half of `fprime-os`
+are still `std`-only (see ARCHITECTURE.md "no_std").
 The ordered list of what comes next is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## How the port maps C++ to Rust

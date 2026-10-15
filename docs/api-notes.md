@@ -3184,3 +3184,103 @@ existing condvar tests now also run in `no_std`, and
 `tests/no_std_platform.rs` checks that a pend and a contended lock poll
 through `Platform::sync_wait` and that the lockless blocking receive
 backs off through `Platform::delay`.
+
+### fprime-utils / fprime-svc: `no_std` beyond the core (strategic item)
+
+Upstream: `Svc/FatalHandler/FatalHandlerComponentBaremetalImpl.cpp` (the
+`FPRIME_USE_BAREMETAL_SCHEDULER` FatalHandler); everything else is the
+existing ports, rebuilt without `std`.
+
+Surface:
+
+- Features. `fprime-utils` and `fprime-svc` now have `default = ["std"]`
+  and `spin`, like `fprime-comp`; the `no_std` build is
+  `--no-default-features --features spin`, and building with neither is a
+  `compile_error!` naming the fix. They depend on the framework crates by
+  path with `default-features = false` (`fprime-utils` on `fprime-os` only
+  with `std`). `fprime-svc` adds `lockless-queue` (forwarded to
+  `fprime-comp`), and its `spin` turns on getrandom's `custom` feature when
+  `aes-gcm` is on (`getrandom?/custom`). Other crates keep the workspace
+  dependency, so the workspace build is unchanged.
+- `fprime-utils` without `std`: `hash`, `types`, `rate_limiter`,
+  `token_bucket`, `cfdp`. `crc_checker` and `validate_file` (and their
+  root re-exports) are `std`-only.
+- `fprime-svc` without `std`: every module except `file_uplink`,
+  `file_downlink`, `file_manager`, `prm_db`, `dp_writer`, `dp_catalog`,
+  `com_logger`, `cmd_sequencer`, `fpy_sequencer`, `system_resources` and
+  `ccsds::sdls_file_key_manager`. In `active_text_logger`, `LogFile` and
+  `ActiveTextLogger::set_log_file` are `std`-only.
+- `fprime_svc::dp_compress_proc::DpProcPort` (moved): the `procBufferSendOut`
+  port trait now lives with its file-free implementer so it exists without
+  `std`; `dp_writer::DpProcPort` re-exports it (same trait, old path
+  works).
+- `examples/no_std_deployment.rs` (`crate-type = ["lib"]`): `Deployment`
+  (`new`, `step`, `drain`, `uplink`, `take_downlink`), `Radio` (a recording
+  `ByteStreamSendPort` driver), `command_frame(opcode)`,
+  `packet_ids(frames)`, `run_scenario()`; `tests/no_std_example.rs` runs it.
+  `tests/no_std_platform/mod.rs` is the `std::thread` test `Platform`
+  (a copy of `fprime-comp`'s) the no_std unit tests use for active
+  components and clock reads.
+- `tools/check-no-std.sh`: utils and svc in the host no_std build, tests
+  and clippy (both queue delegates), svc with `zlib,aes-gcm` without `std`,
+  the thumbv7em build of both crates and both examples (default delegate,
+  lockless delegate, optional features), the MSRV checks of all of those,
+  and a tree check: the no_std tree is `spin` alone, and with
+  `zlib,aes-gcm` it is `spin` plus exactly the crates those features add
+  to the std build (host and thumbv7em).
+
+Deviations and behavior notes:
+
+- Default (`std`) build: same behavior. In the file-free `fprime-svc`
+  modules, `std::sync::{Mutex, RwLock, OnceLock}` became the
+  `fprime_fw::sync` shim (std's types underneath) and `.lock().unwrap()`
+  became `.lock()`: a lock poisoned by a panicking holder is now recovered
+  instead of panicking again, as in the core since item 13. Release builds
+  abort on the first panic, so only unwinding dev/test builds can tell.
+  The file-based modules are untouched.
+- `FatalHandler` without `std`: upstream's bare-metal implementation. It
+  logs `FATAL <id>handled.` (upstream's format string, which has no space
+  before "handled"), does not delay, and runs the terminal action, whose
+  default spins forever (`while (true) {}`) since there is no process to
+  exit. `set_exit_action` is how a deployment routes FATAL to a reset,
+  safe mode, or its `#[panic_handler]` (an action that panics).
+- `PosixTime` without `std`: `Os::RawTime::now`, i.e. the registered
+  `Platform::raw_time_now`; a failed read (or no platform: `NOT_SUPPORTED`)
+  reports zero time, the C++ `clock_gettime` failure path.
+- `LinuxTimer` without `std`: the same compensated loop, timed with
+  `RawTime` (the platform's realtime clock instead of `std::time::Instant`,
+  so a clock step skews one interval) and sleeping with `Os::Task::delay`;
+  when either clock read fails it sleeps the full interval, which is
+  upstream's `LinuxTimerTaskDelay` exactly.
+- `ActiveTextLogger` without `std`: console only (through `Fw::Logger`, as
+  before); no file member at all.
+- AES-GCM without `std`: the IV still comes from `getrandom`. With
+  `custom` on, hosted targets keep the OS CSPRNG and a target without one
+  links the deployment's `getrandom::register_custom_getrandom!` source;
+  failure is `ENCRYPTION_FAILURE`, as before. `miniz_oxide` and `aes-gcm`
+  were already built without their `std` features.
+- Not ported to `no_std`: `CmdSequencer` and `FpySequencer` — loading
+  sequence files is what they do, so gating their file use out would
+  leave components with nothing to run; a buffer-loaded variant would be
+  new API, not a port. `SystemResources` reads procfs and file-system
+  usage. `SdlsFileKeyManager` reads key files (a no_std deployment
+  implements the key-get port from its own key store).
+- Test-only: `fprime-utils` and `fprime-svc` are `#![no_std]` only in the
+  non-test no_std build (`cfg_attr(not(any(feature = "std", test)),
+  no_std)`), so their large unit-test suites keep the std prelude; the
+  host and thumbv7em non-test builds are the proof the library code needs
+  no `std`. Tests that start an active component or read the clock call
+  `crate::test_platform::install()` (a no-op with `std`). In no_std test
+  builds the file-based `ActiveTextLogger` tests, the AES chain of
+  `ccsds_sdls_chain` (keyed by `SdlsFileKeyManager`), `dp_compression`
+  (`DpWriter`) and `fpy_sequencer_sm_traces` are compiled out; a no_std
+  `ActiveTextLogger` test and a bare-metal `FatalHandler` test replace the
+  first and the 1 s-delay test.
+
+Tests: the whole `fprime-svc` suite (unit and integration) and
+`fprime-utils` suite pass in both configurations, with either queue
+delegate, and with `zlib,aes-gcm` in both; `tests/no_std_example.rs`
+uplinks a `CMD_NO_OP` frame through the example deployment's comms stack
+and checks the dispatcher's `OpCodeDispatched`, `NoOpReceived` and
+`OpCodeCompleted` events and its `CommandsDispatched = 1` telemetry come
+back down as F Prime frames.

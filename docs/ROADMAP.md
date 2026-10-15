@@ -295,16 +295,38 @@ subsystems, then the strategic changes.
   versions are unchanged. The Linux cpu/memory backends stay `std`-only by
   design: they read procfs/sysfs through `Os::File`, which only a hosted
   Linux target (which has `std`) provides; no_std builds get the stubs.
+- **`no_std` beyond the core.** `fprime-utils` and `fprime-svc` take the
+  same `std` (default) / `spin` features as the core. `fprime-utils` is
+  `no_std` + `alloc` except `crc_checker` and `validate_file` (they read
+  and write files). In `fprime-svc` every component that needs no file
+  system, console or process builds without `std`: the rate groups,
+  `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`,
+  the F Prime comms stack (framer, deframer, frame accumulator and
+  detectors, router, `ComQueue`, `ComStub`, `BufferManager`), the CCSDS
+  stack (Space Packet, TM, TC, AOS, `ApidManager`, `ComAggregator`, the
+  SDLS framework), `GenericHub`, `BufferAccumulator`, `DpManager`,
+  `DpCompressProc`, both text loggers (console through `Fw::Logger`;
+  `ActiveTextLogger`'s log file is `std`-only), `FatalHandler` (upstream's
+  bare-metal implementation: log, then spin unless the deployment installs
+  another terminal action) and `PosixTime` / `LinuxTimer` over the
+  platform clock and delay. Their `std::sync` uses moved onto
+  `fprime_fw::sync`. The file-based components (`FileUplink`,
+  `FileDownlink`, `FileManager`, `PrmDb`, `DpWriter`, `DpCatalog`,
+  `ComLogger`, `CmdSequencer`, `FpySequencer`, `SystemResources`,
+  `SdlsFileKeyManager`; CFDP) stay `std`-only. The `zlib` and `aes-gcm`
+  features compose with `no_std` (on bare metal the AES-GCM IV source is
+  registered through getrandom's `custom` hook). A `#![no_std]` example
+  deployment (`fprime-svc/examples/no_std_deployment.rs`: rate group,
+  command dispatch from an uplinked frame, events, telemetry, F Prime
+  framing, run by a superloop) is tested on the host, and
+  `tools/check-no-std.sh` covers both crates: host build, tests and
+  clippy, thumbv7em with both queue delegates and the optional features,
+  MSRV, and the dependency trees.
 
 ## Strategic
 
-No numbered items remain. Directions the `no_std` seam (item 13) opens:
-
-- **`no_std` beyond the core.** `fprime-utils` and the `fprime-svc`
-  components that need no files (rate groups, `CmdDispatcher`,
-  `EventManager`, `TlmChan`, `Health`, the comms framing) are still
-  `std`-only; each needs its `std::sync` uses moved onto
-  `fprime_fw::sync` and its file/console uses gated.
+Nothing remains in this section: the `no_std` work it listed is done (see
+"`no_std` beyond the core" above).
 
 ## Syncing with upstream
 

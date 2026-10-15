@@ -44,9 +44,11 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   topology wiring from `.fpp` models; hand-written components and generated
   ones coexist because both target `fprime-comp`. Anything a macro cannot
   express faithfully stays hand-written — the macros never half-work.
-- `no_std` + `alloc` for the framework core: `fprime-config`, `fprime-fw`,
-  `fprime-comp` and a subset of `fprime-os` build without `std` (see
-  "no_std" below). Services, drivers, utilities and the deployment crates
+- `no_std` + `alloc` for the framework core and the file-free services:
+  `fprime-config`, `fprime-fw`, `fprime-comp`, a subset of `fprime-os`,
+  `fprime-utils` (but its file modules) and every `fprime-svc` component
+  that needs no file system or console build without `std` (see "no_std"
+  below). The file-based services, the drivers and the deployment crates
   stay `std`.
 - Not ported (see the status matrix in README.md and `docs/ROADMAP.md`):
   CFDP. (`Fw/Sm` state machines are ported as the
@@ -93,7 +95,8 @@ Rust 2024 edition, `rust-version = "1.85"` floor, workspace lints:
 
 ROADMAP item 13: the framework core builds as `no_std` + `alloc`, and the
 OSAL seam is real — what a hosted build gets from `std` a bare-metal or
-RTOS deployment supplies through one trait.
+RTOS deployment supplies through one trait. "no_std beyond the core"
+extended it to `fprime-utils` and the file-free `fprime-svc` components.
 
 Configurations:
 
@@ -103,11 +106,17 @@ Configurations:
 | `fprime-fw` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | no `std`; locks from `spin` |
 | `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue` (both delegates), `task`, `mutex`, `condition`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
 | `fprime-comp` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | everything (passive/queued/active bases, ports, envelopes, escrow, serialize ports, glue, state machines, macros) |
+| `fprime-utils` | std prelude, every module | `#![no_std]` + `alloc`: `hash`, `types` (circular buffer, queue), `rate_limiter`, `token_bucket`, `cfdp`; not `crc_checker`, `validate_file` (files) |
+| `fprime-svc` | std prelude, every component | `#![no_std]` + `alloc`: rate groups (`RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`), `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime comms (`FprimeFramer`/`Deframer`, `FrameAccumulator` + detectors, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`), CCSDS (`SpacePacketFramer`/`Deframer`, `TmFramer`, `TcDeframer`, `ApidManager`, AOS, the SDLS framework, `ComAggregator`), `GenericHub`, `BufferAccumulator`, `DpManager`, `DpCompressProc`, `PassiveTextLogger`, `ActiveTextLogger` (no log file), `FatalHandler` (bare-metal impl), `PosixTime`, `LinuxTimer`; `DpZLibCompressor` / the AES-GCM pair with `zlib` / `aes-gcm` |
 
 `spin` is a separate, explicit feature because cargo cannot enable a
 dependency when a feature is turned *off*; building with neither `std` nor
 `spin` is a `compile_error!` that says so. The default build pulls in no
-third-party crate (`tools/check-no-std.sh` asserts both trees).
+third-party crate (`tools/check-no-std.sh` asserts both trees). Like
+`fprime-os`, `fprime-utils` and `fprime-svc` keep the std prelude in the
+std build (their file-based modules are hosted code) and are `#![no_std]`
+only without it; their unit tests always link `std` (a hosted target),
+so the non-test no_std builds are what prove the library code.
 
 The pieces:
 
@@ -158,16 +167,46 @@ The pieces:
   calls poll with `Os::Task::delay` (`Platform::delay`) between scans, so
   blocked receivers wake periodically; without interrupt senders the
   default delegate is the better choice.
+- **Services without `std`.** Components keep their behavior; what the
+  host OS provided comes from the seam: `PosixTime` reads
+  `Os::RawTime::now` (the platform clock; zero time without one, the
+  `clock_gettime` failure path), `LinuxTimer` measures with it and sleeps
+  with `Os::Task::delay`, and `FatalHandler` is upstream's bare-metal
+  implementation (`FatalHandlerComponentBaremetalImpl.cpp`): log
+  `FATAL <id>handled.`, then the terminal action, by default spinning
+  forever (there is no process to exit); a deployment that wants a reset
+  or its panic handler installs that with `set_exit_action`. Console
+  output (`PassiveTextLogger`, `ActiveTextLogger`) already went through
+  `Fw::Logger`, which the deployment registers. Active components need a
+  `Platform` to start a task, or none at all when a superloop drains
+  their queues (`QueuedBase::do_dispatch` non-blocking), as upstream's
+  bare-metal scheduler does. With `aes-gcm`, the IV source is getrandom
+  with its `custom` backend enabled: hosted targets use the OS, bare
+  metal registers a hardware RNG (`getrandom::register_custom_getrandom!`).
 - **std-only**: in `fprime-fw`, the stderr default of the assert print; in
   `fprime-os`, `File`, `FileSystem`, `Directory`, `FilePathUtils`,
   `SandboxedFile`, `Console`, the Linux cpu/memory backends (they read
   procfs/sysfs through `Os::File`; a target that has procfs is a hosted
   Linux target, which has `std`) and the console part of `os::init()`;
-  `fprime-utils`, `fprime-svc`, `fprime-drv`, `fprime-ref`, `fprime-fpp`
-  and `fprime-fpp-demo` entirely.
+  in `fprime-utils`, `crc_checker` and `validate_file`; in `fprime-svc`,
+  everything that needs a file system — `FileUplink`, `FileDownlink`,
+  `FileManager`, `PrmDb`, `DpWriter`, `DpCatalog`, `ComLogger`,
+  `CmdSequencer`, `FpySequencer` (both run sequence files; gating the file
+  reads out would leave nothing to run), `SystemResources` (procfs and
+  file-system usage), `SdlsFileKeyManager`, `ActiveTextLogger`'s log file
+  — and the CFDP components; `fprime-drv`, `fprime-ref`, `fprime-fpp` and
+  `fprime-fpp-demo` entirely.
 - **Proof**: `crates/fprime-comp/examples/no_std_component.rs` is a
   `#![no_std]` library crate that expands every exported framework macro
-  without the std prelude (built by every `--all-targets` build), and
+  without the std prelude (built by every `--all-targets` build);
+  `crates/fprime-svc/examples/no_std_deployment.rs` is a `#![no_std]`
+  file-free deployment (rate group driver and rate group, command
+  dispatcher, event manager, telemetry channelizer, `ComQueue`, F Prime
+  framer/deframer/frame accumulator/router, `ComStub`, `BufferManager`,
+  `PosixTime`) driven by a superloop, which
+  `crates/fprime-svc/tests/no_std_example.rs` runs in both configurations
+  (an uplinked `CMD_NO_OP` frame is dispatched and its events and the
+  telemetry come back down as frames); and
   `tools/check-no-std.sh` builds and tests the no_std configuration on the
   host, builds it for `thumbv7em-none-eabihf`, checks it at MSRV 1.85, and
   checks the dependency trees, each build and test with both queue
