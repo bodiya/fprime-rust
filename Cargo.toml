@@ -7,6 +7,7 @@ members = [
     "crates/fprime-utils",
     "crates/fprime-comp",
     "crates/fprime-svc",
+    "crates/fprime-spacewasm",
     "crates/fprime-drv",
     "crates/fprime-ref",
     "crates/fprime-fpp",
@@ -27,6 +28,7 @@ fprime-os = { path = "crates/fprime-os" }
 fprime-utils = { path = "crates/fprime-utils" }
 fprime-comp = { path = "crates/fprime-comp" }
 fprime-svc = { path = "crates/fprime-svc" }
+fprime-spacewasm = { path = "crates/fprime-spacewasm" }
 fprime-drv = { path = "crates/fprime-drv" }
 fprime-fpp = { path = "crates/fprime-fpp" }
 

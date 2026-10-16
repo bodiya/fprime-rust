@@ -1,0 +1,89 @@
+init [] -> a:resetStore a:clearCancelRequested ; IDLE
+IDLE cancel [] -> a:resetStore a:clearCancelRequested ; IDLE
+IDLE engineFinished [] ->  ; -
+IDLE invoke [] -> a:respondInvoke_ERROR ; -
+IDLE invokeFailed [] ->  ; -
+IDLE invoked [] ->  ; -
+IDLE load [] -> a:load ; LOADING_TO_READY
+IDLE loadFailed [] ->  ; -
+IDLE loadSucceeded [] ->  ; -
+IDLE run [] -> a:load ; LOADING_TO_RUN
+INVOKING cancel [] -> a:setCancelRequested ; -
+INVOKING engineFinished [] ->  ; -
+INVOKING invoke [] -> a:respondInvoke_BUSY ; -
+INVOKING invokeFailed [] -> a:incrementSequenceFailure a:respond_ERROR a:clearCancelRequested ; READY
+INVOKING invoked [1] -> g:cancelRequested a:cancelPendingRequest a:resetStore a:clearCancelRequested ; IDLE
+INVOKING invoked [011] -> g:cancelRequested g:moduleHasValidMain a:invokeMain g:invokeSucceeded a:reportModuleStarted a:respond_noblock_OK a:runEngine ; RUNNING_MAIN
+INVOKING invoked [010] -> g:cancelRequested g:moduleHasValidMain a:invokeMain g:invokeSucceeded a:reportModuleMainInvokeFailed a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+INVOKING invoked [00] -> g:cancelRequested g:moduleHasValidMain a:reportModuleInvalidMain a:incrementSequenceFailure a:respond_ERROR a:clearCancelRequested ; READY
+INVOKING load [] -> a:respondLoad_BUSY ; -
+INVOKING loadFailed [] ->  ; -
+INVOKING loadSucceeded [] ->  ; -
+INVOKING run [] -> a:respondLoad_BUSY ; -
+LOADING_TO_READY cancel [] -> a:setCancelRequested ; -
+LOADING_TO_READY engineFinished [] ->  ; -
+LOADING_TO_READY invoke [] -> a:respondInvoke_BUSY ; -
+LOADING_TO_READY invokeFailed [] ->  ; -
+LOADING_TO_READY invoked [] ->  ; -
+LOADING_TO_READY load [] -> a:respondLoad_BUSY ; -
+LOADING_TO_READY loadFailed [] -> a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_READY loadSucceeded [1] -> g:cancelRequested a:cancelPendingRequest a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_READY loadSucceeded [011] -> g:cancelRequested g:moduleHasStart a:invokeStart g:invokeSucceeded a:runEngine ; LOAD_RUNNING_START
+LOADING_TO_READY loadSucceeded [010] -> g:cancelRequested g:moduleHasStart a:invokeStart g:invokeSucceeded a:reportModuleStartInvokeFailed a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_READY loadSucceeded [00] -> g:cancelRequested g:moduleHasStart a:respond_block_OK a:clearCancelRequested ; READY
+LOADING_TO_READY run [] -> a:respondLoad_BUSY ; -
+LOADING_TO_RUN cancel [] -> a:setCancelRequested ; -
+LOADING_TO_RUN engineFinished [] ->  ; -
+LOADING_TO_RUN invoke [] -> a:respondInvoke_BUSY ; -
+LOADING_TO_RUN invokeFailed [] ->  ; -
+LOADING_TO_RUN invoked [] ->  ; -
+LOADING_TO_RUN load [] -> a:respondLoad_BUSY ; -
+LOADING_TO_RUN loadFailed [] -> a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_RUN loadSucceeded [1] -> g:cancelRequested a:cancelPendingRequest a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_RUN loadSucceeded [0111] -> g:cancelRequested g:moduleHasValidMain g:moduleHasStart a:invokeStart g:invokeSucceeded a:runEngine ; RUNNING_START_PENDING_MAIN
+LOADING_TO_RUN loadSucceeded [0110] -> g:cancelRequested g:moduleHasValidMain g:moduleHasStart a:invokeStart g:invokeSucceeded a:reportModuleStartInvokeFailed a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_RUN loadSucceeded [0101] -> g:cancelRequested g:moduleHasValidMain g:moduleHasStart a:invokeMain g:invokeSucceeded a:reportModuleStarted a:respond_noblock_OK a:runEngine ; RUNNING_MAIN
+LOADING_TO_RUN loadSucceeded [0100] -> g:cancelRequested g:moduleHasValidMain g:moduleHasStart a:invokeMain g:invokeSucceeded a:reportModuleMainInvokeFailed a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOADING_TO_RUN loadSucceeded [00] -> g:cancelRequested g:moduleHasValidMain a:reportModuleInvalidMain a:incrementSequenceFailure a:respond_ERROR a:clearCancelRequested ; READY
+LOADING_TO_RUN run [] -> a:respondLoad_BUSY ; -
+LOAD_RUNNING_START cancel [] ->  ; -
+LOAD_RUNNING_START engineFinished [1] -> g:interpreterSucceeded a:respond_block_OK a:clearCancelRequested ; READY
+LOAD_RUNNING_START engineFinished [0] -> g:interpreterSucceeded a:reportModuleStartFailed a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+LOAD_RUNNING_START invoke [] -> a:respondInvoke_BUSY ; -
+LOAD_RUNNING_START invokeFailed [] ->  ; -
+LOAD_RUNNING_START invoked [] ->  ; -
+LOAD_RUNNING_START load [] -> a:respondLoad_BUSY ; -
+LOAD_RUNNING_START loadFailed [] ->  ; -
+LOAD_RUNNING_START loadSucceeded [] ->  ; -
+LOAD_RUNNING_START run [] -> a:respondLoad_BUSY ; -
+READY cancel [] -> a:resetStore a:clearCancelRequested ; IDLE
+READY engineFinished [] ->  ; -
+READY invoke [] -> a:processInvoke ; INVOKING
+READY invokeFailed [] ->  ; -
+READY invoked [] ->  ; -
+READY load [] -> a:load ; LOADING_TO_READY
+READY loadFailed [] ->  ; -
+READY loadSucceeded [] ->  ; -
+READY run [] -> a:resetStore a:load ; LOADING_TO_RUN
+RUNNING_MAIN cancel [] ->  ; -
+RUNNING_MAIN engineFinished [1] -> g:interpreterSucceeded a:reportModuleSucceeded a:respond_block_OK a:clearCancelRequested ; READY
+RUNNING_MAIN engineFinished [0] -> g:interpreterSucceeded a:reportModuleMainFailed a:respond_block_ERROR a:resetStore a:clearCancelRequested ; IDLE
+RUNNING_MAIN invoke [] -> a:respondInvoke_BUSY ; -
+RUNNING_MAIN invokeFailed [] ->  ; -
+RUNNING_MAIN invoked [] ->  ; -
+RUNNING_MAIN load [] -> a:respondLoad_BUSY ; -
+RUNNING_MAIN loadFailed [] ->  ; -
+RUNNING_MAIN loadSucceeded [] ->  ; -
+RUNNING_MAIN run [] -> a:respondLoad_BUSY ; -
+RUNNING_START_PENDING_MAIN cancel [] -> a:setCancelRequested ; -
+RUNNING_START_PENDING_MAIN engineFinished [11] -> g:interpreterSucceeded g:cancelRequested a:cancelPendingRequest a:resetStore a:clearCancelRequested ; IDLE
+RUNNING_START_PENDING_MAIN engineFinished [101] -> g:interpreterSucceeded g:cancelRequested a:invokeMain g:invokeSucceeded a:reportModuleStarted a:respond_noblock_OK a:runEngine ; RUNNING_MAIN
+RUNNING_START_PENDING_MAIN engineFinished [100] -> g:interpreterSucceeded g:cancelRequested a:invokeMain g:invokeSucceeded a:reportModuleMainInvokeFailed a:incrementSequenceFailure a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+RUNNING_START_PENDING_MAIN engineFinished [0] -> g:interpreterSucceeded a:reportModuleStartFailed a:respond_ERROR a:resetStore a:clearCancelRequested ; IDLE
+RUNNING_START_PENDING_MAIN invoke [] -> a:respondInvoke_BUSY ; -
+RUNNING_START_PENDING_MAIN invokeFailed [] ->  ; -
+RUNNING_START_PENDING_MAIN invoked [] ->  ; -
+RUNNING_START_PENDING_MAIN load [] -> a:respondLoad_BUSY ; -
+RUNNING_START_PENDING_MAIN loadFailed [] ->  ; -
+RUNNING_START_PENDING_MAIN loadSucceeded [] ->  ; -
+RUNNING_START_PENDING_MAIN run [] -> a:respondLoad_BUSY ; -

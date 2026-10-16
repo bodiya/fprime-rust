@@ -452,6 +452,57 @@ pub mod fpy_sequencer {
     pub const MAX_SERIAL_PORTS: FwIndexType = 5;
 }
 
+/// `Svc::WasmSequencer` configuration: `default/config/WasmSequencerCfg.fpp`
+/// (FPP module `Svc.Wasm`), `default/config/WasmSequencerConfig.hpp`
+/// (namespace `Svc::WasmSequencerConfig`) and
+/// `default/config/WasmSequencerSpacewasmConfig.h` (the `WASM_SEQ_*`
+/// macros upstream's `fprime_spacewasm` build script reads; here
+/// `fprime-spacewasm` reads them from this module).
+pub mod wasm_sequencer {
+    use super::{FwIndexType, FwSizeType};
+
+    /// The default value of the `SEQ_BASE_DIR` parameter: a literal prefix
+    /// prepended to each requested sequence file path
+    /// (`Wasm.DEFAULT_SEQ_BASE_DIR`).
+    pub const DEFAULT_SEQ_BASE_DIR: &str = "";
+    /// Buffer size (bytes) of a WebAssembly module name
+    /// (`Wasm.MODULE_NAME_STRING_SIZE`).
+    pub const MODULE_NAME_STRING_SIZE: usize = 16;
+    /// Buffer size (bytes) of a WebAssembly global export name
+    /// (`Wasm.GLOBAL_NAME_STRING_SIZE`).
+    pub const GLOBAL_NAME_STRING_SIZE: usize = 16;
+    /// Maximum length (bytes) of a guest-emitted event message
+    /// (`Wasm.GUEST_EVENT_MESSAGE_SIZE`).
+    pub const GUEST_EVENT_MESSAGE_SIZE: usize = 128;
+    /// Default value of the `INSTRUCTION_FUEL` parameter: Wasm instructions
+    /// executed per interpreter cycle (`Wasm.DEFAULT_INSTRUCTION_FUEL`).
+    pub const DEFAULT_INSTRUCTION_FUEL: FwSizeType = 1000;
+    /// Size of the `serialOut` port array (`Wasm.MAX_SERIAL_OUT_PORTS`).
+    pub const MAX_SERIAL_OUT_PORTS: FwIndexType = 5;
+    /// Size of the `serialIn` port array; each index gets its own queue
+    /// (`Wasm.MAX_SERIAL_IN_PORTS`).
+    pub const MAX_SERIAL_IN_PORTS: FwIndexType = 5;
+
+    /// Size in bytes of each page served to the spacewasm interpreter heap
+    /// (`WASM_SEQ_SPACEWASM_PAGE_SIZE` / `SPACEWASM_PAGE_SIZE`).
+    pub const SPACEWASM_PAGE_SIZE: FwSizeType = 8192;
+    /// Maximum number of interpreter-heap pages of one sequencer
+    /// (`WASM_SEQ_SPACEWASM_MAX_PAGES` / `SPACEWASM_MAX_PAGES`).
+    pub const SPACEWASM_MAX_PAGES: FwSizeType = 32;
+    /// Maximum number of sequencer instances that may hold a global
+    /// allocator slot at once (`WASM_SEQ_MAX_SEQUENCERS`).
+    pub const MAX_SEQUENCERS: usize = 8;
+    /// Bound on a control-flow backpatch chain at load time; 0 disables it
+    /// (`MAX_BACKPATCH_ITERATIONS`).
+    pub const MAX_BACKPATCH_ITERATIONS: u32 = 32768;
+    /// Size of the buffer a module file is streamed through while loading
+    /// (`LOAD_READ_CHUNK_SIZE`; it lives on the component task's stack).
+    pub const LOAD_READ_CHUNK_SIZE: usize = 512;
+    /// Maximum number of concurrent `WAIT` commands per sequencer
+    /// (`MAX_CONCURRENT_WAIT_COMMANDS`).
+    pub const MAX_CONCURRENT_WAIT_COMMANDS: usize = 8;
+}
+
 /// `Svc::Ccsds::CfdpManager` configuration: `default/config/CfdpCfg.fpp`
 /// (FPP module `Svc.Ccsds.Cfdp`) and `default/config/CfdpCfg.hpp`.
 pub mod cfdp {

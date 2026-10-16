@@ -1,0 +1,102 @@
+init [] -> a:clearContext a:reset ; IDLE
+IDLE cancel [] ->  ; -
+IDLE checkTimers [] ->  ; -
+IDLE cmdCancel [] -> a:cmdReplyOK ; -
+IDLE cmd_CONTINUE [] ->  ; -
+IDLE entered [] ->  ; -
+IDLE hostResponseFailure [] ->  ; -
+IDLE hostResponseTimeIncomparable [] ->  ; -
+IDLE hostResponseTimeout [] ->  ; -
+IDLE hostResponseUnexpected [] ->  ; -
+IDLE hostResume [] ->  ; -
+IDLE hostResumeI32 [] ->  ; -
+IDLE interpreterFinished [] ->  ; -
+IDLE interpreterHostFunctionNeedsPause [] ->  ; -
+IDLE interpreterOutOfFuel [] ->  ; -
+IDLE interpreterTrap [] ->  ; -
+IDLE run [1] -> a:setContext a:clearExitStatus g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+IDLE run [0] -> a:setContext a:clearExitStatus g:pendingPause a:signalEntered ; RUNNING_SPINNING
+IDLE serialInMessage [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING cancel [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING checkTimers [] -> a:checkSleepTimers ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING cmdCancel [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:cmdReplyOK a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING cmd_CONTINUE [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING entered [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResponseFailure [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_HOST_FAILURE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResponseTimeIncomparable [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_TIMER_INCOMPARABLE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResponseTimeout [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_REPLY_TIMEOUT a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResponseUnexpected [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_UNEXPECTED_REPLY a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResume [1] -> a:clearPendingHostFunction a:resume g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResume [0] -> a:clearPendingHostFunction a:resume g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResumeI32 [1] -> a:clearPendingHostFunction a:resumeI32 g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_SLEEPING hostResumeI32 [0] -> a:clearPendingHostFunction a:resumeI32 g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_SLEEPING interpreterFinished [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING interpreterHostFunctionNeedsPause [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING interpreterOutOfFuel [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING interpreterTrap [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING run [] ->  ; -
+RUNNING_AWAITING_RESPONSE_SLEEPING serialInMessage [111] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_SLEEPING serialInMessage [110] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_SLEEPING serialInMessage [10] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_HOST_FAILURE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_SLEEPING serialInMessage [0] -> g:blockingSerialIn ; -
+RUNNING_AWAITING_RESPONSE_WAITING cancel [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING checkTimers [] -> a:checkTimeout ; -
+RUNNING_AWAITING_RESPONSE_WAITING cmdCancel [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:cmdReplyOK a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING cmd_CONTINUE [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING entered [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING hostResponseFailure [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_HOST_FAILURE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING hostResponseTimeIncomparable [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_TIMER_INCOMPARABLE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING hostResponseTimeout [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_REPLY_TIMEOUT a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING hostResponseUnexpected [] -> a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_UNEXPECTED_REPLY a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING hostResume [1] -> a:clearPendingHostFunction a:resume g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_WAITING hostResume [0] -> a:clearPendingHostFunction a:resume g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_WAITING hostResumeI32 [1] -> a:clearPendingHostFunction a:resumeI32 g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_WAITING hostResumeI32 [0] -> a:clearPendingHostFunction a:resumeI32 g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_WAITING interpreterFinished [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING interpreterHostFunctionNeedsPause [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING interpreterOutOfFuel [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING interpreterTrap [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING run [] ->  ; -
+RUNNING_AWAITING_RESPONSE_WAITING serialInMessage [111] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_AWAITING_RESPONSE_WAITING serialInMessage [110] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_AWAITING_RESPONSE_WAITING serialInMessage [10] -> g:blockingSerialIn a:dequeueSerialAndResume g:dequeueSucceeded a:clearPendingHostFunction a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_HOST_FAILURE a:clearContext a:reset ; IDLE
+RUNNING_AWAITING_RESPONSE_WAITING serialInMessage [0] -> g:blockingSerialIn ; -
+RUNNING_PAUSED cancel [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:clearContext a:reset ; IDLE
+RUNNING_PAUSED checkTimers [] ->  ; -
+RUNNING_PAUSED cmdCancel [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:cmdReplyOK a:clearContext a:reset ; IDLE
+RUNNING_PAUSED cmd_CONTINUE [11] -> g:pendingHostFunction a:setLastHostFunction a:dispatchPendingHostFunction g:pendingHostFunctionIsSleep ; RUNNING_AWAITING_RESPONSE_SLEEPING
+RUNNING_PAUSED cmd_CONTINUE [10] -> g:pendingHostFunction a:setLastHostFunction a:dispatchPendingHostFunction g:pendingHostFunctionIsSleep ; RUNNING_AWAITING_RESPONSE_WAITING
+RUNNING_PAUSED cmd_CONTINUE [0] -> g:pendingHostFunction a:signalEntered ; RUNNING_SPINNING
+RUNNING_PAUSED entered [] ->  ; -
+RUNNING_PAUSED hostResponseFailure [] ->  ; -
+RUNNING_PAUSED hostResponseTimeIncomparable [] ->  ; -
+RUNNING_PAUSED hostResponseTimeout [] ->  ; -
+RUNNING_PAUSED hostResponseUnexpected [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_UNEXPECTED_REPLY a:clearContext a:reset ; IDLE
+RUNNING_PAUSED hostResume [] ->  ; -
+RUNNING_PAUSED hostResumeI32 [] ->  ; -
+RUNNING_PAUSED interpreterFinished [] ->  ; -
+RUNNING_PAUSED interpreterHostFunctionNeedsPause [] ->  ; -
+RUNNING_PAUSED interpreterOutOfFuel [] ->  ; -
+RUNNING_PAUSED interpreterTrap [] ->  ; -
+RUNNING_PAUSED run [] ->  ; -
+RUNNING_PAUSED serialInMessage [] ->  ; -
+RUNNING_SPINNING cancel [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:clearContext a:reset ; IDLE
+RUNNING_SPINNING checkTimers [] ->  ; -
+RUNNING_SPINNING cmdCancel [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_CANCEL a:cmdReplyOK a:clearContext a:reset ; IDLE
+RUNNING_SPINNING cmd_CONTINUE [] ->  ; -
+RUNNING_SPINNING entered [] -> a:spin ; -
+RUNNING_SPINNING hostResponseFailure [] ->  ; -
+RUNNING_SPINNING hostResponseTimeIncomparable [] ->  ; -
+RUNNING_SPINNING hostResponseTimeout [] ->  ; -
+RUNNING_SPINNING hostResponseUnexpected [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitReason_UNEXPECTED_REPLY a:clearContext a:reset ; IDLE
+RUNNING_SPINNING hostResume [] ->  ; -
+RUNNING_SPINNING hostResumeI32 [] ->  ; -
+RUNNING_SPINNING interpreterFinished [] -> a:clearPendingHostFunction a:clearPause a:finish a:setExitCode a:setExitReason_INTERPRETER_FINISHED a:clearContext a:reset ; IDLE
+RUNNING_SPINNING interpreterHostFunctionNeedsPause [1] -> g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_SPINNING interpreterHostFunctionNeedsPause [01] -> g:pendingPause a:setLastHostFunction a:dispatchPendingHostFunction g:pendingHostFunctionIsSleep ; RUNNING_AWAITING_RESPONSE_SLEEPING
+RUNNING_SPINNING interpreterHostFunctionNeedsPause [00] -> g:pendingPause a:setLastHostFunction a:dispatchPendingHostFunction g:pendingHostFunctionIsSleep ; RUNNING_AWAITING_RESPONSE_WAITING
+RUNNING_SPINNING interpreterOutOfFuel [1] -> g:pendingPause a:clearPause a:reportPaused ; RUNNING_PAUSED
+RUNNING_SPINNING interpreterOutOfFuel [0] -> g:pendingPause a:signalEntered ; RUNNING_SPINNING
+RUNNING_SPINNING interpreterTrap [] -> a:clearPendingHostFunction a:clearPause a:finish a:setTrapReason a:setExitReason_INTERPRETER_TRAP a:clearContext a:reset ; IDLE
+RUNNING_SPINNING run [] ->  ; -
+RUNNING_SPINNING serialInMessage [] ->  ; -

@@ -3765,3 +3765,139 @@ StaticMemory's allocate/deallocate; PassThroughRouter's two), plus the
 assert paths, the quirks above, argument errors and a byte-exact
 `seqStartIn` envelope; `fprime-ref`'s
 `version_reports_at_startup_and_on_command`.
+
+### fprime-svc: Svc::WasmSequencer
+
+Port of `Svc/WasmSequencer` (the component, its two state machines, the
+host module and helpers) plus its embedding layer (`fprime_spacewasm` and
+the `spacewasm_c_api` calls it makes), at the upstream ids: opcodes
+`RUN`..`GLOBAL_GET` 0..=11 and the six `_PRM_SET`/`_PRM_SAVE` commands
+12..=17, events 0..=44, channels 0..=8, parameters
+`HOST_FUNCTION_TIMEOUT_SECS` 0, `INSTRUCTION_FUEL` 1, `SEQ_BASE_DIR` 2.
+Config: `fprime_config::wasm_sequencer` (`DEFAULT_SEQ_BASE_DIR`,
+`DEFAULT_INSTRUCTION_FUEL`, the `MODULE_NAME`/`GLOBAL_NAME`/
+`GUEST_EVENT_MESSAGE` string sizes, `MAX_SERIAL_{OUT,IN}_PORTS`,
+`SPACEWASM_PAGE_SIZE`, `SPACEWASM_MAX_PAGES`, `MAX_SEQUENCERS`,
+`MAX_BACKPATCH_ITERATIONS`, `LOAD_READ_CHUNK_SIZE`,
+`MAX_CONCURRENT_WAIT_COMMANDS`).
+
+Dependency and features. `fprime-svc`'s optional, off-by-default `wasm`
+feature adds the workspace crate `fprime-spacewasm` with crates.io
+`spacewasm = "=0.7.1"` (plus its `libm`). Without the feature neither is
+built and `wasm_sequencer` does not exist; the component also needs
+`std` (`#[cfg(all(feature = "wasm", feature = "std"))]`), while
+`fprime-spacewasm` and spacewasm are `no_std` and
+`tools/check-no-std.sh` builds them without `std`, for
+`thumbv7em-none-eabihf` and at the MSRV, and checks that the no_std
+tree adds only `spin` to the crates the features pull in. `fprime-ref`'s own `wasm` feature
+instantiates `wasmSeq` (see the `topology` module docs).
+
+`unsafe`. spacewasm contains `unsafe` internally, and embedding it needs
+some on our side: its heap is supplied through the C-ABI
+`__spacewasm_alloc`/`__spacewasm_dealloc` symbols of its
+`global_allocator!` macro over an `unsafe trait Allocator`, the page and
+guest-memory pools are raw allocations spacewasm writes through raw
+pointers, streamed module chunks need `InnerVec::from_raw_parts`, and
+spacewasm's `Engine` (built on its own `Rc`) needs an `unsafe impl Send`
+to live in component state. All of it is in `fprime-spacewasm`, which has
+`unsafe_code = "deny"` with `#[allow]` on the few items that need it, each
+with a `// SAFETY:` comment (`clippy::undocumented_unsafe_blocks` denied),
+and exposes a safe API, so `fprime-svc` keeps `#![forbid(unsafe_code)]`.
+
+Surface:
+
+```
+fprime_spacewasm (feature `spacewasm`, on with fprime-svc/wasm):
+  Heap::register(pages) -> Result<Heap, Error>; acquire() -> HeapGuard
+    pages_used(), page_count(), is_poisoned(), clear_poison()
+  GuestPool::new(size, Box<dyn GuestObserver>) -> Arc<GuestPool>
+    size(), offset(), reset(), alloc_offset(), realloc_offset()
+  GuestObserver::memory_grow_rejected(GrowRejected, requested_size)
+  HostModules::new(&guard, len); add_module(name, max_fn, max_globals);
+    add_function(module, name, params_sig, returns_sig, Fn(&[Value]) -> HostCallResult)
+  WasmEngine::new(&guard, host, stack_size, max_modules, CompilerOptions, &guest)
+    destroy(guard), load_module::<CHUNK>(guard, name, reader), find_module,
+    find_export_func, module_start, check_func_signature, find_global,
+    get_global, set_global, invoke, run(fuel), resume, resume_value, reset,
+    get_result, mem_read, mem_write
+  Error (spacewasm's error enums wrapped), PAGE_SIZE, MAX_PAGES,
+    MAX_SEQUENCERS, POOL_ALIGNMENT, MAX_CONTROL_FRAMES, MAX_STACK_DEPTH
+fprime_svc::wasm_sequencer:
+  WasmSequencer::new(name); init(queue_depth); configure(&Config);
+    reg_commands(); load_parameters(); deinit()
+  Config { heap_pages, guest_memory_size, stack_size, max_code_pages,
+    max_guest_modules, serial_out_max, serial_in: [SerialInQueueConfig; 5] }
+  SerialInQueueConfig { size, full_behavior }, SerialInQueueFullBehavior
+    { DropNewest (default), DropOldest, Assert }
+  ports in: cmd_in(n), check_timers(n) (Sched, async), cmd_response_in(n)
+    (CmdResponse, async), write_telemetry(n) (Sched, async), seq_run_in(n)
+    (CmdSeqIn, async), seq_cancel_in(n) (CmdSeqCancel, sync),
+    serial_in(n) (serial, guarded)
+  ports out: cmd_out (Com), get_tlm_chan (TlmGet), get_param (PrmGet),
+    serial_out[5] (serial), seq_start_out (CmdSeqIn), seq_done_out
+    (CmdResponse), cmd/evt/tlm/prm glue
+  controller_get_state(), interpreter_get_state(), config(),
+    param_get_{host_function_timeout_secs,instruction_fuel,seq_base_dir}()
+  OPCODE_*, EVENTID_*, CHANID_*, PARAMID_*
+  types: HostFunction, SequencePhase, MemoryGrowFailReason, Status,
+    SignalSource, TrapReason, AllocError, ExitReason, CommandRequest,
+    RequestContext, LoadRequest, InvokeRequest, FileName, ModuleName
+  controller_sm / interpreter_sm (fpp_state_machine!), re-exported as
+    controller_state_machine / interpreter_state_machine
+```
+
+`seqRunIn` / `seqDone` / `seqStartOut` use the `fprime_svc::seq` port types,
+so a `SeqDispatcher` drives it as it drives `CmdSequencer` (tested).
+
+Deviations (each deliberate):
+
+- **Embedding layer.** The C API's status codes become `Error` values that
+  the component maps onto its FPP `Status` enum (the same codes). The
+  store is allocated from the sequencer's own heap (as `spacewasm_new`
+  does), and the page bump allocator and its poison flag (C++
+  `globalAlloc`/`globalDealloc`) moved into `fprime-spacewasm` so the
+  memory they hand out stays out of safe code's reach. The registry slot
+  bookkeeping of `fprime_spacewasm` is kept: `MAX_SEQUENCERS` slots, one
+  current at a time, serialized by the component's process-wide
+  `GLOBAL_ALLOCATOR_LOCK` (C++ `getGlobalAllocatorLock`).
+- **No `Fw::MemAllocator`.** `configure(&Config)` allocates the heap
+  pages, the guest pool, the `serial_send` buffer and the `serialIn`
+  queues itself; `deinit()` releases them (and the registry slot).
+- **Host functions** are closures holding a `Weak<WasmSequencer>` (C++:
+  a `this` user-data pointer). There is no saved `spacewasm_caller_t`:
+  the pending call keeps its raw guest pointers and the dispatch reads and
+  writes guest memory through the store (`mem_read`/`mem_write`) once the
+  engine has paused.
+- **Guest pool.** `GuestPool` counts live regions; `reset()` (C++
+  `destroyStore`'s `m_guestPoolOffset = 0`) refuses while one is live,
+  and a shrinking `realloc` (unreachable: spacewasm only grows) keeps the
+  tail instead of lowering the offset, so memory a live store uses is
+  never handed out twice.
+- **spacewasm panics.** Upstream's staticlib routes Rust panics through
+  `spacewasm_panic` into `FW_ASSERT`; here spacewasm is ordinary Rust, so
+  a panic inside it is a Rust panic on the component thread (the
+  deployment's panic strategy decides). Upstream's
+  `SpacewasmPanicBridgeAssertsFsw` test is therefore not ported.
+- **Queue messages.** The queued commands share one `cmdIn` message type
+  (the opcode inside picks the handler), as elsewhere in this port; the
+  state-machine signals ride the component queue with the `fpp-to-cpp`
+  envelope.
+- **Event text** names enum arguments by their Rust variant names.
+  Event and telemetry argument bytes are upstream's, including the
+  format-argument order quirks of a few event formats.
+- **Tests.** The upstream suite (`WasmSequencerTestMain.cpp`) is ported
+  with the upstream `.wasm` modules and their `.wat` sources byte for byte,
+  except `SpacewasmPanicBridgeAssertsFsw`, plus Rust-only tests (page
+  reuse across runs, a fractional host-call timeout, `SeqName`
+  truncation, `SeqDispatcher` interop). Each test stages its modules in
+  its own directory used as `SEQ_BASE_DIR`, the tests run one at a time
+  (the allocator registry is process-wide), and the upstream "port not
+  connected" variants are tester options. Both state machines replay the
+  `fpp-to-cpp` 3.3.0 golden traces
+  (`crates/fprime-comp/tests/sm_traces/WasmSequencer*.txt`,
+  `crates/fprime-svc/tests/wasm_sequencer_sm_traces.rs`).
+- **Ref.** Only `fprime-ref --features wasm` instantiates `wasmSeq`
+  (base id 0x10007000, upstream's wiring, rate group 2 members 6 and 7);
+  the checked-in ground dictionary describes the default build, so it has
+  no `wasmSeq` entries. `tests/wasm_seq_test.rs` runs a module that
+  dispatches `CMD_NO_OP_STRING` through `cmdDisp.seqCmdBuff[2]`.

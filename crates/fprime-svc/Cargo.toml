@@ -41,6 +41,13 @@ miniz_oxide = { version = "0.9", optional = true, default-features = false, feat
 aes-gcm = { version = "0.10.3", optional = true, default-features = false, features = ["aes", "zeroize"] }
 getrandom = { version = "0.2.15", optional = true }
 zeroize = { version = "1.8", optional = true }
+# - `wasm` compiles `Svc::WasmSequencer` (`wasm_sequencer`) on NASA's
+#   `spacewasm` interpreter (=0.7.1, the version upstream pins), through
+#   `fprime-spacewasm`, the port of upstream's `fprime_spacewasm` glue and
+#   the workspace's only crate that is not `forbid(unsafe_code)` (see its
+#   docs). The component reads sequence files, so it also needs `std`;
+#   with `wasm` on a `no_std` build only the interpreter layer is built.
+fprime-spacewasm = { path = "../fprime-spacewasm", optional = true }
 
 [features]
 default = ["std"]
@@ -62,6 +69,7 @@ spin = [
 # (forwarded to fprime-comp / fprime-os).
 lockless-queue = ["fprime-comp/lockless-queue"]
 zlib = ["dep:miniz_oxide"]
+wasm = ["dep:fprime-spacewasm", "fprime-spacewasm/spacewasm"]
 aes-gcm = ["dep:aes-gcm", "dep:getrandom", "dep:zeroize"]
 
 # A `#![no_std]` file-free deployment (rate groups, command dispatch,

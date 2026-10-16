@@ -19,6 +19,13 @@ fprime-comp.workspace = true
 fprime-svc.workspace = true
 fprime-drv.workspace = true
 
+[features]
+# Instantiate upstream Ref's `wasmSeq` (Svc::WasmSequencer, base id
+# 0x10007000). Off by default: it pulls in the `spacewasm` crate through
+# `fprime-svc/wasm`, and the checked-in dictionary describes the default
+# build.
+wasm = ["fprime-svc/wasm"]
+
 [[bin]]
 name = "fprime-ref"
 path = "src/main.rs"

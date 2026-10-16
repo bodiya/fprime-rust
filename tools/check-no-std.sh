@@ -8,10 +8,13 @@
 # needs no file system or console) build and test without `std`, that
 # nothing in them pulls `std` in (a build for a bare-metal target, which
 # has no `std` at all — including the two no_std examples), that the MSRV
-# holds for those builds, that fprime-svc's optional `zlib` / `aes-gcm`
-# features compose with no_std, and that the default build still has zero
-# third-party dependencies while the no_std build adds only `spin` (plus,
-# with the optional features on, exactly those features' crates). Every
+# holds for those builds, that fprime-svc's optional `zlib` / `aes-gcm` /
+# `wasm` features compose with no_std (`wasm` builds the fprime-spacewasm
+# glue crate and spacewasm without std; the WasmSequencer component itself
+# needs std and is absent from these builds), and that the default build
+# still has zero third-party dependencies while the no_std build adds only
+# `spin` (plus, with the optional features on, exactly those features'
+# crates). Every
 # build and test runs with both `Os::Queue` delegates: the default
 # lock-based PriorityQueue and the ISR-safe LocklessPriorityQueue
 # (`lockless-queue` feature, the recommended no_std choice when interrupts
@@ -34,9 +37,9 @@ LOCKLESS_PKGS=(-p fprime-os -p fprime-comp -p fprime-svc)
 NOSTD_LOCKLESS=(--no-default-features --features spin,lockless-queue)
 NOSTD_ALL_LOCKLESS=(--no-default-features --features "$SPIN_ALL,fprime-os/lockless-queue")
 # fprime-svc's optional third-party features, with and without std.
-SVC_OPT=zlib,aes-gcm
+SVC_OPT=zlib,aes-gcm,wasm
 NOSTD_SVC_OPT=(--no-default-features --features "spin,$SVC_OPT")
-NOSTD_ALL_OPT=(--no-default-features --features "$SPIN_ALL,fprime-svc/zlib,fprime-svc/aes-gcm")
+NOSTD_ALL_OPT=(--no-default-features --features "$SPIN_ALL,fprime-svc/zlib,fprime-svc/aes-gcm,fprime-svc/wasm")
 EXAMPLES=(--example no_std_component --example no_std_deployment)
 
 step() { printf '\n== %s\n' "$*"; }

@@ -19,7 +19,11 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
    message queues with FIFO-within-priority, guarded ports, rate groups,
    command dispatch/registration, event filtering, telemetry double buffering
    — behaving as the C++ components do, including their documented quirks.
-3. **Idiomatic, safe Rust**: `#![forbid(unsafe_code)]` in every crate; status
+3. **Idiomatic, safe Rust**: `#![forbid(unsafe_code)]` in every crate (one
+   exception: `fprime-spacewasm`, built only with `fprime-svc/wasm`, is the
+   allocator and engine glue `spacewasm` requires and keeps `unsafe` denied
+   except on its documented items; see "WasmSequencer" in
+   `docs/api-notes.md`); status
    enums instead of exceptions (F Prime has no exceptions anyway); ownership
    instead of raw-pointer buffer passing; `std` threading primitives.
 4. **Flight-software discipline**: no heap allocation in steady state (allocate
@@ -30,7 +34,9 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
    pull in pure-Rust crates for specific components: `fprime-svc`'s `zlib`
    (`miniz_oxide`, for `Svc::DpZLibCompressor`) and `aes-gcm` (RustCrypto
    `aes-gcm` + `getrandom` + `zeroize`, for `Svc::Ccsds::AesGcmEncryptor` /
-   `AesGcmDecryptor`). The default build stays dependency-free.
+   `AesGcmDecryptor`) and `wasm` (`spacewasm` `=0.7.1` + `libm`, for
+   `Svc::WasmSequencer`; spacewasm contains `unsafe` code internally). The
+   default build stays dependency-free.
 
 **Non-goals (phase 1)**
 
@@ -51,8 +57,8 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   below). The file-based services, the drivers and the deployment crates
   stay `std`.
 - Nothing in the pinned `Svc` tree remains unported (see the status
-  matrix in README.md and `docs/ROADMAP.md`); `Svc::Ccsds::CfdpManager`
-  (CFDP) was the last. (`Fw/Sm` state machines are ported as the
+  matrix in README.md and `docs/ROADMAP.md`); `Svc::WasmSequencer`
+  (behind the `wasm` feature) was the last. (`Fw/Sm` state machines are ported as the
   `fpp_state_machine!` macro layer, which `fpp-to-rust` emits.)
   Everything  listed as a phase-1 gap in earlier revisions of this document
   (CmdSequencer, FpySequencer, file services, data products, TlmPacketizer, the CCSDS
@@ -61,7 +67,7 @@ analyses disagree on a wire format, the analyses (i.e. the C++ code) win.
   data-product compression (`DpCompressProc` always, `DpZLibCompressor`
   behind the `zlib` feature) and the CCSDS AOS, `ComAggregator` and SDLS
   components (`AesGcmEncryptor`/`AesGcmDecryptor` behind the `aes-gcm`
-  feature).
+  feature) and `WasmSequencer` (behind the `wasm` feature).
 
 ## Workspace layout
 
@@ -73,6 +79,7 @@ crates/
   fprime-utils    # Utils: CRC32 hash, CRC checker, Os::ValidateFile, circular buffer, types queue, rate limiter, token bucket
   fprime-comp     # Fw/Obj + Fw/Port + Fw/Comp: object/port/component model, cmd/evt/tlm glue
   fprime-svc      # Svc: rate groups, CmdDispatcher, EventManager, TlmChan, Health, comms stack, ...
+  fprime-spacewasm # no_std glue between WasmSequencer and spacewasm (only with fprime-svc/wasm; the one crate with unsafe code)
   fprime-drv      # Drv: byte stream driver model, TCP client/server, async byte-stream buffer adapter, hardware drivers
   fprime-ref      # Reference deployment binary (Ref-style topology, GDS-compatible)
 ```
@@ -84,13 +91,16 @@ fprime-fw    -> fprime-config
 fprime-os    -> fprime-fw, fprime-config
 fprime-utils -> fprime-os, fprime-fw, fprime-config
 fprime-comp  -> fprime-fw, fprime-os, fprime-config
-fprime-svc   -> fprime-comp, fprime-utils, (fw, os, config)
+fprime-svc   -> fprime-comp, fprime-utils, (fw, os, config), [fprime-spacewasm with `wasm`]
+fprime-spacewasm -> fprime-config, spacewasm (crates.io, =0.7.1)
 fprime-drv   -> fprime-comp, (fw, os, config)
 fprime-ref   -> everything
 ```
 
 Rust 2024 edition, `rust-version = "1.87"` floor, workspace lints:
-`unsafe_code = "forbid"`, `clippy::all = "warn"`.
+`unsafe_code = "forbid"`, `clippy::all = "warn"`. `fprime-spacewasm` has
+its own: `unsafe_code = "deny"` (allowed item by item, each with a
+`// SAFETY:` comment), `clippy::undocumented_unsafe_blocks = "deny"`.
 
 ## no_std
 
@@ -108,7 +118,8 @@ Configurations:
 | `fprime-os` | std prelude, every facility | `#![no_std]` + `alloc` subset: `queue` (both delegates), `task`, `mutex`, `condition`, `rawtime`, `interval_timer`, `generic`, `cpu`/`memory` (stub backends), `platform` |
 | `fprime-comp` | always `#![no_std]` + `alloc`, `std` linked back by the `std` feature | everything (passive/queued/active bases, ports, envelopes, escrow, serialize ports, glue, state machines, macros) |
 | `fprime-utils` | std prelude, every module | `#![no_std]` + `alloc`: `hash`, `types` (circular buffer, queue), `rate_limiter`, `token_bucket`, `cfdp`; not `crc_checker`, `validate_file` (files) |
-| `fprime-svc` | std prelude, every component | `#![no_std]` + `alloc`: rate groups (`RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`), `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime comms (`FprimeFramer`/`Deframer`, `FrameAccumulator` + detectors, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`), CCSDS (`SpacePacketFramer`/`Deframer`, `TmFramer`, `TcDeframer`, `ApidManager`, AOS, the SDLS framework, `ComAggregator`), `GenericHub`, `BufferAccumulator`, `DpManager`, `DpCompressProc`, `PassiveTextLogger`, `ActiveTextLogger` (no log file), `FatalHandler` (bare-metal impl), `AssertFatalAdapter`, `PosixTime`, `ChronoTime`, `OsTime`, `LinuxTimer`, `CmdSplitter`, `ComRetry`, `BufferRepeater`, `PassThroughRouter`, `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`; `DpZLibCompressor` / the AES-GCM pair with `zlib` / `aes-gcm` |
+| `fprime-svc` | std prelude, every component | `#![no_std]` + `alloc`: rate groups (`RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`), `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime comms (`FprimeFramer`/`Deframer`, `FrameAccumulator` + detectors, `FprimeRouter`, `ComQueue`, `ComStub`, `BufferManager`), CCSDS (`SpacePacketFramer`/`Deframer`, `TmFramer`, `TcDeframer`, `ApidManager`, AOS, the SDLS framework, `ComAggregator`), `GenericHub`, `BufferAccumulator`, `DpManager`, `DpCompressProc`, `PassiveTextLogger`, `ActiveTextLogger` (no log file), `FatalHandler` (bare-metal impl), `AssertFatalAdapter`, `PosixTime`, `ChronoTime`, `OsTime`, `LinuxTimer`, `CmdSplitter`, `ComRetry`, `BufferRepeater`, `PassThroughRouter`, `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`; `DpZLibCompressor` / the AES-GCM pair with `zlib` / `aes-gcm`; with `wasm`, the `fprime-spacewasm` glue and `spacewasm` (`WasmSequencer` itself needs `std`) |
+| `fprime-spacewasm` | always `#![no_std]` + `alloc` (no features of its own but `spacewasm`, which `fprime-svc/wasm` turns on) | same |
 
 `spin` is a separate, explicit feature because cargo cannot enable a
 dependency when a feature is turned *off*; building with neither `std` nor

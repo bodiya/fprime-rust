@@ -35,7 +35,10 @@
 //! `cmd_sequencer`), `buffer_logger`, `prm_db`, `dp_writer`, `dp_catalog`,
 //! `com_logger`, `cmd_sequencer`, `fpy_sequencer` (sequence files),
 //! `system_resources` (procfs and file-system usage),
-//! `ccsds::sdls_file_key_manager` and `ccsds::cfdp_manager`. See ARCHITECTURE.md "no_std".
+//! `ccsds::sdls_file_key_manager`, `ccsds::cfdp_manager` and, with the
+//! optional `wasm` feature, `wasm_sequencer` (sequence files; the feature's
+//! `fprime-spacewasm` glue and `spacewasm` themselves build without `std`).
+//! See ARCHITECTURE.md "no_std".
 
 // The std build keeps the std prelude (the file-based components are
 // hosted code); only the `no_std` build drops it. Unit tests always run on
@@ -123,6 +126,8 @@ pub mod system_resources;
 pub mod tlm_chan;
 pub mod tlm_packetizer;
 pub mod version;
+#[cfg(all(feature = "wasm", feature = "std"))]
+pub mod wasm_sequencer;
 
 /// The unit tests' platform: in a `no_std` test build (still a hosted
 /// target), [`install`](test_platform::install) registers a `std::thread`

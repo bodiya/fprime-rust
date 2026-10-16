@@ -106,17 +106,36 @@
 //! upstream's `BASE_ID + 0x05000` (here `tlmSend`) for `0x06000`, the next
 //! free `CdhCore` offset.
 //!
+//! ## `wasmSeq` (`wasm` feature)
+//!
+//! Built with `--features wasm` (which enables `fprime-svc/wasm`), the
+//! topology also instantiates upstream Ref's `wasmSeq`
+//! (`Svc.WasmSequencer`, base id `0x1000_7000`, priority 20), wired as
+//! `Ref/Top/topology.fpp` wires it: `rateGroup2Comp.RateGroupMemberOut[6]
+//! -> checkTimers` and `[7] -> writeTelemetry` (indices 3-5 stay
+//! unconnected, as this deployment's rate group 2 has fewer members),
+//! `getTlmChan -> tlmSend.TlmGet`, `getParam -> prmDb.getPrm`, and the
+//! command source pair `cmdOut -> cmdDisp.seqCmdBuff[2]` /
+//! `seqCmdStatus[2] -> cmdResponseIn`, plus the command, event,
+//! telemetry, time and parameter patterns. It is configured with the
+//! default `Config` (upstream `Svc::WasmSequencer::Config()`), loads its
+//! parameters with the other components, and is de-initialized after its
+//! task is joined. The checked-in ground dictionary describes the
+//! default build and has no `wasmSeq` entries.
+//!
 //! ## Command-port index map (cmdDisp `compCmdReg`/`compCmdSend`, matched)
 //!
 //! 0 `cmdDisp` (self), 1 `events`, 2 `health`, 3 `comQueue`, 4 `signalGen`,
 //! 5 `fileDownlink`, 6 `fileManager`, 7 `prmDb`, 8 `cmdSeq`, 9 `dpMgr`,
 //! 10 `dpWriter`, 11 `dpCat`, 12 `systemResources`, 13 `comLog`,
-//! 14 `dpBufferAccumulator`, 15 `version`.
+//! 14 `dpBufferAccumulator`, 15 `version`, 16 `wasmSeq` (`wasm` feature
+//! only).
 //! (`fileUplink` declares no commands, as in C++.)
 //!
 //! ## Command-source index map (cmdDisp `seqCmdBuff`/`seqCmdStatus`, matched)
 //!
-//! 0 `fprimeRouter` (the uplink), 1 `cmdSeq` (the sequencer).
+//! 0 `fprimeRouter` (the uplink), 1 `cmdSeq` (the sequencer), 2 `wasmSeq`
+//! (`wasm` feature only).
 //!
 //! ## Health ping index map (`pingSend[i]`/`pingReturn[i]`, WARN 3 FATAL 5)
 //!
@@ -222,6 +241,8 @@ use fprime_svc::rate_group_driver::{Divider, RateGroupDriver};
 use fprime_svc::system_resources::SystemResources;
 use fprime_svc::tlm_chan::TlmChan;
 use fprime_svc::version::Version;
+#[cfg(feature = "wasm")]
+use fprime_svc::wasm_sequencer::{Config as WasmSequencerConfig, WasmSequencer};
 
 use crate::com_splitter::ComSplitter;
 use crate::shims::{DrvToSvcDataShim, DrvToSvcReadyShim, SvcToDrvSendShim};
@@ -304,6 +325,9 @@ pub const RATE_GROUP_2_BASE_ID: FwIdType = 0x1000_2000;
 pub const RATE_GROUP_3_BASE_ID: FwIdType = 0x1000_3000;
 /// `cmdSeq` base ID.
 pub const CMD_SEQUENCER_BASE_ID: FwIdType = 0x1000_6000;
+/// `wasmSeq` base ID (`wasm` feature only).
+#[cfg(feature = "wasm")]
+pub const WASM_SEQUENCER_BASE_ID: FwIdType = 0x1000_7000;
 /// `signalGen` base ID (the C++ SG1 slot).
 pub const SIGNAL_GEN_BASE_ID: FwIdType = 0x1001_1000;
 /// `posixTime` base ID.
@@ -375,6 +399,9 @@ const PRM_DB_PRIORITY: FwTaskPriorityType = 21;
 const DP_BUFFER_ACCUMULATOR_PRIORITY: FwTaskPriorityType = 21;
 /// `Ref/Top/instances.fpp`: `cmdSeq ... priority 20`.
 const CMD_SEQ_PRIORITY: FwTaskPriorityType = 20;
+/// `Ref/Top/instances.fpp`: `wasmSeq ... priority 20`.
+#[cfg(feature = "wasm")]
+const WASM_SEQ_PRIORITY: FwTaskPriorityType = 20;
 /// `ComLoggerTeeConfig.Priorities.comLog`.
 const COM_LOGGER_PRIORITY: FwTaskPriorityType = 18;
 
@@ -655,6 +682,10 @@ pub struct RefTopology {
     pub signal_gen: Arc<SignalGen>,
     /// `cmdSeq` — command sequencer (command source index 1).
     pub cmd_sequencer: Arc<CmdSequencer>,
+    /// `wasmSeq` — WebAssembly sequencer (command source index 2; `wasm`
+    /// feature only).
+    #[cfg(feature = "wasm")]
+    pub wasm_sequencer: Arc<WasmSequencer>,
     /// `systemResources` — CPU/memory telemetry on rate group 1.
     pub system_resources: Arc<SystemResources>,
     /// `prmDb` — parameter database.
@@ -724,6 +755,8 @@ impl RefTopology {
         let aggregator = ComAggregator::new("aggregator");
         let signal_gen = SignalGen::new("signalGen");
         let cmd_sequencer = CmdSequencer::new("cmdSeq");
+        #[cfg(feature = "wasm")]
+        let wasm_sequencer = WasmSequencer::new("wasmSeq");
         let system_resources = SystemResources::new("systemResources");
         let prm_db = PrmDb::new("prmDb");
         let file_uplink = FileUplink::new("fileUplink");
@@ -778,6 +811,12 @@ impl RefTopology {
         fatal_adapter.base.set_id_base(FATAL_ADAPTER_BASE_ID);
         text_logger.base.set_id_base(TEXT_LOGGER_BASE_ID);
         version.base.set_id_base(VERSION_BASE_ID);
+        #[cfg(feature = "wasm")]
+        wasm_sequencer
+            .active
+            .queued
+            .base
+            .set_id_base(WASM_SEQUENCER_BASE_ID);
         buffer_manager.base.set_id_base(BUFFER_MANAGER_BASE_ID);
         com_queue.active.queued.base.set_id_base(COM_QUEUE_BASE_ID);
         framer.base.set_id_base(FRAMER_BASE_ID);
@@ -1022,6 +1061,19 @@ impl RefTopology {
             .cmd_response_out
             .connect_to(cmd_dispatcher.comp_cmd_stat_in(15));
 
+        #[cfg(feature = "wasm")]
+        {
+            wasm_sequencer
+                .cmd
+                .cmd_reg_out
+                .connect_to(cmd_dispatcher.comp_cmd_reg_in(16));
+            cmd_dispatcher.comp_cmd_send[16].connect_to(wasm_sequencer.cmd_in(0));
+            wasm_sequencer
+                .cmd
+                .cmd_response_out
+                .connect_to(cmd_dispatcher.comp_cmd_stat_in(16));
+        }
+
         // -- Event pattern: logOut -> events.LogRecv, textLogOut ->
         //    textLogger, timeGetOut -> posixTime (every EventGlue holder,
         //    including events' own logOut — C++ pattern-wires the self-loop).
@@ -1064,6 +1116,13 @@ impl RefTopology {
             evt.text_log_out.connect_to(text_logger.text_logger_in(0));
             evt.time_out.connect_to(posix_time.time_get_port_in(0));
         }
+        #[cfg(feature = "wasm")]
+        {
+            let evt = &wasm_sequencer.evt;
+            evt.log_out.connect_to(event_manager.log_recv_in(0));
+            evt.text_log_out.connect_to(text_logger.text_logger_in(0));
+            evt.time_out.connect_to(posix_time.time_get_port_in(0));
+        }
 
         // -- Telemetry pattern: tlmOut -> tlmSend.TlmRecv.
         let tlm_glues = [
@@ -1091,6 +1150,11 @@ impl RefTopology {
         for tlm in tlm_glues {
             tlm.tlm_out.connect_to(tlm_chan.tlm_recv_in(0));
         }
+        #[cfg(feature = "wasm")]
+        wasm_sequencer
+            .tlm
+            .tlm_out
+            .connect_to(tlm_chan.tlm_recv_in(0));
 
         // -- Health ping pattern (index map in the module header). ----------
         health.ping_send[0].connect_to(rate_group_1.ping_in(0));
@@ -1146,6 +1210,12 @@ impl RefTopology {
         rate_group_2.rate_group_member_out[0].connect_to(event_manager.run_in(0));
         rate_group_2.rate_group_member_out[1].connect_to(cmd_sequencer.sched_in(0));
         rate_group_2.rate_group_member_out[2].connect_to(file_manager.sched_in(0));
+        // wasmSeq (`wasm` feature): upstream's RateGroupMemberOut[6]/[7].
+        #[cfg(feature = "wasm")]
+        {
+            rate_group_2.rate_group_member_out[6].connect_to(wasm_sequencer.check_timers(0));
+            rate_group_2.rate_group_member_out[7].connect_to(wasm_sequencer.write_telemetry(0));
+        }
         // RG3 (0.25 Hz): health.Run + bufferManager.schedIn (C++ Ref wires
         // the comms BufferManager telemetry sweep on RG3 too) + the three
         // DataProducts telemetry sweeps.
@@ -1309,6 +1379,20 @@ impl RefTopology {
             .com_cmd_out
             .connect_to(cmd_dispatcher.seq_cmd_buff_in(1));
         cmd_dispatcher.seq_cmd_status[1].connect_to(cmd_sequencer.cmd_response_in(0));
+        // wasmSeq (`wasm` feature) is the THIRD command source; its
+        // telemetry and parameter reads go to tlmSend and prmDb
+        // (upstream `wasmSeq.getTlmChan` / `wasmSeq.getParam`).
+        #[cfg(feature = "wasm")]
+        {
+            wasm_sequencer
+                .cmd_out
+                .connect_to(cmd_dispatcher.seq_cmd_buff_in(2));
+            cmd_dispatcher.seq_cmd_status[2].connect_to(wasm_sequencer.cmd_response_in(0));
+            wasm_sequencer
+                .get_tlm_chan
+                .connect_to(tlm_chan.tlm_get_in(0));
+            wasm_sequencer.get_param.connect_to(prm_db.get_prm(0));
+        }
         // cmdSeq.seqStartOut / seqDone stay unconnected (C++ Ref parity);
         // both are guarded by is_connected on every path a sequence run
         // can take from a command.
@@ -1359,6 +1443,11 @@ impl RefTopology {
         // -- Parameters (`param connections instance FileHandling.prmDb`). -
         signal_gen.prm.prm_get_out.connect_to(prm_db.get_prm(0));
         signal_gen.prm.prm_set_out.connect_to(prm_db.set_prm(0));
+        #[cfg(feature = "wasm")]
+        {
+            wasm_sequencer.prm.prm_get_out.connect_to(prm_db.get_prm(0));
+            wasm_sequencer.prm.prm_set_out.connect_to(prm_db.set_prm(0));
+        }
 
         // -- Fatal chain. ---------------------------------------------------
         event_manager
@@ -1500,6 +1589,10 @@ impl RefTopology {
         // C++ `cmdSeq.allocateBuffer(0, mallocator, 5 * 1024)`; released in
         // teardown after every task has been joined.
         cmd_sequencer.allocate_buffer(CMD_SEQ_ALLOCATOR_ID, CMD_SEQ_BUFFER_BYTES);
+        // Upstream `wasmSeq.configure(Svc::WasmSequencer::Config(),
+        // memAllocator)`; released by `deinit` in teardown.
+        #[cfg(feature = "wasm")]
+        wasm_sequencer.configure(&WasmSequencerConfig::default());
         if let (Some(tcp), Some((hostname, port))) = (&tcp_client, config.comms_enabled()) {
             let status = tcp.configure(hostname, port, TCP_BUFFER_SIZE, true);
             // C++ parity: configure failures are init-time fatal.
@@ -1526,6 +1619,8 @@ impl RefTopology {
         aggregator.create_queue(AGGREGATOR_QUEUE_DEPTH);
         signal_gen.init(QUEUE_DEPTH);
         cmd_sequencer.init(QUEUE_DEPTH);
+        #[cfg(feature = "wasm")]
+        wasm_sequencer.init(QUEUE_DEPTH);
         prm_db.init(QUEUE_DEPTH);
         file_uplink.init(QUEUE_DEPTH);
         file_downlink.init(QUEUE_DEPTH);
@@ -1549,6 +1644,8 @@ impl RefTopology {
         file_manager.reg_commands();
         prm_db.reg_commands();
         cmd_sequencer.reg_commands();
+        #[cfg(feature = "wasm")]
+        wasm_sequencer.reg_commands();
         dp_manager.reg_commands();
         dp_writer.reg_commands();
         dp_catalog.reg_commands();
@@ -1569,6 +1666,8 @@ impl RefTopology {
         // its values through prmGetOut (falling back to the FPP defaults).
         // ------------------------------------------------------------------
         signal_gen.load_parameters();
+        #[cfg(feature = "wasm")]
+        wasm_sequencer.load_parameters();
 
         // ------------------------------------------------------------------
         // Phase 8: startTasks (+ hand-started driver threads, C++ parity).
@@ -1626,6 +1725,13 @@ impl RefTopology {
         cmd_sequencer
             .active
             .start(&cmd_sequencer, CMD_SEQ_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
+        #[cfg(feature = "wasm")]
+        wasm_sequencer.active.start(
+            &wasm_sequencer,
+            WASM_SEQ_PRIORITY,
+            TASK_DEFAULT,
+            TASK_DEFAULT,
+        );
         dp_manager
             .active
             .start(&dp_manager, DP_MANAGER_PRIORITY, TASK_DEFAULT, TASK_DEFAULT);
@@ -1683,6 +1789,8 @@ impl RefTopology {
             framing: config.framing,
             signal_gen,
             cmd_sequencer,
+            #[cfg(feature = "wasm")]
+            wasm_sequencer,
             system_resources,
             prm_db,
             file_uplink,
@@ -1733,6 +1841,8 @@ impl RefTopology {
         self.file_manager.active.exit();
         self.prm_db.active.exit();
         self.cmd_sequencer.active.exit();
+        #[cfg(feature = "wasm")]
+        self.wasm_sequencer.active.exit();
         self.dp_manager.active.exit();
         self.dp_writer.active.exit();
         self.dp_catalog.active.exit();
@@ -1754,6 +1864,8 @@ impl RefTopology {
         let _ = self.file_manager.active.join();
         let _ = self.prm_db.active.join();
         let _ = self.cmd_sequencer.active.join();
+        #[cfg(feature = "wasm")]
+        let _ = self.wasm_sequencer.active.join();
         let _ = self.dp_manager.active.join();
         let _ = self.dp_writer.active.join();
         let _ = self.dp_catalog.active.join();
@@ -1768,6 +1880,10 @@ impl RefTopology {
         // Resource deallocation (C++ `cmdSeq.deallocateBuffer(mallocator)`)
         // — strictly after every task has been joined.
         self.cmd_sequencer.deallocate_buffer();
+        // Upstream `wasmSeq.deinit()`: the store, the pools and the global
+        // allocator slot.
+        #[cfg(feature = "wasm")]
+        self.wasm_sequencer.deinit();
         // tearDownComponents phase (C++ DataProducts, instances in base-id
         // order: dpCat.shutdown() + dpBufferManager.cleanup() in the
         // dpBufferManager phase, then dpBufferAccumulator.deallocateQueue()).

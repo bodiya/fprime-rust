@@ -14,6 +14,8 @@ mod common;
 use common::{DEADLINE, Harness, build_command_frame, deframe, wait_until};
 
 use fprime_ref::signal_gen;
+#[cfg(feature = "wasm")]
+use fprime_ref::topology::WASM_SEQUENCER_BASE_ID;
 use fprime_ref::topology::{
     BUFFER_MANAGER_BASE_ID, CMD_DISPATCHER_BASE_ID, CMD_SEQUENCER_BASE_ID, COM_QUEUE_BASE_ID,
     DP_BUFFER_ACCUMULATOR_BASE_ID, DP_BUFFER_MANAGER_BASE_ID, DP_CATALOG_BASE_ID,
@@ -103,6 +105,17 @@ fn tlm_value_size(id: u32, value: &[u8]) -> usize {
             assert!(value.len() >= 4, "truncated CustomVersionDb");
             4 + string_size(&value[4..]) + 1
         }
+        // wasmSeq (`wasm` feature): ControllerState/InterpreterState (U8
+        // state enums), five U64 counters, LastTrapReason (I32 enum),
+        // SeqName (string size 40)
+        #[cfg(feature = "wasm")]
+        _ if (WASM_SEQUENCER_BASE_ID..WASM_SEQUENCER_BASE_ID + 2).contains(&id) => 1,
+        #[cfg(feature = "wasm")]
+        _ if (WASM_SEQUENCER_BASE_ID + 2..WASM_SEQUENCER_BASE_ID + 7).contains(&id) => U64,
+        #[cfg(feature = "wasm")]
+        _ if id == WASM_SEQUENCER_BASE_ID + 7 => 4,
+        #[cfg(feature = "wasm")]
+        _ if id == WASM_SEQUENCER_BASE_ID + 8 => string_size(value),
         _ => panic!("telemetry channel 0x{id:x} missing from the test dictionary"),
     }
 }

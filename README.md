@@ -19,12 +19,15 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
   guarded and async ports with priority message queues (FIFO within
   priority), rate groups, command registration/dispatch, event filtering and
   throttling, double-buffered telemetry storage, health pings.
-- **Flight-software discipline**: `#![forbid(unsafe_code)]` everywhere, zero
+- **Flight-software discipline**: `#![forbid(unsafe_code)]` everywhere (the
+  one exception is `fprime-spacewasm`, the glue between `WasmSequencer` and
+  the `spacewasm` interpreter, compiled only with `fprime-svc/wasm`), zero
   third-party dependencies in the default build (the only exceptions sit
   behind optional, off-by-default cargo features: `fprime-svc/zlib` for
-  data-product compression and `fprime-svc/aes-gcm` for SDLS AES-GCM), no steady-state heap allocation (allocate at
-  init, recycle after), status enums with the C++ discriminants, `fw_assert`
-  for invariants.
+  data-product compression, `fprime-svc/aes-gcm` for SDLS AES-GCM and
+  `fprime-svc/wasm` for the WebAssembly sequencer), no steady-state heap
+  allocation (allocate at init, recycle after), status enums with the C++
+  discriminants, `fw_assert` for invariants.
 - **A runnable reference deployment** (`fprime-ref`) mirroring the C++ `Ref`
   topology: rate groups driving a demo component, the full C&DH stack,
   parameters, file uplink/downlink, a command sequencer, data products, and a
@@ -42,6 +45,7 @@ architecture — and its exact wire formats — to safe, dependency-free Rust.
 | `fprime-utils` | `Utils/` — CRC-32 hash, file CRC sidecars, circular buffer, fixed-message queue, rate limiter, token bucket |
 | `fprime-comp` | `Fw/Obj` + `Fw/Port` + `Fw/Comp` + the FPP autocoder contract — port traits, output-port wiring, async message envelopes, active-component lifecycle, cmd/event/tlm glue |
 | `fprime-svc` | `Svc/` — the standard service components (see matrix below) |
+| `fprime-spacewasm` | `Svc/WasmSequencer/fprime_spacewasm` + the `spacewasm` C API — the `no_std` glue between `WasmSequencer` and the `spacewasm` interpreter (page heap, guest memory pool, engine wrapper); the workspace's only crate with `unsafe` code, built only with `fprime-svc/wasm` |
 | `fprime-drv` | `Drv/` — byte-stream driver model, TCP client/server |
 | `fprime-ref` | `Ref` — reference deployment binary + end-to-end integration tests |
 | `fprime-fpp` | the FPP compiler front end and `fpp-to-rust` back end (see `crates/fprime-fpp/README.md`) |
@@ -102,6 +106,10 @@ cargo test --workspace --features fprime-svc/zlib
 # aes-gcm, getrandom and zeroize)
 cargo test --workspace --features fprime-svc/aes-gcm
 
+# Also build/test the WebAssembly sequencer (pulls in spacewasm and libm);
+# fprime-ref/wasm also instantiates it in the reference deployment
+cargo test --workspace --features fprime-svc/wasm,fprime-ref/wasm
+
 # no_std + alloc: fprime-config, fprime-fw, fprime-comp, fprime-utils,
 # fprime-svc and the no_std subset of fprime-os without the default `std`
 # feature (the file-based utilities and components drop out). Locks then
@@ -119,7 +127,7 @@ cargo build --target thumbv7em-none-eabihf -p fprime-svc --example no_std_deploy
 # ... with the ISR-safe lockless queue delegate (Os::Generic::LocklessPriorityQueue)
 cargo test -p fprime-os -p fprime-comp -p fprime-svc --no-default-features --features spin,lockless-queue
 # ... and with fprime-svc's optional features
-cargo test -p fprime-svc --no-default-features --features spin,zlib,aes-gcm
+cargo test -p fprime-svc --no-default-features --features spin,zlib,aes-gcm,wasm
 # All of the above plus clippy, MSRV 1.87 and the dependency-tree checks
 tools/check-no-std.sh
 
@@ -142,8 +150,11 @@ cargo run -p fprime-ref -- -a 127.0.0.1 -p 50000 --framing ccsds
 Requires stable Rust (edition 2024). No external crates in the default build;
 the optional `zlib` feature adds `miniz_oxide` (pure Rust), the optional
 `aes-gcm` feature adds RustCrypto `aes-gcm` with `getrandom` and `zeroize`,
-and the `no_std` configuration (`--no-default-features --features spin`)
-adds `spin` (lock types only); the optional features work there too.
+the optional `wasm` feature adds `spacewasm` (pinned to 0.7.1) with `libm`
+(spacewasm contains `unsafe` code internally, as does the
+`fprime-spacewasm` glue crate the feature builds), and the `no_std`
+configuration (`--no-default-features --features spin`) adds `spin` (lock
+types only); the optional features work there too.
 
 ## Porting status
 
@@ -156,12 +167,12 @@ adds `spin` (lock types only); the optional features work there too.
 | FPP compiler | `fpp-to-rust` (`crates/fprime-fpp`): the full FPP grammar, include resolution, the reference compiler's semantic analysis (implicit ids/opcodes, interface imports, topology imports, patterns, port numbering, telemetry packet sets), a Rust back end emitting types, port traits (serializable ones via `serializable_port!`), component bases with handler traits (including `serial` ports), topology wiring (typed ↔ serial connections included), the `TlmPacketizer` packet tables of telemetry packet sets, state machines (`fpp_state_machine!`) and state machine instances (internal and external), instance init specifiers (Rust code per topology phase) and instances of hand-written components such as `TlmPacketizer`, and a `--dict` back end writing the `fpp-to-dict` JSON dictionary the stock ground system reads; verified on the whole upstream framework model, the Ref deployment and the reference compiler's dictionary corpus |
 | Ground-system cross-compatibility | `crates/fprime-ref/dictionary/RefTopologyDictionary.json` is the Rust Ref's ground dictionary, generated from the pinned upstream commit and checked against the Rust ids by `cargo test`; `tools/gds-crosscheck.py` runs the stock `fprime-gds` tools against the Rust Ref binary: commands, events, telemetry, parameter save/reload and parameter files, file uplink/downlink, data-product downlink and decoding, `fprime-seqgen` sequences, under both F Prime and CCSDS framing (passes against fprime-gds 4.3.1) |
 | Component model | Passive/queued/active bases, typed port traits + `OutputPort` wiring, serialize ports (`Fw::InputSerializePort`/`OutputSerializePort`: typed calls carried as bytes and replayed on typed ports), byte-exact async message envelope + EXIT, queue-full policies (assert/drop/block/hook), command/event/telemetry/parameter glue, event throttling, buffer escrow |
-| State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
+| State machines (`Fw/Sm`) | FPP internal state machines (hierarchical states, entry/exit, initial transitions, choices, guards, typed signals) with the `fpp-to-cpp` `State`/`Signal` discriminants and action order — checked against the reference compiler's output for `FpySequencer`, `ComAggregator`, `WasmSequencer` and the FppTest machines; state machine instances in components (byte-exact signal messages, per-instance priority and queue-full policy); external (`init`/`update`) machines with `SmSignalBuffer` |
 | OSAL | Priority queue (stable max-heap, blocking semantics; or the ISR-safe `LocklessPriorityQueue` delegate with the `lockless-queue` feature), task state machine, mutex/condvar, file/filesystem/directory/console, `SandboxedFile` + `FilePathUtils` (lexical path resolution and containment), raw time + interval timer, `Cpu`/`Memory` (Linux procfs backend, upstream stubs elsewhere) |
-| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp`, the `fprime-os` queue/task/mutex/condition-variable/raw-time/interval-timer/stub-cpu-memory subset, `fprime-utils` (but `crc_checker`/`validate_file`) and every file-free `fprime-svc` component (rate groups, `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime and CCSDS comms, `GenericHub`, text loggers, `FatalHandler`, `AssertFatalAdapter`, `PosixTime`/`ChronoTime`/`OsTime`/`LinuxTimer`, `CmdSplitter`, `ComRetry`, `BufferRepeater`, `PassThroughRouter`, `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`, `DpManager`; also with `zlib`/`aes-gcm`) build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; a `#![no_std]` superloop deployment example (`fprime-svc/examples/no_std_deployment.rs`) is tested on the host; tasks, the clock and blocking-queue/mutex/condvar backoff come from a deployment-supplied `fprime_os::platform::Platform`; `lockless-queue` makes component queues ISR-safe (`tools/check-no-std.sh`) |
+| `no_std` + `alloc` | `fprime-config`, `fprime-fw`, `fprime-comp`, the `fprime-os` queue/task/mutex/condition-variable/raw-time/interval-timer/stub-cpu-memory subset, `fprime-utils` (but `crc_checker`/`validate_file`) and every file-free `fprime-svc` component (rate groups, `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, F Prime and CCSDS comms, `GenericHub`, text loggers, `FatalHandler`, `AssertFatalAdapter`, `PosixTime`/`ChronoTime`/`OsTime`/`LinuxTimer`, `CmdSplitter`, `ComRetry`, `BufferRepeater`, `PassThroughRouter`, `PolyDb`, `StaticMemory`, `Version`, `ActivePhaser`, `SeqDispatcher`, `DpManager`; also with `zlib`/`aes-gcm`/`wasm`, the last building the `fprime-spacewasm` glue and `spacewasm` while `WasmSequencer` itself needs `std`) build without `std` (`--no-default-features --features spin`; locks from `spin`), including for `thumbv7em-none-eabihf`; a `#![no_std]` superloop deployment example (`fprime-svc/examples/no_std_deployment.rs`) is tested on the host; tasks, the clock and blocking-queue/mutex/condvar backoff come from a deployment-supplied `fprime_os::platform::Platform`; `lockless-queue` makes component queues ISR-safe (`tools/check-no-std.sh`) |
 | C&DH services | `CmdDispatcher`, `EventManager`, `TlmChan`, `TlmPacketizer`, `Health`, `FatalHandler`, `AssertFatalAdapter` (failed asserts as FATAL events), `PassiveTextLogger`, `ActiveTextLogger` (console + size-capped log file), `PosixTime`, `ChronoTime`, `OsTime` (epoch + raw-time time source), `LinuxTimer`, `SystemResources`, `BufferRepeater`, `Version` (framework/project/library/custom versions; in the Ref's `CdhCore`), `PolyDb` (+ the `Svc.Poly` port) |
 | Rate groups | `RateGroupDriver`, `ActiveRateGroup`, `PassiveRateGroup`, `ActivePhaser` (phased rate group with deadline checks) |
-| Sequencing | `SeqDispatcher` (routes sequence runs to the first free sequencer); `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping) |
+| Sequencing | `SeqDispatcher` (routes sequence runs to the first free sequencer); `CmdSequencer` with the `FPrimeSequence` and `AMPCSSequence` (`.CRC32` sidecar) sequence-file formats; `FpySequencer` (the Fpy bytecode sequencer: sequence files with arguments and CRC, the stack machine and every directive, command dispatch with response matching and timeouts, breakpoints and stepping); `WasmSequencer` (WebAssembly sequences run on the `spacewasm` interpreter: the controller and interpreter state machines, load/validate/run/invoke, the 12 `fprime_v1` host functions — commands, telemetry and parameter reads, events, sleeps, time, arguments, serial ports — globals, fuel and host-call timeouts; only with the off-by-default `wasm` feature of `fprime-svc`, and instantiated as `wasmSeq` by `fprime-ref` built with its `wasm` feature) |
 | Parameters | `PrmDb` with the byte-exact parameter file and staged-load state machine |
 | File services | `FileUplink`, `FileDownlink`, `FileManager` (including `GenerateDp` file-to-data-product chunking and the fail-closed command-path sandbox), `FileWorker` (off-thread chunked reads, writes and CRC verification with `.CRC32` sidecars and cancellation), `FileDispatcher` (routes announced files to ports by extension), `BufferLogger` (buffer and com-packet log files with `.CRC32` sidecars), CFDP checksum |
 | CFDP | `Svc::Ccsds::CfdpManager` (CCSDS File Delivery Protocol, class 1 and class 2, send and receive): PDU codecs, the CF-derived engine and state machines with NAK-driven retransmission, directory playback and polling, `fileIn`/`fileDoneOut` |
@@ -195,8 +206,10 @@ can supply real hardware access without forking the component:
 
 ### Not ported
 
-One upstream `Svc` component is not ported yet (listed under "Not yet
-ported" in [`docs/ROADMAP.md`](docs/ROADMAP.md)): `WasmSequencer`.
+Every upstream `Svc` component is ported; `WasmSequencer` is compiled
+only with `fprime-svc`'s `wasm` feature, and the Rust Ref instantiates it
+(upstream's `wasmSeq`) only when built with `fprime-ref`'s `wasm` feature
+(the checked-in ground dictionary describes the default build).
 `CfdpManager` is ported, but upstream's Ref uses `FileHandling` rather than
 `FileHandlingCfdp`, so neither Ref instantiates it (a two-instance
 transfer test stands in for it). The SDLS security

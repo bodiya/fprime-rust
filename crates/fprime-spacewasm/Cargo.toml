@@ -1,0 +1,39 @@
+[package]
+name = "fprime-spacewasm"
+description = "F Prime Rust port: the safe embedding layer between Svc::WasmSequencer and NASA's spacewasm interpreter (port of upstream's fprime_spacewasm glue)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The one crate in the workspace that is not `forbid(unsafe_code)`: embedding
+# spacewasm needs the `__spacewasm_alloc` / `__spacewasm_dealloc` C-ABI
+# symbols (spacewasm's global page allocator), an `Allocator` impl over raw
+# page memory, raw-pointer stream chunks and a `Send` boundary around the
+# (`Rc`-based, `!Send`) interpreter. Unsafe code is denied crate-wide and
+# allowed only on the items that need it, each with a SAFETY comment; see
+# the crate docs. Everything else (the component) stays in `fprime-svc`
+# under `forbid(unsafe_code)`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+
+[features]
+# The interpreter itself. Off by default so that `cargo build --workspace`
+# (which builds every member) keeps the zero-third-party-dependency
+# default build: without it this crate is empty. `fprime-svc/wasm` turns
+# it on.
+spacewasm = ["dep:spacewasm"]
+
+[dependencies]
+fprime-config.workspace = true
+# NASA's no_std WebAssembly 1.0 interpreter (Apache-2.0, MSRV 1.87). The
+# exact version upstream's fprime_spacewasm pins. It contains `unsafe`
+# internally (its allocator-backed data structures, operand stack, linear
+# memory and IR reader).
+spacewasm = { version = "=0.7.1", optional = true }

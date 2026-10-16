@@ -401,18 +401,33 @@ subsystems, then the strategic changes.
   Rust Ref instantiates it as `CdhCore` does (`config(true)`, `start()`),
   at base id 0x01007000 because `textLogger` holds upstream's 0x01003000,
   and the GDS cross-check runs its commands.
-
-## Not yet ported
+- **`Svc::WasmSequencer`**, behind `fprime-svc`'s optional, off-by-default
+  `wasm` feature, which takes crates.io `spacewasm` (`=0.7.1`, with
+  `libm`) as a dependency; with the feature off nothing of it is compiled
+  and the default build keeps zero third-party crates. Upstream's own
+  shim (`fprime_spacewasm` plus the `spacewasm` C API) is ported as the
+  `no_std` `fprime-spacewasm` crate: the page-bump heap behind spacewasm's
+  `global_allocator!` hook, swapped per sequencer instance, the guest
+  memory pool with `memory.grow` rejection reporting, and the engine
+  wrapper. It is the workspace's only crate with `unsafe` code (the
+  allocator contract and the raw-page heap require it), denied by default
+  and allowed only on documented items, so `fprime-svc` stays
+  `#![forbid(unsafe_code)]`. The component itself needs `std`: both state
+  machines on `fpp_state_machine!` (checked against `fpp-to-cpp` 3.3.0
+  golden traces), the load/validate/run/invoke flow, all 12 `fprime_v1`
+  host functions, command dispatch with response matching, sleeps and
+  host-call timeouts, serial in/out ports, and every command, event,
+  channel and parameter at its upstream id. The `seqRunIn`/`seqDone`
+  ports work with `SeqDispatcher`. The upstream unit tests are ported with
+  the upstream `.wasm` modules byte for byte. `fprime-ref`'s own `wasm`
+  feature instantiates `wasmSeq` at 0x10007000, wired as upstream's Ref
+  wires it (the checked-in dictionary describes the default build).
+  `tools/check-no-std.sh` builds the feature without `std` and for
+  `thumbv7em-none-eabihf`. See `docs/api-notes.md` for the deviations.
 
 A sweep of the pinned upstream `Svc/` tree (every directory with a
-component model) against this workspace found sixteen components that were
-never on this roadmap. Fifteen have since been ported (see "Done in phase
-2"); the one left:
-
-- **`WasmSequencer`** (~2,800 lines). Upstream is itself a C++ shim over
-  Rust crates (`fprime_spacewasm`, MSRV 1.87), so a port means taking those
-  crates as a dependency and raising this workspace's MSRV from 1.85 (both
-  approved; the MSRV is now 1.87).
+component model) found sixteen components that were never on this
+roadmap; all sixteen have since been ported (entries above).
 
 ## Strategic
 
